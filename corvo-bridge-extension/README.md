@@ -1,4 +1,4 @@
-# CORVO BRIDGE V0.2
+# CORVO BRIDGE V0.3
 
 Fluxo desta versão:
 
@@ -24,7 +24,11 @@ GPT PERSONALIZADO → ACTION → VERCEL → CORVOQUIZ
 - recebe `jobId + prompt + specialist + meta` do CorvoQuiz;
 - abre ou reutiliza uma aba inativa do GPT configurado, sem tirar o usuário do CorvoQuiz;
 - espera o campo de prompt ficar disponível;
-- envia automaticamente a solicitação;
+- preenche o composer disparando `beforeinput` e `input`;
+- aguarda um botão de envio realmente habilitado e tenta múltiplos seletores;
+- usa o submit do formulário ou Enter como fallback;
+- só confirma sucesso quando o composer esvazia ou a mensagem aparece na conversa;
+- retorna `GPT_SEND_FAILED` quando o texto foi preenchido, mas o envio não foi confirmado;
 - inclui o JOB_ID no comando;
 - deixa o retorno para a Action do GPT.
 

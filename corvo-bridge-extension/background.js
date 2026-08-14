@@ -5,6 +5,8 @@ const DEFAULTS = {
 };
 
 const pendingByTab = new Map();
+const sendingTabs = new Set();
+const deliveryByJob = new Map();
 let lastStatus = {
   state: "IDLE",
   jobId: null,
@@ -32,6 +34,47 @@ async function setStatus(state, jobId, message, extra = {}) {
 function normalizeUrl(url) {
   try { const u = new URL(url); u.hash = ""; return u.toString(); }
   catch { return ""; }
+}
+
+function waitForDelivery(payload, tabId, reused) {
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      deliveryByJob.delete(payload.jobId);
+      pendingByTab.delete(tabId);
+      sendingTabs.delete(tabId);
+      reject(new Error("GPT_SEND_FAILED"));
+    }, 100000);
+    deliveryByJob.set(payload.jobId, { resolve, reject, timeoutId, tabId, reused });
+  });
+}
+
+function resolveDelivery(jobId, result) {
+  const delivery = deliveryByJob.get(jobId);
+  if (!delivery) return;
+  clearTimeout(delivery.timeoutId);
+  deliveryByJob.delete(jobId);
+  delivery.resolve(result);
+}
+
+function rejectDelivery(jobId, error) {
+  const delivery = deliveryByJob.get(jobId);
+  if (!delivery) return;
+  clearTimeout(delivery.timeoutId);
+  deliveryByJob.delete(jobId);
+  delivery.reject(error instanceof Error ? error : new Error(String(error || "GPT_SEND_FAILED")));
+}
+
+async function pingTabUntilReady(tabId) {
+  for (let attempt = 0; attempt < 80; attempt++) {
+    try {
+      await chrome.tabs.sendMessage(tabId, { type: "CORVO_BRIDGE_PING" });
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+  const pending = pendingByTab.get(tabId);
+  if (pending) rejectDelivery(pending.jobId, new Error("GPT_SEND_FAILED"));
 }
 
 async function findReusableGptTab(gptUrl) {
@@ -66,14 +109,17 @@ async function dispatchToGpt(job) {
 
   if (tab?.id) {
     pendingByTab.set(tab.id, payload);
-    chrome.tabs.sendMessage(tab.id, { type: "CORVO_BRIDGE_PING" }).catch(() => {});
-    return { ok: true, tabId: tab.id, reused: true, jobId: payload.jobId };
+    const delivery = waitForDelivery(payload, tab.id, true);
+    pingTabUntilReady(tab.id).catch(() => {});
+    return await delivery;
   }
 
   tab = await chrome.tabs.create({ url: config.gptUrl, active: false });
   if (!tab.id) throw new Error("TAB_CREATE_FAILED");
   pendingByTab.set(tab.id, payload);
-  return { ok: true, tabId: tab.id, reused: false, jobId: payload.jobId };
+  const delivery = waitForDelivery(payload, tab.id, false);
+  pingTabUntilReady(tab.id).catch(() => {});
+  return await delivery;
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -95,26 +141,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!tabId) return;
     const pending = pendingByTab.get(tabId);
     if (!pending) { sendResponse({ ok: true, pending: false }); return; }
+    if (sendingTabs.has(tabId)) { sendResponse({ ok: true, pending: true, sending: true }); return; }
 
+    sendingTabs.add(tabId);
     setStatus("SENDING_TO_GPT", pending.jobId, "GPT carregado. Enviando solicitação...").catch(() => {});
     chrome.tabs.sendMessage(tabId, { type: "CORVO_SEND_PROMPT", payload: pending })
-      .then(() => sendResponse({ ok: true, pending: true }))
-      .catch((error) => sendResponse({ ok: false, error: error.message }));
+      .then((result) => {
+        if (!result?.ok) throw new Error(result?.error || "GPT_SEND_FAILED");
+        sendResponse({ ok: true, pending: true, confirmed: result.confirmed === true });
+      })
+      .catch((error) => {
+        sendingTabs.delete(tabId);
+        rejectDelivery(pending.jobId, new Error(error.message || "GPT_SEND_FAILED"));
+        setStatus("ERROR", pending.jobId, error.message || "GPT_SEND_FAILED").catch(() => {});
+        sendResponse({ ok: false, error: error.message || "GPT_SEND_FAILED" });
+      });
     return true;
   }
 
   if (message.type === "CORVO_GPT_SENT") {
     const tabId = sender.tab?.id;
     const jobId = message.payload?.jobId || null;
-    if (tabId) pendingByTab.delete(tabId);
+    if (tabId) { pendingByTab.delete(tabId); sendingTabs.delete(tabId); }
     setStatus("WAITING_ACTION", jobId, "Solicitação enviada. Aguardando o GPT concluir e devolver pela Action.").catch(() => {});
+    resolveDelivery(jobId, { ok: true, tabId, jobId, confirmed: true });
     sendResponse({ ok: true });
     return;
   }
 
   if (message.type === "CORVO_GPT_ERROR") {
+    const tabId = sender.tab?.id;
     const jobId = message.payload?.jobId || null;
-    setStatus("ERROR", jobId, message.payload?.message || "Falha ao interagir com o ChatGPT.").catch(() => {});
+    const errorMessage = message.payload?.message || "GPT_SEND_FAILED";
+    if (tabId) { pendingByTab.delete(tabId); sendingTabs.delete(tabId); }
+    rejectDelivery(jobId, new Error(errorMessage));
+    setStatus("ERROR", jobId, errorMessage).catch(() => {});
     sendResponse({ ok: true });
     return;
   }
@@ -125,4 +186,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-chrome.tabs.onRemoved.addListener((tabId) => pendingByTab.delete(tabId));
+chrome.tabs.onRemoved.addListener((tabId) => {
+  const pending = pendingByTab.get(tabId);
+  if (pending) rejectDelivery(pending.jobId, new Error("GPT_SEND_FAILED"));
+  pendingByTab.delete(tabId);
+  sendingTabs.delete(tabId);
+});

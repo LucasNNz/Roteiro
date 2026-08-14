@@ -1,4 +1,4 @@
-# CorvoQuiz Produção — V0.5.3
+# CorvoQuiz Produção — V0.5.4
 
 Painel visual de pré-produção com geração de ideias via **Corvo Bridge**, retorno por **GPT Action** e coleta de imagens pelo **Corvo Collector**.
 
@@ -55,5 +55,5 @@ Envie o conteúdo deste projeto a um repositório do GitHub e importe-o no Verce
 O menu de configurações oferece downloads diretos de três pacotes publicados em `public/downloads`:
 
 - Corvo Collector V0.7.4 — somente a extensão de imagens;
-- Corvo Bridge V0.2 — somente a extensão do GPT;
+- Corvo Bridge V0.3 — somente a extensão do GPT, com envio confirmado;
 - Kit completo CorvoQuiz — app, extensões, schema e instruções.

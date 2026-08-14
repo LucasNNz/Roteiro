@@ -142,7 +142,9 @@ export default function Home() {
         ? "CORVO BRIDGE NÃO ENCONTRADO. INSTALE A EXTENSÃO INCLUÍDA NO PACOTE."
         : message.includes("GPT_URL_NOT_CONFIGURED")
           ? "CONFIGURE A URL DO GPT NAS OPÇÕES DO CORVO BRIDGE."
-          : message;
+          : message.includes("GPT_SEND_FAILED")
+            ? "O BRIDGE PREENCHEU A MENSAGEM, MAS O CHATGPT NÃO CONFIRMOU O ENVIO. TENTE NOVAMENTE."
+            : message;
       setNotice(friendly.toUpperCase());
       setTimeout(() => setNotice(""), 5200);
     } finally {
@@ -309,7 +311,7 @@ export default function Home() {
     </section>
 
     <section className="projects" id="projetos"><div className="section-heading"><div><span className="section-number">02</span><h2>PROJETOS RECENTES</h2></div><span className="project-count">{String(projects.length).padStart(2,"0")} PRODUÇÕES</span></div><div className="project-list">{projects.map((project) => <button className={`project-row ${project.id===activeId?"selected":""}`} key={project.id} onClick={() => setActiveId(project.id)}><span className="project-icon">{project.format==="REELS"?"▯":"▭"}</span><span className="project-name"><b>{project.title}</b><small>{project.id}</small></span><span className="project-format">{project.format}</span><span className="progress"><i style={{width:`${project.stage*20}%`}} /></span><span className="stage-label">ETAPA {project.stage}/5</span><span className="row-arrow">→</span></button>)}</div></section>
-    <footer><span>CORVOQUIZ PRODUÇÃO <i>V0.5.3</i></span><span>IDEIA → ROTEIRO → PROMPTS → IMAGENS → FORMA</span></footer>
+    <footer><span>CORVOQUIZ PRODUÇÃO <i>V0.5.4</i></span><span>IDEIA → ROTEIRO → PROMPTS → IMAGENS → FORMA</span></footer>
     {notice && <div className="toast">{notice}</div>}
 
     {createOpen && <div className="modal-backdrop" onMouseDown={(event) => event.target===event.currentTarget&&setCreateOpen(false)}><section className="creation-modal idea-modal" role="dialog" aria-modal="true" aria-labelledby="new-production-title"><button className="modal-close" onClick={() => setCreateOpen(false)} aria-label="Fechar">×</button><div className="modal-symbol">✦</div><span className="modal-kicker">NOVA PRODUÇÃO</span><h2 id="new-production-title">O QUE VAMOS CRIAR?</h2><p>Comece sem tema e peça ideias ao Corvo, ou informe uma direção opcional.</p>
@@ -331,8 +333,8 @@ export default function Home() {
         <div className="downloads-head"><div><span>INSTALAÇÃO E SUPORTE</span><h3 id="downloads-title">ARQUIVOS PARA BAIXAR</h3></div><small>SE PRECISAR REINSTALAR</small></div>
         <div className="download-grid">
           <a className="download-card" href="/downloads/CORVO_COLLECTOR_V074_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.7.4</small></div><i>↓</i></a>
-          <a className="download-card" href="/downloads/CORVO_BRIDGE_V02_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.2</small></div><i>↓</i></a>
-          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V053.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
+          <a className="download-card" href="/downloads/CORVO_BRIDGE_V03_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.3</small></div><i>↓</i></a>
+          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V054.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
         </div>
       </section>
       <details className="advanced-settings"><summary>CONFIGURAÇÕES AVANÇADAS</summary><div className="settings-grid"><label>CANDIDATAS<input type="number" value={settings.maxCandidates} onChange={(event)=>setSettings({...settings,maxCandidates:Number(event.target.value)})}/></label><label>VARREDURA<input type="number" value={settings.scrollSteps} onChange={(event)=>setSettings({...settings,scrollSteps:Number(event.target.value)})}/></label><label>QUALIDADE JPEG<input type="number" step=".01" value={settings.jpegQuality} onChange={(event)=>setSettings({...settings,jpegQuality:Number(event.target.value)})}/></label><label>PREFIXO<input value={settings.prefix} onChange={(event)=>setSettings({...settings,prefix:event.target.value})}/></label></div><label className="batch-label">COMANDOS EM LOTE — OPCIONAL<textarea value={settings.batchText} onChange={(event)=>setSettings({...settings,batchText:event.target.value})} placeholder={"01|primeira busca\n02|segunda busca"} /></label></details>
