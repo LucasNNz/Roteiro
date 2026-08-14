@@ -1,30 +1,35 @@
-# CorvoQuiz Produção — V0.1
+# CorvoQuiz Produção — V0.2
 
-MVP do painel de pré-produção do CorvoQuiz. O fluxo organiza tema, formato, etapa, arquivos e ZIP de cada produção em uma interface responsiva.
+Painel visual de pré-produção do CorvoQuiz com o **Corvo Collector V0.7.4** integrado à etapa de imagens.
 
-## Rodar localmente
+## Fluxo implementado
 
-```bash
-npm install
-npm run dev
-```
+1. Ideia
+2. Roteiro
+3. Prompts
+4. Busca de imagens em segundo plano
+5. Seleção automática ou revisão rápida
+6. Reprocura apenas da cena atual, descartando URLs anteriores
+7. Organização e pacote identificado para o Forma
 
-## Publicar no Vercel
+As opções técnicas ficam escondidas no botão de três pontos. O usuário escolhe apenas entre **Automático** e **Revisão rápida**.
 
-1. Envie esta pasta para um repositório no GitHub.
-2. No Vercel, escolha **Add New > Project** e importe o repositório.
-3. Mantenha as configurações detectadas e publique.
+## Instalar
 
-O arquivo `vercel.json` já direciona o build para Next.js.
+### Site
 
-## O que funciona nesta versão
+Envie o conteúdo deste ZIP a um repositório do GitHub e importe o projeto no Vercel.
 
-- modal central para iniciar uma produção;
-- seleção de Reels/Vídeo completo, unidade/lote e modo rápido/pesquisa;
-- projetos guardados no navegador;
-- avanço visual entre cinco etapas;
-- recebimento inicial de ZIP/JPG/PNG;
-- download de um ZIP organizado por projeto;
-- atalho para abrir o Corvo no ChatGPT.
+### Extensão
 
-Antes de publicar, substitua o endereço `https://chatgpt.com/` em `app/page.tsx` pelo link direto do GPT CorvoQuiz.
+1. Extraia a pasta `corvo-collector-extension`.
+2. Abra `chrome://extensions`.
+3. Ative **Modo do desenvolvedor**.
+4. Clique em **Carregar sem compactação** e escolha a pasta.
+5. Abra o popup da extensão e adicione a origem exata do site Vercel em **Origens autorizadas**.
+
+O ID fixo esperado é `eaekknadnghlpncgbhnmldofajelmlbo`.
+
+## Observação
+
+O pacote de imagens é mantido pelo coletor e identificado por código. Ele não é baixado automaticamente pelo painel. Uma cópia pode ser salva em **Opções do pacote**.

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Corvo Collector Bridge V0.4</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>Corvo Collector</h1>
+      <p>Varredura profunda da aba atual com tentativa de resolver versões maiores das imagens, incluindo Pinterest e outros casos com <code>srcset</code>.</p>
+    </header>
+
+    <section class="bridge-panel">
+      <div class="bridge-title"><strong>Bridge remoto</strong><span id="bridgeBadge">carregando...</span></div>
+      <div class="bridge-row"><span>ID</span><code id="bridgeExtensionId">—</code></div>
+      <div class="bridge-row"><span>Versão</span><strong id="bridgeVersion">—</strong></div>
+      <label class="bridge-label">Origens autorizadas (uma por linha)
+        <textarea id="bridgeOrigins" rows="3" placeholder="https://seu-app.vercel.app"></textarea>
+      </label>
+      <div class="bridge-actions">
+        <button id="saveBridgeBtn">Salvar acesso</button>
+        <button id="refreshBridgeBtn">Atualizar status</button>
+      </div>
+      <div id="bridgeJob" class="bridge-job">Nenhum job remoto.</div>
+    </section>
+
+    <section class="controls">
+      <button id="scanBtn" class="primary">Varredura profunda</button>
+      <div class="grid2">
+        <label>Largura mín.<input id="minWidth" type="number" min="0" value="120"></label>
+        <label>Altura mín.<input id="minHeight" type="number" min="0" value="120"></label>
+      </div>
+      <div class="grid2">
+        <label>Máx. candidatos<input id="maxCandidates" type="number" min="1" value="250"></label>
+        <label>Passos de rolagem<input id="scrollSteps" type="number" min="1" value="24"></label>
+      </div>
+      <div class="grid2">
+        <label>Lado preferido (px)<input id="preferredMinSide" type="number" min="0" value="700"></label>
+        <label>Fallback pequeno<input type="text" value="só no fim" disabled></label>
+      </div>
+      <div class="toggle-row">
+        <label><input id="includeLinks" type="checkbox" checked> incluir links diretos para imagens</label>
+        <label><input id="preferHiRes" type="checkbox" checked> preferir maior versão disponível</label>
+      </div>
+      <div class="bulk-actions">
+        <button id="selectAllBtn">Marcar todas</button>
+        <button id="unselectAllBtn">Desmarcar</button>
+        <button id="downloadBtn" class="success" disabled>Baixar ZIP</button>
+      </div>
+    </section>
+
+    <section class="summary">
+      <span id="countLabel">Nenhuma imagem carregada.</span>
+      <span id="selectedLabel">0 selecionadas</span>
+    </section>
+
+    <section id="status" class="status hidden"></section>
+    <section id="results" class="results"></section>
+  </div>
+
+  <script src="jszip.min.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

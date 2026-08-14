@@ -11,6 +11,7 @@ const eslintConfig = defineConfig([
     ".next/**",
     "out/**",
     "build/**",
+    "corvo-collector-extension/**",
     "next-env.d.ts",
   ]),
 ]);
