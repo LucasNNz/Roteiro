@@ -1,53 +1,15 @@
 openapi: 3.1.0
 info:
   title: CorvoQuiz Bridge API
-  version: 2.0.0
-  description: Lê um trabalho criado pelo CorvoQuiz e devolve as ideias ao modal pelo mesmo jobId.
+  version: 3.0.0
+  description: Recebe o resultado completo produzido pelo GPT e o devolve ao CorvoQuiz pelo mesmo jobId.
 servers:
   - url: https://roteiro-mu.vercel.app
 paths:
-  /api/corvo/ideia:
-    get:
-      operationId: buscarSolicitacao
-      summary: Busca os dados de um trabalho pendente do CorvoQuiz
-      security:
-        - ApiKeyAuth: []
-      parameters:
-        - name: jobId
-          in: query
-          required: true
-          description: Identificador recebido na mensagem CORVO_BRIDGE_JOB.
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Solicitação encontrada
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/JobResponse"
-        "401":
-          description: Chave inválida
-        "404":
-          description: Trabalho inexistente ou expirado
-    post:
-      operationId: enviarIdeias
-      summary: Entrega ideias pela rota antiga, mantida para compatibilidade
-      security:
-        - ApiKeyAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ResultadoRequest"
-      responses:
-        "200":
-          description: Resultado recebido
   /api/corvo/resultado:
     post:
-      operationId: entregarResultado
-      summary: Entrega ao CorvoQuiz as ideias concluídas para um trabalho
+      operationId: entregarResultadoCorvo
+      summary: Entrega o resultado completo de um trabalho ao CorvoQuiz
       security:
         - ApiKeyAuth: []
       requestBody:
@@ -58,27 +20,15 @@ paths:
               $ref: "#/components/schemas/ResultadoRequest"
       responses:
         "200":
-          description: Resultado armazenado e disponível no modal
+          description: Resultado recebido com sucesso
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                  jobId:
-                    type: string
-                  status:
-                    type: string
-                  ideiasRecebidas:
-                    type: integer
-                  message:
-                    type: string
-                required: [ok, jobId, status, ideiasRecebidas, message]
+                $ref: "#/components/schemas/ResultadoResponse"
         "400":
-          description: Conteúdo inválido
+          description: jobId ou resultado ausente
         "401":
-          description: Chave inválida
+          description: Chave da API inválida
         "404":
           description: Trabalho inexistente ou expirado
 components:
@@ -88,30 +38,21 @@ components:
       in: header
       name: x-api-key
   schemas:
-    Idea:
-      type: object
-      properties:
-        tema:
-          type: string
-        titulo:
-          type: string
-      required: [tema, titulo]
-      additionalProperties: false
     ResultadoRequest:
       type: object
+      additionalProperties: false
       properties:
         jobId:
           type: string
-          description: JOB_ID recebido pelo Corvo Bridge.
-        ideias:
-          type: array
-          minItems: 4
-          maxItems: 4
-          items:
-            $ref: "#/components/schemas/Idea"
-      required: [jobId, ideias]
-      additionalProperties: false
-    JobResponse:
+          description: JOB_ID recebido na mensagem CORVO_BRIDGE_JOB.
+        resultado:
+          type: string
+          minLength: 1
+          description: Conteúdo final completo produzido pelo GPT.
+      required:
+        - jobId
+        - resultado
+    ResultadoResponse:
       type: object
       properties:
         ok:
@@ -120,26 +61,10 @@ components:
           type: string
         status:
           type: string
-        solicitacao:
-          type: object
-          properties:
-            tema:
-              type: [string, "null"]
-            formato:
-              type: string
-            quantidade:
-              type: string
-            modo:
-              type: string
-            recentes:
-              type: array
-              items:
-                type: object
-                properties:
-                  titulo:
-                    type: string
-                  tema:
-                    type: string
-                required: [titulo, tema]
-          required: [tema, formato, quantidade, modo, recentes]
-      required: [ok, jobId, status, solicitacao]
+        message:
+          type: string
+      required:
+        - ok
+        - jobId
+        - status
+        - message

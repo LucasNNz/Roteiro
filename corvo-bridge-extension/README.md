@@ -1,4 +1,4 @@
-# CORVO BRIDGE V0.3
+# CORVO BRIDGE V0.3.2
 
 Fluxo desta versão:
 
@@ -14,7 +14,7 @@ GPT PERSONALIZADO → ACTION → VERCEL → CORVOQUIZ
 2. Abra `chrome://extensions`.
 3. Ative **Modo do desenvolvedor**.
 4. Clique em **Carregar sem compactação**.
-5. Selecione a pasta `CORVO_BRIDGE_V01`.
+5. Selecione a pasta descompactada `corvo-bridge-extension`.
 6. Abra as opções da extensão.
 7. Cole a URL exata do GPT CORVO SCOUT.
 8. Salve.
@@ -29,6 +29,8 @@ GPT PERSONALIZADO → ACTION → VERCEL → CORVOQUIZ
 - usa o submit do formulário ou Enter como fallback;
 - só confirma sucesso quando o composer esvazia ou a mensagem aparece na conversa;
 - retorna `GPT_SEND_FAILED` quando o texto foi preenchido, mas o envio não foi confirmado;
+- se o editor não sincronizar em segundo plano, ativa a aba apenas durante a repetição e devolve o foco ao CorvoQuiz;
+- antes de repetir, verifica o `JOB_ID` na conversa para evitar mensagem duplicada;
 - inclui o JOB_ID no comando;
 - deixa o retorno para a Action do GPT.
 
@@ -47,9 +49,9 @@ CorvoBridge.dispatch({
 
 ## Instrução obrigatória no GPT
 
-Quando receber uma solicitação iniciada por `CORVO_BRIDGE_JOB`, extraia o `JOB_ID`, chame `buscarSolicitacao`, produza exatamente quatro ideias e chame `entregarResultado` com o mesmo `JOB_ID`. Não dependa de copiar ou selecionar a mensagem na interface.
+Quando receber uma solicitação iniciada por `CORVO_BRIDGE_JOB`, considere que toda a solicitação já está na mensagem. Execute o trabalho e chame `entregarResultadoCorvo` com o mesmo `JOB_ID` e o conteúdo integral no campo `resultado`.
 
-Use o arquivo `CORVOQUIZ_OPENAPI_GPT_ACTION.yaml` que acompanha o app. Ele habilita a leitura em `/api/corvo/ideia` e a entrega em `/api/corvo/resultado`.
+Use o arquivo `CORVOQUIZ_OPENAPI_GPT_ACTION.yaml` que acompanha o app. Ele habilita somente a entrega genérica em `/api/corvo/resultado`.
 
 ## Segurança
 

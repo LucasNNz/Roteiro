@@ -14,7 +14,7 @@ export async function GET(request: NextRequest) {
   } catch (error) { return storageFailure(error); }
 }
 
-// Compatibilidade com a Action V0.1. A Action nova deve preferir /api/corvo/resultado.
+// Compatibilidade com a Action V0.1. A Action atual deve usar /api/corvo/resultado.
 export async function POST(request: NextRequest) {
   const unauthorized = authorizeAction(request);
   if (unauthorized) return unauthorized;
@@ -22,10 +22,12 @@ export async function POST(request: NextRequest) {
   try { body = await request.json(); } catch { return NextResponse.json({ ok: false, message: "JSON inválido." }, { status: 400 }); }
   const jobId = typeof body.jobId === "string" ? body.jobId.trim() : "";
   const ideias = normalizeIdeas(body);
-  if (!jobId || !ideias.length) return NextResponse.json({ ok: false, message: "Envie jobId e ideias válidas." }, { status: 400 });
+  const resultadoInformado = typeof body.resultado === "string" ? body.resultado.trim() : "";
+  const resultado = resultadoInformado || (ideias.length ? JSON.stringify({ ideias }) : "");
+  if (!jobId || !resultado) return NextResponse.json({ ok: false, message: "Envie jobId e resultado válido." }, { status: 400 });
   try {
-    const job = await completeCorvoJob(jobId, ideias);
+    const job = await completeCorvoJob(jobId, resultado);
     if (!job) return NextResponse.json({ ok: false, message: "Trabalho não encontrado ou expirado." }, { status: 404 });
-    return NextResponse.json({ ok: true, jobId, status: job.status, ideiasRecebidas: ideias.length });
+    return NextResponse.json({ ok: true, jobId, status: job.status });
   } catch (error) { return storageFailure(error); }
 }

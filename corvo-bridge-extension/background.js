@@ -36,7 +36,7 @@ function normalizeUrl(url) {
   catch { return ""; }
 }
 
-function waitForDelivery(payload, tabId, reused) {
+function waitForDelivery(payload, tabId, reused, sourceTabId) {
   return new Promise((resolve, reject) => {
     const timeoutId = setTimeout(() => {
       deliveryByJob.delete(payload.jobId);
@@ -44,7 +44,7 @@ function waitForDelivery(payload, tabId, reused) {
       sendingTabs.delete(tabId);
       reject(new Error("GPT_SEND_FAILED"));
     }, 100000);
-    deliveryByJob.set(payload.jobId, { resolve, reject, timeoutId, tabId, reused });
+    deliveryByJob.set(payload.jobId, { resolve, reject, timeoutId, tabId, reused, sourceTabId });
   });
 }
 
@@ -87,7 +87,7 @@ async function findReusableGptTab(gptUrl) {
   return null;
 }
 
-async function dispatchToGpt(job) {
+async function dispatchToGpt(job, sourceTabId) {
   const config = await getConfig();
   if (!config.gptUrl || !config.gptUrl.startsWith("https://chatgpt.com/")) {
     await setStatus("CONFIG_REQUIRED", job.jobId, "Configure a URL do GPT personalizado nas opções da extensão.");
@@ -109,7 +109,7 @@ async function dispatchToGpt(job) {
 
   if (tab?.id) {
     pendingByTab.set(tab.id, payload);
-    const delivery = waitForDelivery(payload, tab.id, true);
+    const delivery = waitForDelivery(payload, tab.id, true, sourceTabId);
     pingTabUntilReady(tab.id).catch(() => {});
     return await delivery;
   }
@@ -117,9 +117,42 @@ async function dispatchToGpt(job) {
   tab = await chrome.tabs.create({ url: config.gptUrl, active: false });
   if (!tab.id) throw new Error("TAB_CREATE_FAILED");
   pendingByTab.set(tab.id, payload);
-  const delivery = waitForDelivery(payload, tab.id, false);
+  const delivery = waitForDelivery(payload, tab.id, false, sourceTabId);
   pingTabUntilReady(tab.id).catch(() => {});
   return await delivery;
+}
+
+async function sendWithFocusedRetry(tabId, pending) {
+  const firstResult = await chrome.tabs.sendMessage(tabId, { type: "CORVO_SEND_PROMPT", payload: pending });
+  if (firstResult?.ok) return firstResult;
+
+  const firstError = firstResult?.error || "GPT_SEND_FAILED";
+  if (firstError !== "GPT_SEND_FAILED") throw new Error(firstError);
+
+  const delivery = deliveryByJob.get(pending.jobId);
+  const sourceTabId = delivery?.sourceTabId;
+  const gptTab = await chrome.tabs.get(tabId);
+  let activatedForRetry = false;
+
+  await setStatus("SENDING_TO_GPT", pending.jobId, "Sincronizando o editor do GPT para concluir o envio...");
+  try {
+    if (!gptTab.active) {
+      await chrome.tabs.update(tabId, { active: true });
+      activatedForRetry = true;
+      await new Promise((resolve) => setTimeout(resolve, 900));
+    }
+
+    const retryResult = await chrome.tabs.sendMessage(tabId, {
+      type: "CORVO_SEND_PROMPT",
+      payload: { ...pending, bridgeAttempt: "focused-retry" }
+    });
+    if (!retryResult?.ok) throw new Error(retryResult?.error || "GPT_SEND_FAILED");
+    return retryResult;
+  } finally {
+    if (activatedForRetry && sourceTabId && sourceTabId !== tabId) {
+      await chrome.tabs.update(sourceTabId, { active: true }).catch(() => {});
+    }
+  }
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -127,7 +160,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "CORVO_DISPATCH_FROM_APP") {
     const job = message.payload || {};
-    dispatchToGpt(job)
+    dispatchToGpt(job, sender.tab?.id)
       .then(sendResponse)
       .catch(async (error) => {
         await setStatus("ERROR", job.jobId, `Falha ao despachar: ${error.message}`);
@@ -145,9 +178,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     sendingTabs.add(tabId);
     setStatus("SENDING_TO_GPT", pending.jobId, "GPT carregado. Enviando solicitação...").catch(() => {});
-    chrome.tabs.sendMessage(tabId, { type: "CORVO_SEND_PROMPT", payload: pending })
+    sendWithFocusedRetry(tabId, pending)
       .then((result) => {
-        if (!result?.ok) throw new Error(result?.error || "GPT_SEND_FAILED");
         sendResponse({ ok: true, pending: true, confirmed: result.confirmed === true });
       })
       .catch((error) => {

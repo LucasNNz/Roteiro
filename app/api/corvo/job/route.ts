@@ -27,11 +27,28 @@ export async function POST(request: NextRequest) {
   const jobRequest: CorvoJobRequest = { tema, formato, quantidade, modo, recentes };
   try {
     const job = await createCorvoJob(jobRequest);
+    const recentText = recentes.length
+      ? recentes.map((item, index) => `${index + 1}. ${item.titulo || item.tema}${item.tema && item.tema !== item.titulo ? ` — ${item.tema}` : ""}`).join("\n")
+      : "Nenhuma produção recente informada.";
+    const prompt = [
+      "Crie exatamente quatro ideias de quiz diferentes entre si, em português do Brasil.",
+      "Cada ideia deve apresentar claramente TÍTULO, TEMA, CONCEITO e POR QUE PODE FUNCIONAR.",
+      "Evite repetir as produções recentes, títulos genéricos e promessas enganosas.",
+      modo === "PESQUISAR ANTES" ? "Pesquise sinais recentes antes de escolher as ideias." : "Priorize ideias rápidas, claras e visualmente fortes.",
+      "",
+      `DIREÇÃO OU TEMA: ${tema || "SEM TEMA — faça a descoberta automaticamente"}`,
+      `FORMATO: ${formato}`,
+      `QUANTIDADE DA PRODUÇÃO: ${quantidade}`,
+      `MODO: ${modo}`,
+      "",
+      "PRODUÇÕES RECENTES A EVITAR:",
+      recentText,
+    ].join("\n");
     return NextResponse.json({
       ok: true,
       jobId: job.id,
       status: job.status,
-      prompt: `Execute o trabalho CorvoQuiz ${job.id}. Primeiro use buscarSolicitacao com este jobId; ao terminar, use entregarResultado com o mesmo jobId.`,
+      prompt,
     }, { status: 202 });
   } catch (error) {
     const message = error instanceof CorvoStorageError ? `${error.message} Conecte um Upstash Redis ao projeto na Vercel.` : "Não foi possível criar o trabalho.";

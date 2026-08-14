@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Corvo Bridge",
-  "version": "0.3.0",
-  "description": "Envia trabalhos do CorvoQuiz ao GPT em segundo plano, confirma o envio e aguarda a Action.",
+  "version": "0.3.2",
+  "description": "Envia a solicitação completa ao GPT, confirma o envio e aguarda o retorno genérico pela Action.",
   "permissions": ["storage", "tabs"],
   "host_permissions": [
     "https://chatgpt.com/*",

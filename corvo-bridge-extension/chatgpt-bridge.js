@@ -116,9 +116,12 @@
       `CORVO_BRIDGE_JOB: ${job.jobId}`,
       `ESPECIALISTA: ${job.specialist || "SCOUT"}`,
       "",
-      "Execute a solicitação abaixo normalmente usando suas instruções e ferramentas.",
-      "Ao concluir, envie o resultado completo para a Action de retorno do CorvoQuiz usando exatamente este JOB_ID.",
-      "Não dependa de eu copiar ou selecionar a mensagem na interface.",
+      "A solicitação completa já está nesta mensagem. Não tente buscá-la externamente.",
+      "Execute normalmente a pesquisa e o trabalho solicitado usando suas instruções e ferramentas.",
+      "Ao concluir, use obrigatoriamente a Action de retorno do CorvoQuiz.",
+      "Envie exatamente este JOB_ID e todo o resultado final no campo resultado.",
+      "Não peça que o usuário copie, selecione ou confirme a resposta.",
+      "Considere concluído somente depois que a Action confirmar sucesso.",
       "",
       "SOLICITAÇÃO DO APP:",
       job.prompt
@@ -153,6 +156,11 @@
       count: messages.length,
       lastText: (messages.at(-1)?.textContent || "").trim()
     };
+  }
+
+  function conversationHasJob(jobId) {
+    return [...document.querySelectorAll('[data-message-author-role="user"]')]
+      .some((message) => (message.textContent || "").includes(jobId));
   }
 
   async function waitForSendConfirmation(previousState, jobId, timeout = CONFIRM_TIMEOUT_MS) {
@@ -196,6 +204,11 @@
     if (busy) throw new Error("BRIDGE_BUSY");
     busy = true;
     try {
+      if (conversationHasJob(job.jobId)) {
+        await chrome.runtime.sendMessage({ type: "CORVO_GPT_SENT", payload: { jobId: job.jobId } }).catch(() => {});
+        return;
+      }
+
       const composer = await waitForComposer();
       const message = compose(job);
       const previousState = userMessageState();
@@ -239,8 +252,6 @@
 
       throw new Error("GPT_SEND_FAILED");
     } catch (error) {
-      const message = error?.message || "GPT_SEND_FAILED";
-      await chrome.runtime.sendMessage({ type: "CORVO_GPT_ERROR", payload: { jobId: job.jobId, message } }).catch(() => {});
       throw error;
     } finally {
       busy = false;

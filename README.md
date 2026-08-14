@@ -1,4 +1,4 @@
-# CorvoQuiz Produção — V0.5.4
+# CorvoQuiz Produção — V0.5.6
 
 Painel visual de pré-produção com geração de ideias via **Corvo Bridge**, retorno por **GPT Action** e coleta de imagens pelo **Corvo Collector**.
 
@@ -6,9 +6,9 @@ Painel visual de pré-produção com geração de ideias via **Corvo Bridge**, r
 
 1. O app cria um trabalho com `POST /api/corvo/job`.
 2. O Corvo Bridge abre ou reutiliza o GPT personalizado em uma aba inativa.
-3. O GPT chama `buscarSolicitacao` em `GET /api/corvo/ideia?jobId=...`.
-4. Ao terminar, o GPT chama `entregarResultado` em `POST /api/corvo/resultado`.
-5. O modal acompanha `GET /api/corvo/resultado?jobId=...` e mostra as quatro ideias assim que o trabalho termina.
+3. A mensagem enviada ao GPT já contém a solicitação completa e o `JOB_ID`.
+4. Ao terminar, o GPT chama `entregarResultadoCorvo` em `POST /api/corvo/resultado`, enviando `jobId + resultado`.
+5. O modal acompanha `GET /api/corvo/resultado?jobId=...`, preserva o resultado integral e extrai as ideias para seleção.
 
 O app não redireciona para o ChatGPT e não precisa de `OPENAI_API_KEY`.
 
@@ -30,7 +30,7 @@ O armazenamento usa o SDK oficial `@upstash/redis`. O cliente é criado de forma
 1. Na mesma Action já existente para `roteiro-mu.vercel.app`, substitua o schema pelo conteúdo de `CORVOQUIZ_OPENAPI_GPT_ACTION.yaml`. Não crie outra Action para o mesmo domínio.
 2. Configure autenticação por API key personalizada no cabeçalho `x-api-key`, com o mesmo valor de `CorvoAPI_KEY_IDEIA`.
 3. Cole no GPT o bloco de `INSTRUCOES_GPT_CORVO_BRIDGE.md`.
-4. Teste primeiro `buscarSolicitacao` e depois `entregarResultado` com o mesmo `jobId` criado pelo app.
+4. Teste `entregarResultadoCorvo` com um `jobId` criado pelo app e um texto preenchido no campo `resultado`.
 
 ## Instalar as extensões
 
@@ -55,5 +55,5 @@ Envie o conteúdo deste projeto a um repositório do GitHub e importe-o no Verce
 O menu de configurações oferece downloads diretos de três pacotes publicados em `public/downloads`:
 
 - Corvo Collector V0.7.4 — somente a extensão de imagens;
-- Corvo Bridge V0.3 — somente a extensão do GPT, com envio confirmado;
+- Corvo Bridge V0.3.2 — somente a extensão do GPT, com solicitação completa e retorno genérico;
 - Kit completo CorvoQuiz — app, extensões, schema e instruções.

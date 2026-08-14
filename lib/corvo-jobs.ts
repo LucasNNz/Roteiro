@@ -14,6 +14,7 @@ export type CorvoJob = {
   id: string;
   status: "PENDING" | "DONE" | "ERROR";
   request: CorvoJobRequest;
+  resultado?: string;
   ideias?: CorvoIdea[];
   error?: string;
   createdAt: string;
@@ -101,13 +102,13 @@ export async function getCorvoJob(jobId: string) {
   return memoryJobs.get(jobId) ?? null;
 }
 
-export async function completeCorvoJob(jobId: string, ideias: CorvoIdea[]) {
+export async function completeCorvoJob(jobId: string, resultado: string) {
   const current = await getCorvoJob(jobId);
   if (!current) return null;
   const updated: CorvoJob = {
     ...current,
     status: "DONE",
-    ideias,
+    resultado,
     error: undefined,
     updatedAt: new Date().toISOString(),
   };

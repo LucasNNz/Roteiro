@@ -26,6 +26,45 @@ export function normalizeIdeas(body: Record<string, unknown>): CorvoIdea[] {
   }).slice(0, 6);
 }
 
+function cleanResultText(value: string) {
+  return value
+    .replace(/^[\s>*#-]+/, "")
+    .replace(/\*\*|__/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function ideasFromResult(resultado: string): CorvoIdea[] {
+  const text = resultado.trim();
+  if (!text) return [];
+
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (Array.isArray(parsed)) return normalizeIdeas({ ideias: parsed });
+    if (parsed && typeof parsed === "object") {
+      const record = parsed as Record<string, unknown>;
+      const normalized = normalizeIdeas(record);
+      if (normalized.length) return normalized;
+    }
+  } catch {}
+
+  const titlePattern = /(?:^|\n)\s*(?:#{1,6}\s*)?(?:\d+[.)-]?\s*)?(?:🔥\s*)?\*{0,2}T[IÍ]TULO\*{0,2}\s*:\s*([^\n]+)/gi;
+  const matches = [...text.matchAll(titlePattern)];
+  const ideas = matches.flatMap((match, index) => {
+    const titulo = cleanResultText(match[1] || "").slice(0, 180);
+    const start = (match.index || 0) + match[0].length;
+    const end = matches[index + 1]?.index ?? text.length;
+    const section = text.slice(start, end);
+    const themeMatch = section.match(/(?:^|\n)\s*(?:[-*#>]\s*)?\*{0,2}(?:TEMA|CONCEITO|DESCRI[CÇ][AÃ]O)\*{0,2}\s*:\s*([^\n]+)/i);
+    const tema = cleanResultText(themeMatch?.[1] || section.split("\n").find((line) => cleanResultText(line)) || titulo).slice(0, 180);
+    return titulo && tema ? [{ titulo, tema }] : [];
+  }).slice(0, 6);
+  if (ideas.length) return ideas;
+
+  const firstLine = cleanResultText(text.split("\n").find((line) => cleanResultText(line)) || "Resultado do Corvo");
+  return [{ titulo: firstLine.slice(0, 180), tema: cleanResultText(text).slice(0, 180) }];
+}
+
 export function storageFailure(error: unknown) {
   const message = error instanceof Error ? error.message : "Falha no armazenamento de trabalhos.";
   return NextResponse.json({ ok: false, message }, { status: 503 });

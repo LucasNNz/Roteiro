@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { authorizeAction, normalizeIdeas, storageFailure } from "../../../../lib/corvo-api";
+import { authorizeAction, ideasFromResult, storageFailure } from "../../../../lib/corvo-api";
 import { completeCorvoJob, getCorvoJob } from "../../../../lib/corvo-jobs";
 
 export async function GET(request: NextRequest) {
@@ -8,7 +8,14 @@ export async function GET(request: NextRequest) {
   try {
     const job = await getCorvoJob(jobId);
     if (!job) return NextResponse.json({ ok: false, message: "Trabalho não encontrado ou expirado." }, { status: 404 });
-    return NextResponse.json({ ok: true, jobId: job.id, status: job.status, ideias: job.status === "DONE" ? job.ideias : undefined });
+    const resultado = job.resultado || (job.ideias?.length ? JSON.stringify({ ideias: job.ideias }) : "");
+    return NextResponse.json({
+      ok: true,
+      jobId: job.id,
+      status: job.status,
+      resultado: job.status === "DONE" ? resultado : undefined,
+      ideias: job.status === "DONE" ? ideasFromResult(resultado) : undefined,
+    });
   } catch (error) { return storageFailure(error); }
 }
 
@@ -18,11 +25,11 @@ export async function POST(request: NextRequest) {
   let body: Record<string, unknown>;
   try { body = await request.json(); } catch { return NextResponse.json({ ok: false, message: "JSON inválido." }, { status: 400 }); }
   const jobId = typeof body.jobId === "string" ? body.jobId.trim() : "";
-  const ideias = normalizeIdeas(body);
-  if (!jobId || !ideias.length) return NextResponse.json({ ok: false, message: "Envie jobId e uma lista de ideias válidas." }, { status: 400 });
+  const resultado = typeof body.resultado === "string" ? body.resultado.trim() : "";
+  if (!jobId || !resultado) return NextResponse.json({ ok: false, message: "Envie jobId e resultado preenchidos." }, { status: 400 });
   try {
-    const job = await completeCorvoJob(jobId, ideias);
+    const job = await completeCorvoJob(jobId, resultado);
     if (!job) return NextResponse.json({ ok: false, message: "Trabalho não encontrado ou expirado." }, { status: 404 });
-    return NextResponse.json({ ok: true, jobId, status: job.status, ideiasRecebidas: ideias.length, message: "Resultado entregue ao CorvoQuiz." });
+    return NextResponse.json({ ok: true, jobId, status: job.status, message: "Resultado entregue ao CorvoQuiz." });
   } catch (error) { return storageFailure(error); }
 }
