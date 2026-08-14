@@ -15,6 +15,7 @@ import {
   type SelectionMode,
   type SourceMode,
 } from "../lib/corvo-collector";
+import { dispatchCorvoBridge } from "../lib/corvo-bridge";
 
 type Format = "REELS" | "VÍDEO COMPLETO";
 type Quantity = "1 VÍDEO" | "LOTE";
@@ -45,17 +46,6 @@ function safeLoad<T>(key:string, fallback:T):T {
 function slugify(value:string) {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 36);
 }
-function decodeIdeas(token:string):CorvoIdea[] {
-  try {
-    const base64 = token.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(token.length / 4) * 4, "=");
-    const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
-    const parsed = JSON.parse(new TextDecoder().decode(bytes));
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((idea) => typeof idea?.tema === "string" && idea.tema.trim()).slice(0, 6).map((idea) => ({
-      tema:idea.tema.trim(), titulo:typeof idea.titulo === "string" && idea.titulo.trim() ? idea.titulo.trim() : idea.tema.trim(),
-    }));
-  } catch { return []; }
-}
 function defaultQueries(project:Project) {
   const subject = project.topic;
   return [
@@ -78,6 +68,8 @@ export default function Home() {
   const [topic, setTopic] = useState("");
   const [ideas, setIdeas] = useState<CorvoIdea[]>([]);
   const [selectedIdea, setSelectedIdea] = useState<number|null>(null);
+  const [ideaLoading, setIdeaLoading] = useState(false);
+  const [ideaMessage, setIdeaMessage] = useState("");
   const [notice, setNotice] = useState("");
   const [settings, setSettings] = useState<CollectorSettings>(() => ({ ...defaultSettings, ...safeLoad("corvo-collector-settings-v02", defaultSettings) }));
   const [imagePhase, setImagePhase] = useState<ImagePhase>("connecting");
@@ -89,22 +81,10 @@ export default function Home() {
   const [searchingMore, setSearchingMore] = useState(false);
   const [packageCode, setPackageCode] = useState("");
   const runToken = useRef(0);
+  const ideaRunToken = useRef(0);
 
   useEffect(() => { localStorage.setItem("corvoquiz-projects-v02", JSON.stringify(projects)); }, [projects]);
   useEffect(() => { localStorage.setItem("corvo-collector-settings-v02", JSON.stringify(settings)); }, [settings]);
-  useEffect(() => {
-    const url = new URL(window.location.href);
-    const token = url.searchParams.get("ideias");
-    if (!token) return;
-    const received = decodeIdeas(token);
-    url.searchParams.delete("ideias");
-    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
-    const timer = window.setTimeout(() => {
-      if (!received.length) { setNotice("O CORVO NÃO ENVIOU IDEIAS VÁLIDAS."); return; }
-      setIdeas(received); setSelectedIdea(null); setTopic(""); setCreateOpen(true);
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, []);
   const active = useMemo(() => projects.find((project) => project.id === activeId) || projects[0], [projects, activeId]);
   const currentGroup = groups[groupIndex];
   const currentRank = currentGroup?.ranked[candidatePos];
@@ -119,11 +99,55 @@ export default function Home() {
     setProjects((current) => [project, ...current]); setActiveId(id); setTopic(""); setIdeas([]); setSelectedIdea(null); setCreateOpen(false); setNotice("");
   }
 
-  function openCorvoIdeas() {
-    const gptUrl = process.env.NEXT_PUBLIC_CORVO_GPT_URL || "https://chatgpt.com/";
-    window.open(gptUrl, "_blank", "noopener,noreferrer");
-    setNotice("PEÇA AS IDEIAS AO CORVO E ABRA O LINK QUE ELE DEVOLVER.");
-    setTimeout(() => setNotice(""), 4800);
+  async function generateCorvoIdeas() {
+    if (ideaLoading) return;
+    const token = ++ideaRunToken.current;
+    setIdeaLoading(true); setIdeaMessage("PREPARANDO O PEDIDO..."); setSelectedIdea(null); setNotice("");
+    try {
+      const response = await fetch("/api/corvo/job", {
+        method:"POST",
+        headers:{ "content-type":"application/json" },
+        body:JSON.stringify({
+          tema:topic.trim() || null, format, quantity, mode,
+          recentes:projects.slice(0, 12).map((project) => ({ titulo:project.title, tema:project.topic })),
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result?.jobId || !result?.prompt) throw new Error(result?.message || "O Corvo não conseguiu criar o trabalho.");
+      setIdeaMessage("ENVIANDO AO CORVO EM SEGUNDO PLANO...");
+      await dispatchCorvoBridge({
+        jobId:result.jobId,
+        prompt:result.prompt,
+        specialist:"SCOUT",
+        meta:{ format, quantity, mode },
+      });
+      setIdeaMessage("O CORVO ESTÁ CRIANDO AS OPÇÕES...");
+
+      for (let attempt = 0; attempt < 180 && token === ideaRunToken.current; attempt++) {
+        await wait(2000);
+        const statusResponse = await fetch(`/api/corvo/resultado?jobId=${encodeURIComponent(result.jobId)}`, { cache:"no-store" });
+        const status = await statusResponse.json().catch(() => ({}));
+        if (!statusResponse.ok) throw new Error(status?.message || "Não foi possível acompanhar o trabalho.");
+        if (status.status === "DONE") {
+          if (!Array.isArray(status.ideias) || !status.ideias.length) throw new Error("O Corvo não retornou ideias válidas.");
+          setIdeas(status.ideias); setTopic(""); setSelectedIdea(null); setIdeaMessage("");
+          return;
+        }
+        if (status.status === "ERROR") throw new Error(status?.message || "O Corvo não conseguiu concluir o trabalho.");
+      }
+      throw new Error("O Corvo ainda não respondeu. Tente novamente em alguns instantes.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "NÃO FOI POSSÍVEL GERAR AS IDEIAS.";
+      const friendly = message.includes("CORVO_BRIDGE_NOT_AVAILABLE")
+        ? "CORVO BRIDGE NÃO ENCONTRADO. INSTALE A EXTENSÃO INCLUÍDA NO PACOTE."
+        : message.includes("GPT_URL_NOT_CONFIGURED")
+          ? "CONFIGURE A URL DO GPT NAS OPÇÕES DO CORVO BRIDGE."
+          : message;
+      setNotice(friendly.toUpperCase());
+      setTimeout(() => setNotice(""), 5200);
+    } finally {
+      if (token === ideaRunToken.current) { setIdeaLoading(false); setIdeaMessage(""); }
+    }
   }
 
   async function downloadProject(project:Project) {
@@ -258,7 +282,7 @@ export default function Home() {
     <header className="topbar">
       <a className="brand" href="#top"><span className="brand-mark">C</span><span><strong>CORVO</strong>QUIZ <small>PRODUÇÃO</small></span></a>
       <nav className="nav-links"><a className="active" href="#producao">PRODUÇÃO</a><a href="#projetos">PROJETOS</a><a href="#arquivos">ARQUIVOS</a></nav>
-      <div className="header-actions"><a className="corvo-link" href={process.env.NEXT_PUBLIC_CORVO_GPT_URL || "https://chatgpt.com/"} target="_blank" rel="noreferrer"><span className="online-dot" /> FALAR COM O CORVO</a><button className="icon-button" onClick={() => setSettingsOpen(true)} aria-label="Configurações">•••</button></div>
+      <div className="header-actions"><button className="corvo-link" onClick={() => setCreateOpen(true)}><span className="online-dot" /> PEDIR IDEIAS AO CORVO</button><button className="icon-button" onClick={() => setSettingsOpen(true)} aria-label="Configurações">•••</button></div>
     </header>
 
     <section className="hero" id="top"><div><span className="eyebrow"><i /> CENTRAL DE PRODUÇÃO</span><h1>DA IDEIA AO <em>PACOTE FINAL.</em></h1><p>O Corvo cuida da pesquisa, das imagens e da organização.<br />Você só acompanha, escolhe e aprova.</p></div><button className="new-project" onClick={() => setCreateOpen(true)}><span>＋</span><b>NOVA PRODUÇÃO</b><small>COMEÇAR DO ZERO</small></button></section>
@@ -285,7 +309,7 @@ export default function Home() {
     </section>
 
     <section className="projects" id="projetos"><div className="section-heading"><div><span className="section-number">02</span><h2>PROJETOS RECENTES</h2></div><span className="project-count">{String(projects.length).padStart(2,"0")} PRODUÇÕES</span></div><div className="project-list">{projects.map((project) => <button className={`project-row ${project.id===activeId?"selected":""}`} key={project.id} onClick={() => setActiveId(project.id)}><span className="project-icon">{project.format==="REELS"?"▯":"▭"}</span><span className="project-name"><b>{project.title}</b><small>{project.id}</small></span><span className="project-format">{project.format}</span><span className="progress"><i style={{width:`${project.stage*20}%`}} /></span><span className="stage-label">ETAPA {project.stage}/5</span><span className="row-arrow">→</span></button>)}</div></section>
-    <footer><span>CORVOQUIZ PRODUÇÃO <i>V0.3</i></span><span>IDEIA → ROTEIRO → PROMPTS → IMAGENS → FORMA</span></footer>
+    <footer><span>CORVOQUIZ PRODUÇÃO <i>V0.5.2</i></span><span>IDEIA → ROTEIRO → PROMPTS → IMAGENS → FORMA</span></footer>
     {notice && <div className="toast">{notice}</div>}
 
     {createOpen && <div className="modal-backdrop" onMouseDown={(event) => event.target===event.currentTarget&&setCreateOpen(false)}><section className="creation-modal idea-modal" role="dialog" aria-modal="true" aria-labelledby="new-production-title"><button className="modal-close" onClick={() => setCreateOpen(false)} aria-label="Fechar">×</button><div className="modal-symbol">✦</div><span className="modal-kicker">NOVA PRODUÇÃO</span><h2 id="new-production-title">O QUE VAMOS CRIAR?</h2><p>Comece sem tema e peça ideias ao Corvo, ou informe uma direção opcional.</p>
@@ -293,12 +317,27 @@ export default function Home() {
       <div className="modal-grid"><div className="field-group"><label>QUANTIDADE</label><div className="segmented compact">{(["1 VÍDEO","LOTE"] as Quantity[]).map((item)=><button className={quantity===item?"selected":""} onClick={()=>setQuantity(item)} key={item}>{item}</button>)}</div></div><div className="field-group"><label>MODO</label><div className="segmented compact">{(["RÁPIDO","PESQUISAR ANTES"] as Mode[]).map((item)=><button className={mode===item?"selected":""} onClick={()=>setMode(item)} key={item}>{item}</button>)}</div></div></div>
       <div className="field-group topic-field"><label>TEMA OPCIONAL</label><input value={topic} onChange={(event)=>{setTopic(event.target.value);setSelectedIdea(null);}} onKeyDown={(event)=>event.key==="Enter"&&createProject()} placeholder="SEM TEMA SELECIONADO" /></div>
       {ideas.length ? <div className="idea-results"><div className="idea-results-head"><span>IDEIAS DO CORVO</span><small>ESCOLHA UMA</small></div>{ideas.map((idea,index)=><button className={`idea-card ${selectedIdea===index?"selected":""}`} onClick={()=>{setSelectedIdea(index);setTopic("");}} key={`${idea.titulo}-${index}`}><span>{String(index+1).padStart(2,"0")}</span><div><b>{idea.titulo}</b><small>{idea.tema}</small></div><i>{selectedIdea===index?"✓":"→"}</i></button>)}</div> : <button className="empty-theme selected" onClick={()=>{setTopic("");setSelectedIdea(null);}}><span>○</span><div><b>SEM TEMA SELECIONADO</b><small>O CORVO PODE CRIAR AS OPÇÕES PARA VOCÊ</small></div><i>PADRÃO</i></button>}
-      <button className={`corvo-ideas ${selectedIdea===null&&!topic.trim()?"primary":""}`} onClick={openCorvoIdeas}><span className="online-dot" /> GERAR IDEIAS COM O CORVO <i>↗</i></button>
+      <button className={`corvo-ideas ${selectedIdea===null&&!topic.trim()?"primary":""} ${ideaLoading?"loading":""}`} onClick={generateCorvoIdeas} disabled={ideaLoading}><span className={ideaLoading?"idea-spinner":"online-dot"} /> {ideaLoading?(ideaMessage||"CORVO ESTÁ CRIANDO..."):ideas.length?"GERAR NOVAS IDEIAS":"GERAR IDEIAS COM O CORVO"} <i>{ideaLoading?"":"✦"}</i></button>
       {(selectedIdea!==null||topic.trim())&&<button className="modal-submit" onClick={createProject}>{selectedIdea!==null?"USAR ESTA IDEIA":"COMEÇAR COM ESTE TEMA"} <span>→</span></button>}
-      <small className="idea-return-note">AO VOLTAR PELO LINK DO CORVO, AS IDEIAS APARECEM AQUI AUTOMATICAMENTE.</small>
+      <small className="idea-return-note">O BRIDGE ENVIA AO GPT EM SEGUNDO PLANO. A ACTION DEVOLVE AS IDEIAS DIRETAMENTE A ESTE MODAL.</small>
     </section></div>}
 
-    {settingsOpen && <div className="modal-backdrop" onMouseDown={(event)=>event.target===event.currentTarget&&setSettingsOpen(false)}><section className="settings-modal"><button className="modal-close" onClick={()=>setSettingsOpen(false)}>×</button><span className="modal-kicker">COMPORTAMENTO DAS IMAGENS</span><h2>COMO O CORVO DEVE ESCOLHER?</h2><p>Estas opções ficam salvas e não aparecem durante a produção.</p><div className="choice-cards"><button className={settings.selectionMode==="AUTO"?"selected":""} onClick={()=>setSettings({...settings,selectionMode:"AUTO"})}><b>⚡ AUTOMÁTICO</b><small>BUSCA, ESCOLHE E ORGANIZA SOZINHO</small></button><button className={settings.selectionMode==="MANUAL"?"selected":""} onClick={()=>setSettings({...settings,selectionMode:"MANUAL"})}><b>◉ REVISÃO RÁPIDA</b><small>MOSTRA UMA IMAGEM POR CENA</small></button></div><div className="field-group"><label>FONTE DA BUSCA</label><div className="segmented triple">{(["MIXED","GOOGLE","PINTEREST"] as SourceMode[]).map((item)=><button className={settings.sourceMode===item?"selected":""} onClick={()=>setSettings({...settings,sourceMode:item})} key={item}>{item==="MIXED"?"MESCLADO":item}</button>)}</div></div><details className="advanced-settings"><summary>CONFIGURAÇÕES AVANÇADAS</summary><div className="settings-grid"><label>CANDIDATAS<input type="number" value={settings.maxCandidates} onChange={(event)=>setSettings({...settings,maxCandidates:Number(event.target.value)})}/></label><label>VARREDURA<input type="number" value={settings.scrollSteps} onChange={(event)=>setSettings({...settings,scrollSteps:Number(event.target.value)})}/></label><label>QUALIDADE JPEG<input type="number" step=".01" value={settings.jpegQuality} onChange={(event)=>setSettings({...settings,jpegQuality:Number(event.target.value)})}/></label><label>PREFIXO<input value={settings.prefix} onChange={(event)=>setSettings({...settings,prefix:event.target.value})}/></label></div><label className="batch-label">COMANDOS EM LOTE — OPCIONAL<textarea value={settings.batchText} onChange={(event)=>setSettings({...settings,batchText:event.target.value})} placeholder={"01|primeira busca\n02|segunda busca"} /></label></details><button className="modal-submit" onClick={()=>setSettingsOpen(false)}>SALVAR E FECHAR <span>✓</span></button></section></div>}
+    {settingsOpen && <div className="modal-backdrop" onMouseDown={(event)=>event.target===event.currentTarget&&setSettingsOpen(false)}><section className="settings-modal">
+      <button className="modal-close" onClick={()=>setSettingsOpen(false)} aria-label="Fechar configurações">×</button>
+      <span className="modal-kicker">COMPORTAMENTO DAS IMAGENS</span><h2>COMO O CORVO DEVE ESCOLHER?</h2><p>Estas opções ficam salvas e não aparecem durante a produção.</p>
+      <div className="choice-cards"><button className={settings.selectionMode==="AUTO"?"selected":""} onClick={()=>setSettings({...settings,selectionMode:"AUTO"})}><b>⚡ AUTOMÁTICO</b><small>BUSCA, ESCOLHE E ORGANIZA SOZINHO</small></button><button className={settings.selectionMode==="MANUAL"?"selected":""} onClick={()=>setSettings({...settings,selectionMode:"MANUAL"})}><b>◉ REVISÃO RÁPIDA</b><small>MOSTRA UMA IMAGEM POR CENA</small></button></div>
+      <div className="field-group"><label>FONTE DA BUSCA</label><div className="segmented triple">{(["MIXED","GOOGLE","PINTEREST"] as SourceMode[]).map((item)=><button className={settings.sourceMode===item?"selected":""} onClick={()=>setSettings({...settings,sourceMode:item})} key={item}>{item==="MIXED"?"MESCLADO":item}</button>)}</div></div>
+      <section className="downloads-section" aria-labelledby="downloads-title">
+        <div className="downloads-head"><div><span>INSTALAÇÃO E SUPORTE</span><h3 id="downloads-title">ARQUIVOS PARA BAIXAR</h3></div><small>SE PRECISAR REINSTALAR</small></div>
+        <div className="download-grid">
+          <a className="download-card" href="/downloads/CORVO_COLLECTOR_V074_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.7.4</small></div><i>↓</i></a>
+          <a className="download-card" href="/downloads/CORVO_BRIDGE_V02_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.2</small></div><i>↓</i></a>
+          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V052.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
+        </div>
+      </section>
+      <details className="advanced-settings"><summary>CONFIGURAÇÕES AVANÇADAS</summary><div className="settings-grid"><label>CANDIDATAS<input type="number" value={settings.maxCandidates} onChange={(event)=>setSettings({...settings,maxCandidates:Number(event.target.value)})}/></label><label>VARREDURA<input type="number" value={settings.scrollSteps} onChange={(event)=>setSettings({...settings,scrollSteps:Number(event.target.value)})}/></label><label>QUALIDADE JPEG<input type="number" step=".01" value={settings.jpegQuality} onChange={(event)=>setSettings({...settings,jpegQuality:Number(event.target.value)})}/></label><label>PREFIXO<input value={settings.prefix} onChange={(event)=>setSettings({...settings,prefix:event.target.value})}/></label></div><label className="batch-label">COMANDOS EM LOTE — OPCIONAL<textarea value={settings.batchText} onChange={(event)=>setSettings({...settings,batchText:event.target.value})} placeholder={"01|primeira busca\n02|segunda busca"} /></label></details>
+      <button className="modal-submit" onClick={()=>setSettingsOpen(false)}>SALVAR E FECHAR <span>✓</span></button>
+    </section></div>}
 
     {imageOpen && <div className="modal-backdrop image-backdrop"><section className={`image-modal phase-${imagePhase}`}>
       <button className="modal-close" onClick={()=>imagePhase==="searching"?cancelImageFlow():setImageOpen(false)}>×</button>

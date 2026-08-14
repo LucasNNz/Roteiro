@@ -1,0 +1,3 @@
+function nice(s){return({IDLE:"Aguardando trabalho",CONFIG_REQUIRED:"Configuração necessária",OPENING_GPT:"Abrindo GPT",SENDING_TO_GPT:"Enviando solicitação",WAITING_ACTION:"Aguardando retorno pela Action",ERROR:"Erro"})[s.state]||s.state||"Aguardando";}
+async function refresh(){const s=await chrome.runtime.sendMessage({type:"CORVO_GET_STATUS"});document.querySelector("#state").textContent=nice(s);document.querySelector("#job").textContent=[s.jobId?`JOB: ${s.jobId}`:"",s.message||""].filter(Boolean).join("\n");}
+document.querySelector("#options").addEventListener("click",()=>chrome.runtime.openOptionsPage());refresh().catch(()=>{});

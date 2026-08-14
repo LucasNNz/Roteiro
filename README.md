@@ -1,46 +1,57 @@
-# CorvoQuiz Produção — V0.3
+# CorvoQuiz Produção — V0.5.2
 
-Painel visual de pré-produção do CorvoQuiz com o **Corvo Collector V0.7.4** integrado à etapa de imagens.
+Painel visual de pré-produção com geração de ideias via **Corvo Bridge**, retorno por **GPT Action** e coleta de imagens pelo **Corvo Collector**.
 
-## Ideias pelo GPT personalizado
+## Fluxo de ideias sem redirecionamento
 
-O modal **Nova produção** começa em **Sem tema selecionado**. O usuário pode informar um tema opcional ou clicar em **Gerar ideias com o Corvo**. O GPT envia de uma a seis ideias à Action e devolve um link; ao abrir esse link, as opções aparecem no modal para seleção.
+1. O app cria um trabalho com `POST /api/corvo/job`.
+2. O Corvo Bridge abre ou reutiliza o GPT personalizado em uma aba inativa.
+3. O GPT chama `buscarSolicitacao` em `GET /api/corvo/ideia?jobId=...`.
+4. Ao terminar, o GPT chama `entregarResultado` em `POST /api/corvo/resultado`.
+5. O modal acompanha `GET /api/corvo/resultado?jobId=...` e mostra as quatro ideias assim que o trabalho termina.
 
-1. No Vercel, configure `CorvoAPI_KEY_IDEIA` com uma chave forte.
-2. Configure `NEXT_PUBLIC_CORVO_GPT_URL` com o link público do GPT personalizado.
-3. No editor do GPT, importe `CORVOQUIZ_OPENAPI_GPT_ACTION.yaml` em **Actions**.
-4. Na autenticação da Action, escolha **API Key**, tipo **Custom**, cabeçalho `x-api-key`, e informe a mesma chave de `CorvoAPI_KEY_IDEIA`.
+O app não redireciona para o ChatGPT e não precisa de `OPENAI_API_KEY`.
 
-O segredo nunca é enviado ao navegador. O endereço em `servers` não deve conter `#projetos`; fragmentos não fazem parte de uma URL de API.
+## Configurar a Vercel
 
-## Fluxo implementado
+1. Configure `CorvoAPI_KEY_IDEIA` com um segredo forte.
+2. No Marketplace da Vercel, conecte um banco **Upstash Redis** ao projeto.
+3. Confirme que foram criadas `UPSTASH_REDIS_REST_URL` e `UPSTASH_REDIS_REST_TOKEN`. Os nomes antigos `KV_REST_API_URL` e `KV_REST_API_TOKEN` também são aceitos.
+4. Faça um novo deploy.
 
-1. Ideia
-2. Roteiro
-3. Prompts
-4. Busca de imagens em segundo plano
-5. Seleção automática ou revisão rápida
-6. Reprocura apenas da cena atual, descartando URLs anteriores
-7. Organização e pacote identificado para o Forma
+Sem Redis, o app usa memória apenas no desenvolvimento local. Em produção a rota informa claramente que o armazenamento precisa ser conectado.
 
-As opções técnicas ficam escondidas no botão de três pontos. O usuário escolhe apenas entre **Automático** e **Revisão rápida**.
+O armazenamento dos trabalhos usa o SDK oficial `@upstash/redis`. O cliente é criado de forma lazy com `Redis.fromEnv()` somente quando as duas variáveis REST estão disponíveis. Cada job é salvo como objeto em `corvoquiz:idea-job:<jobId>` e expira automaticamente após uma hora.
 
-## Instalar
+## Configurar o GPT personalizado
 
-### Site
+1. Na mesma Action já existente para `roteiro-mu.vercel.app`, substitua o schema pelo conteúdo de `CORVOQUIZ_OPENAPI_GPT_ACTION.yaml`. Não crie outra Action para o mesmo domínio.
+2. Configure autenticação por API key personalizada no cabeçalho `x-api-key`, com o mesmo valor de `CorvoAPI_KEY_IDEIA`.
+3. Cole no GPT o bloco de `INSTRUCOES_GPT_CORVO_BRIDGE.md`.
+4. Teste primeiro `buscarSolicitacao` e depois `entregarResultado` com o mesmo `jobId` criado pelo app.
 
-Envie o conteúdo deste ZIP a um repositório do GitHub e importe o projeto no Vercel.
+## Instalar as extensões
 
-### Extensão
+### Corvo Bridge
 
-1. Extraia a pasta `corvo-collector-extension`.
-2. Abra `chrome://extensions`.
-3. Ative **Modo do desenvolvedor**.
-4. Clique em **Carregar sem compactação** e escolha a pasta.
-5. Abra o popup da extensão e adicione a origem exata do site Vercel em **Origens autorizadas**.
+1. Extraia `corvo-bridge-extension`.
+2. Abra `chrome://extensions`, ative **Modo do desenvolvedor** e clique em **Carregar sem compactação**.
+3. Selecione a pasta da extensão.
+4. Abra as opções, cole a URL exata do GPT personalizado e salve.
 
-O ID fixo esperado é `eaekknadnghlpncgbhnmldofajelmlbo`.
+### Corvo Collector
 
-## Observação
+1. Carregue `corvo-collector-extension` da mesma forma.
+2. No popup, autorize a origem exata do site.
 
-O pacote de imagens é mantido pelo coletor e identificado por código. Ele não é baixado automaticamente pelo painel. Uma cópia pode ser salva em **Opções do pacote**.
+## Publicar
+
+Envie o conteúdo deste projeto a um repositório do GitHub e importe-o no Vercel. O app usa Next.js e não exige configuração extra de framework.
+
+## Downloads dentro do app
+
+O menu de configurações oferece downloads diretos de três pacotes publicados em `public/downloads`:
+
+- Corvo Collector V0.7.4 — somente a extensão de imagens;
+- Corvo Bridge V0.2 — somente a extensão do GPT;
+- Kit completo CorvoQuiz — app, extensões, schema e instruções.

@@ -1,15 +1,38 @@
 openapi: 3.1.0
 info:
-  title: CorvoQuiz API
-  version: 1.1.0
-  description: Envia ideias criadas pelo GPT ao modal de nova produção do CorvoQuiz.
+  title: CorvoQuiz Bridge API
+  version: 2.0.0
+  description: Lê um trabalho criado pelo CorvoQuiz e devolve as ideias ao modal pelo mesmo jobId.
 servers:
-  - url: https://roteiro-git-main-contatolucasnascimentou-3474s-projects.vercel.app
+  - url: https://roteiro-mu.vercel.app
 paths:
   /api/corvo/ideia:
+    get:
+      operationId: buscarSolicitacao
+      summary: Busca os dados de um trabalho pendente do CorvoQuiz
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: jobId
+          in: query
+          required: true
+          description: Identificador recebido na mensagem CORVO_BRIDGE_JOB.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Solicitação encontrada
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobResponse"
+        "401":
+          description: Chave inválida
+        "404":
+          description: Trabalho inexistente ou expirado
     post:
       operationId: enviarIdeias
-      summary: Envia uma ou mais ideias para seleção no CorvoQuiz
+      summary: Entrega ideias pela rota antiga, mantida para compatibilidade
       security:
         - ApiKeyAuth: []
       requestBody:
@@ -17,37 +40,25 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                tema:
-                  type: string
-                  description: Tema de uma ideia única. Mantido para compatibilidade.
-                titulo:
-                  type: string
-                  description: Título recomendado para uma ideia única.
-                ideias:
-                  type: array
-                  minItems: 1
-                  maxItems: 6
-                  description: Opções que serão exibidas para seleção no modal.
-                  items:
-                    type: object
-                    properties:
-                      tema:
-                        type: string
-                      titulo:
-                        type: string
-                    required:
-                      - tema
-                      - titulo
-                    additionalProperties: false
-              anyOf:
-                - required: [tema]
-                - required: [ideias]
-              additionalProperties: false
+              $ref: "#/components/schemas/ResultadoRequest"
       responses:
         "200":
-          description: Ideias recebidas. O GPT deve mostrar appUrl ao usuário como link clicável.
+          description: Resultado recebido
+  /api/corvo/resultado:
+    post:
+      operationId: entregarResultado
+      summary: Entrega ao CorvoQuiz as ideias concluídas para um trabalho
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResultadoRequest"
+      responses:
+        "200":
+          description: Resultado armazenado e disponível no modal
           content:
             application/json:
               schema:
@@ -55,33 +66,80 @@ paths:
                 properties:
                   ok:
                     type: boolean
-                  id:
+                  jobId:
                     type: string
+                  status:
+                    type: string
+                  ideiasRecebidas:
+                    type: integer
                   message:
                     type: string
-                  appUrl:
-                    type: string
-                    format: uri
-                  ideias:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        tema:
-                          type: string
-                        titulo:
-                          type: string
-                      required: [tema, titulo]
-                required: [ok, id, message, appUrl, ideias]
+                required: [ok, jobId, status, ideiasRecebidas, message]
         "400":
           description: Conteúdo inválido
         "401":
           description: Chave inválida
-        "503":
-          description: Chave não configurada no servidor
+        "404":
+          description: Trabalho inexistente ou expirado
 components:
   securitySchemes:
     ApiKeyAuth:
       type: apiKey
       in: header
       name: x-api-key
+  schemas:
+    Idea:
+      type: object
+      properties:
+        tema:
+          type: string
+        titulo:
+          type: string
+      required: [tema, titulo]
+      additionalProperties: false
+    ResultadoRequest:
+      type: object
+      properties:
+        jobId:
+          type: string
+          description: JOB_ID recebido pelo Corvo Bridge.
+        ideias:
+          type: array
+          minItems: 4
+          maxItems: 4
+          items:
+            $ref: "#/components/schemas/Idea"
+      required: [jobId, ideias]
+      additionalProperties: false
+    JobResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        jobId:
+          type: string
+        status:
+          type: string
+        solicitacao:
+          type: object
+          properties:
+            tema:
+              type: [string, "null"]
+            formato:
+              type: string
+            quantidade:
+              type: string
+            modo:
+              type: string
+            recentes:
+              type: array
+              items:
+                type: object
+                properties:
+                  titulo:
+                    type: string
+                  tema:
+                    type: string
+                required: [titulo, tema]
+          required: [tema, formato, quantidade, modo, recentes]
+      required: [ok, jobId, status, solicitacao]
