@@ -10,6 +10,8 @@ const DEFAULTS = {
 const pendingByTab = new Map();
 const sendingTabs = new Set();
 const deliveryByJob = new Map();
+const JOB_TABS_KEY = "corvoBridgeJobTabs";
+const OWNED_TABS_KEY = "corvoBridgeOwnedTabs";
 let lastStatus = {
   state: "IDLE",
   jobId: null,
@@ -22,6 +24,40 @@ async function getConfig() {
   const config = { ...DEFAULTS, ...stored };
   if (!config.gptIdeasUrl && config.gptUrl) config.gptIdeasUrl = config.gptUrl;
   return config;
+}
+
+async function rememberJobTab(jobId, tabId, openedByBridge) {
+  const data = await chrome.storage.local.get([JOB_TABS_KEY, OWNED_TABS_KEY]);
+  const jobs = data[JOB_TABS_KEY] || {};
+  const owned = new Set(Array.isArray(data[OWNED_TABS_KEY]) ? data[OWNED_TABS_KEY] : []);
+  if (openedByBridge) owned.add(tabId);
+  jobs[jobId] = { tabId, closeOnComplete: openedByBridge || owned.has(tabId), savedAt: Date.now() };
+  await chrome.storage.local.set({ [JOB_TABS_KEY]: jobs, [OWNED_TABS_KEY]: [...owned] });
+}
+
+async function completeJobTab(jobId) {
+  const data = await chrome.storage.local.get([JOB_TABS_KEY, OWNED_TABS_KEY]);
+  const jobs = data[JOB_TABS_KEY] || {};
+  const record = jobs[jobId];
+  if (!record) return { ok: true, closed: false };
+  delete jobs[jobId];
+  const owned = new Set(Array.isArray(data[OWNED_TABS_KEY]) ? data[OWNED_TABS_KEY] : []);
+  if (record.closeOnComplete) owned.delete(record.tabId);
+  await chrome.storage.local.set({ [JOB_TABS_KEY]: jobs, [OWNED_TABS_KEY]: [...owned] });
+  if (!record.closeOnComplete) return { ok: true, closed: false };
+  await chrome.tabs.remove(record.tabId).catch(() => {});
+  return { ok: true, closed: true };
+}
+
+async function forgetTab(tabId) {
+  const data = await chrome.storage.local.get([JOB_TABS_KEY, OWNED_TABS_KEY]);
+  const jobs = data[JOB_TABS_KEY] || {};
+  for (const [jobId, record] of Object.entries(jobs)) {
+    if (record?.tabId === tabId) delete jobs[jobId];
+  }
+  const owned = new Set(Array.isArray(data[OWNED_TABS_KEY]) ? data[OWNED_TABS_KEY] : []);
+  owned.delete(tabId);
+  await chrome.storage.local.set({ [JOB_TABS_KEY]: jobs, [OWNED_TABS_KEY]: [...owned] });
 }
 
 function specialistConfig(job) {
@@ -122,6 +158,7 @@ async function dispatchToGpt(job, sourceTabId) {
   if (config.openMode === "reuse") tab = await findReusableGptTab(gptUrl);
 
   if (tab?.id) {
+    await rememberJobTab(payload.jobId, tab.id, false);
     pendingByTab.set(tab.id, payload);
     const delivery = waitForDelivery(payload, tab.id, true, sourceTabId);
     pingTabUntilReady(tab.id).catch(() => {});
@@ -130,6 +167,7 @@ async function dispatchToGpt(job, sourceTabId) {
 
   tab = await chrome.tabs.create({ url: gptUrl, active: false });
   if (!tab.id) throw new Error("TAB_CREATE_FAILED");
+  await rememberJobTab(payload.jobId, tab.id, true);
   pendingByTab.set(tab.id, payload);
   const delivery = waitForDelivery(payload, tab.id, false, sourceTabId);
   pingTabUntilReady(tab.id).catch(() => {});
@@ -230,6 +268,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     chrome.storage.local.get("corvoBridgeStatus").then((data) => sendResponse(data.corvoBridgeStatus || lastStatus));
     return true;
   }
+
+  if (message.type === "CORVO_JOB_COMPLETE") {
+    const jobId = String(message.payload?.jobId || "").trim();
+    if (!jobId) { sendResponse({ ok: false, error: "JOB_ID_REQUIRED" }); return; }
+    completeJobTab(jobId)
+      .then(async (result) => {
+        await setStatus("COMPLETED", jobId, result.closed ? "Resultado recebido. Aba do GPT fechada." : "Resultado recebido.");
+        sendResponse(result);
+      })
+      .catch((error) => sendResponse({ ok: false, error: error.message || "TAB_CLOSE_FAILED" }));
+    return true;
+  }
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
@@ -237,4 +287,5 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   if (pending) rejectDelivery(pending.jobId, new Error("GPT_SEND_FAILED"));
   pendingByTab.delete(tabId);
   sendingTabs.delete(tabId);
+  forgetTab(tabId).catch(() => {});
 });

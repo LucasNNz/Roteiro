@@ -1,4 +1,4 @@
-# CorvoQuiz Produção — V0.6.0
+# CorvoQuiz Produção — V0.6.1
 
 Painel visual de pré-produção com três especialistas via **Corvo Bridge**, retorno genérico por **GPT Action** e coleta de imagens pelo **Corvo Collector**.
 
@@ -10,6 +10,11 @@ Painel visual de pré-produção com três especialistas via **Corvo Bridge**, r
 4. Ao terminar, o GPT chama `entregarResultadoCorvo` em `POST /api/corvo/resultado`, enviando `jobId + resultado`.
 5. O modal acompanha `GET /api/corvo/resultado?jobId=...` e preserva o resultado integral.
 6. A produção segue por `IDEIA → ROTEIRO → PROMPTS → IMAGENS`, sempre com revisão, nova tentativa ou aprovação.
+7. Quando o app confirma o resultado, o Bridge fecha automaticamente apenas a aba do GPT que ele próprio abriu.
+
+## Memória de cada produção
+
+Cada projeto mantém a ideia escolhida, o roteiro completo e os prompts de imagem no armazenamento do app. Os três conteúdos ficam disponíveis no painel **Memória da produção**, com visualização, cópia e download em TXT. O ZIP do projeto também inclui a pasta `ideia`, além de `roteiro` e `prompts`.
 
 O app não redireciona para o ChatGPT e não precisa de `OPENAI_API_KEY`.
 
@@ -57,5 +62,5 @@ Envie o conteúdo deste projeto a um repositório do GitHub e importe-o no Verce
 O menu de configurações oferece downloads diretos de três pacotes publicados em `public/downloads`:
 
 - Corvo Collector V0.7.4 — somente a extensão de imagens;
-- Corvo Bridge V0.4.0 — somente a extensão, com três GPTs e retorno genérico;
+- Corvo Bridge V0.4.1 — somente a extensão, com três GPTs, retorno genérico e fechamento automático da aba;
 - Kit completo CorvoQuiz — app, extensões, schema e instruções.

@@ -24,6 +24,20 @@
         window.postMessage({ source: "CORVO_BRIDGE", type: "CORVO_BRIDGE_STATUS", payload: status }, "*");
       } catch {}
     }
+
+    if (msg.type === "CORVO_BRIDGE_JOB_COMPLETE") {
+      const jobId = String(msg.payload?.jobId || "").trim();
+      if (!jobId) {
+        window.postMessage({ source: "CORVO_BRIDGE", type: "CORVO_BRIDGE_COMPLETE_ACK", payload: { ok: false, error: "JOB_ID_REQUIRED" } }, "*");
+        return;
+      }
+      try {
+        const response = await chrome.runtime.sendMessage({ type: "CORVO_JOB_COMPLETE", payload: { jobId } });
+        window.postMessage({ source: "CORVO_BRIDGE", type: "CORVO_BRIDGE_COMPLETE_ACK", payload: { ...response, jobId } }, "*");
+      } catch (error) {
+        window.postMessage({ source: "CORVO_BRIDGE", type: "CORVO_BRIDGE_COMPLETE_ACK", payload: { ok: false, jobId, error: error.message || "BRIDGE_ERROR" } }, "*");
+      }
+    }
   });
 
   chrome.runtime.onMessage.addListener((message) => {
@@ -32,5 +46,5 @@
     }
   });
 
-  window.postMessage({ source: "CORVO_BRIDGE", type: "CORVO_BRIDGE_READY", payload: { version: "0.4.0" } }, "*");
+  window.postMessage({ source: "CORVO_BRIDGE", type: "CORVO_BRIDGE_READY", payload: { version: "0.4.1" } }, "*");
 })();

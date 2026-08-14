@@ -1,4 +1,4 @@
-# CORVO BRIDGE V0.4.0
+# CORVO BRIDGE V0.4.1
 
 Fluxo desta versão:
 
@@ -34,6 +34,8 @@ GPT PERSONALIZADO → ACTION → VERCEL → CORVOQUIZ
 - antes de repetir, verifica o `JOB_ID` na conversa para evitar mensagem duplicada;
 - inclui o JOB_ID no comando;
 - deixa o retorno para a Action do GPT.
+- recebe do app a confirmação de que a Action terminou e fecha a aba criada para aquele job;
+- nunca fecha uma aba compatível que já estava aberta manualmente pelo usuário.
 
 ## Integração mínima do app
 
