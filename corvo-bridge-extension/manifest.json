@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Corvo Bridge",
-  "version": "0.3.2",
-  "description": "Envia a solicitação completa ao GPT, confirma o envio e aguarda o retorno genérico pela Action.",
+  "version": "0.4.0",
+  "description": "Encaminha ideias, roteiros e prompts de imagem aos GPTs configurados e confirma cada envio.",
   "permissions": ["storage", "tabs"],
   "host_permissions": [
     "https://chatgpt.com/*",

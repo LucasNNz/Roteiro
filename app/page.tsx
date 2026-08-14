@@ -22,9 +22,10 @@ type Quantity = "1 VÍDEO" | "LOTE";
 type Mode = "RÁPIDO" | "PESQUISAR ANTES";
 type ImagePhase = "connecting" | "searching" | "review" | "packaging" | "done" | "error";
 type CorvoIdea = { tema:string; titulo:string };
+type WorkflowKind = "ROTEIRO" | "PROMPTS";
 type Project = {
   id:string; title:string; topic:string; format:Format; quantity:Quantity; mode:Mode;
-  stage:number; createdAt:string; packageCode?:string; imageCount?:number;
+  stage:number; createdAt:string; scriptText?:string; promptText?:string; packageCode?:string; imageCount?:number;
 };
 type CollectorSettings = {
   selectionMode:SelectionMode; sourceMode:SourceMode; maxCandidates:number; scrollSteps:number;
@@ -32,7 +33,7 @@ type CollectorSettings = {
 };
 
 const initialProjects:Project[] = [
-  { id:"DESERTO_SOBREVIVENCIA_01", title:"VOCÊ SOBREVIVERIA NO DESERTO?", topic:"sobrevivência no deserto", format:"REELS", quantity:"1 VÍDEO", mode:"RÁPIDO", stage:4, createdAt:"HOJE, 10:42" },
+  { id:"DESERTO_SOBREVIVENCIA_01", title:"VOCÊ SOBREVIVERIA NO DESERTO?", topic:"sobrevivência no deserto", format:"REELS", quantity:"1 VÍDEO", mode:"RÁPIDO", stage:4, createdAt:"HOJE, 10:42", scriptText:"ROTEIRO DE EXEMPLO JÁ REVISADO", promptText:"01|deserto amplo com sol forte e composição para quiz sem texto\n02|mochila de sobrevivência isolada em fundo simples" },
   { id:"ANIMAIS_IMPOSSIVEIS_02", title:"QUAL ANIMAL FARIA ISSO?", topic:"animais curiosos", format:"REELS", quantity:"LOTE", mode:"PESQUISAR ANTES", stage:2, createdAt:"ONTEM, 18:15" },
 ];
 const defaultSettings:CollectorSettings = { selectionMode:"MANUAL", sourceMode:"MIXED", maxCandidates:120, scrollSteps:20, extensionId:CORVO_COLLECTOR_EXTENSION_ID, prefix:"video1_", jpegQuality:.92, batchText:"" };
@@ -56,9 +57,17 @@ function defaultQueries(project:Project) {
   ];
 }
 
+function loadProjects() {
+  return safeLoad<Project[]>("corvoquiz-projects-v02", initialProjects).map((project) => {
+    if (project.stage >= 3 && !project.scriptText) return { ...project, stage:2 };
+    if (project.stage >= 4 && !project.promptText) return { ...project, stage:3 };
+    return project;
+  });
+}
+
 export default function Home() {
-  const [projects, setProjects] = useState<Project[]>(() => safeLoad("corvoquiz-projects-v02", initialProjects));
-  const [activeId, setActiveId] = useState(() => safeLoad<Project[]>("corvoquiz-projects-v02", initialProjects)[0]?.id || initialProjects[0].id);
+  const [projects, setProjects] = useState<Project[]>(loadProjects);
+  const [activeId, setActiveId] = useState(() => loadProjects()[0]?.id || initialProjects[0].id);
   const [createOpen, setCreateOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [imageOpen, setImageOpen] = useState(false);
@@ -71,6 +80,11 @@ export default function Home() {
   const [ideaLoading, setIdeaLoading] = useState(false);
   const [ideaMessage, setIdeaMessage] = useState("");
   const [notice, setNotice] = useState("");
+  const [workflowOpen, setWorkflowOpen] = useState(false);
+  const [workflowKind, setWorkflowKind] = useState<WorkflowKind>("ROTEIRO");
+  const [workflowLoading, setWorkflowLoading] = useState(false);
+  const [workflowMessage, setWorkflowMessage] = useState("");
+  const [workflowError, setWorkflowError] = useState("");
   const [settings, setSettings] = useState<CollectorSettings>(() => ({ ...defaultSettings, ...safeLoad("corvo-collector-settings-v02", defaultSettings) }));
   const [imagePhase, setImagePhase] = useState<ImagePhase>("connecting");
   const [imageMessage, setImageMessage] = useState("Preparando o Corvo Collector...");
@@ -82,12 +96,14 @@ export default function Home() {
   const [packageCode, setPackageCode] = useState("");
   const runToken = useRef(0);
   const ideaRunToken = useRef(0);
+  const workflowRunToken = useRef(0);
 
   useEffect(() => { localStorage.setItem("corvoquiz-projects-v02", JSON.stringify(projects)); }, [projects]);
   useEffect(() => { localStorage.setItem("corvo-collector-settings-v02", JSON.stringify(settings)); }, [settings]);
   const active = useMemo(() => projects.find((project) => project.id === activeId) || projects[0], [projects, activeId]);
   const currentGroup = groups[groupIndex];
   const currentRank = currentGroup?.ranked[candidatePos];
+  const workflowOutput = active ? (workflowKind === "ROTEIRO" ? active.scriptText : active.promptText) || "" : "";
 
   function createProject() {
     const idea = selectedIdea === null ? null : ideas[selectedIdea];
@@ -95,7 +111,7 @@ export default function Home() {
     if (!finalTopic) { setNotice("ESCOLHA UMA IDEIA OU INFORME UM TEMA."); return; }
     const finalTitle = idea?.titulo || `NOVO QUIZ: ${finalTopic.toUpperCase()}`;
     const id = `${slugify(finalTitle || finalTopic)}_${String(projects.length + 1).padStart(2, "0")}`;
-    const project:Project = { id, title:finalTitle.toUpperCase(), topic:finalTopic, format, quantity, mode, stage:1, createdAt:"AGORA" };
+    const project:Project = { id, title:finalTitle.toUpperCase(), topic:finalTopic, format, quantity, mode, stage:2, createdAt:"AGORA" };
     setProjects((current) => [project, ...current]); setActiveId(id); setTopic(""); setIdeas([]); setSelectedIdea(null); setCreateOpen(false); setNotice("");
   }
 
@@ -152,14 +168,120 @@ export default function Home() {
     }
   }
 
+  function bridgeErrorMessage(error:unknown) {
+    const message = error instanceof Error ? error.message : String(error || "");
+    if (message.includes("CORVO_BRIDGE_NOT_AVAILABLE")) return "CORVO BRIDGE NÃO ENCONTRADO. INSTALE OU RECARREGUE A EXTENSÃO.";
+    if (message.includes("GPT_URL_NOT_CONFIGURED_ROTEIRO")) return "CONFIGURE O GPT DE ROTEIRO NAS OPÇÕES DO CORVO BRIDGE.";
+    if (message.includes("GPT_URL_NOT_CONFIGURED_PROMPTS")) return "CONFIGURE O GPT DE PROMPTS DE IMAGEM NAS OPÇÕES DO CORVO BRIDGE.";
+    if (message.includes("GPT_URL_NOT_CONFIGURED")) return "CONFIGURE OS GPTS NAS OPÇÕES DO CORVO BRIDGE.";
+    if (message.includes("GPT_SEND_FAILED")) return "O BRIDGE PREENCHEU A MENSAGEM, MAS O CHATGPT NÃO CONFIRMOU O ENVIO.";
+    return message || "NÃO FOI POSSÍVEL CONCLUIR ESTA ETAPA.";
+  }
+
+  async function runSpecialist(kind:WorkflowKind, project = active) {
+    if (!project || workflowLoading) return;
+    if (kind === "PROMPTS" && !project.scriptText?.trim()) {
+      setNotice("O ROTEIRO PRECISA ESTAR PRONTO ANTES DOS PROMPTS.");
+      setTimeout(() => setNotice(""), 4200);
+      return;
+    }
+    const token = ++workflowRunToken.current;
+    setWorkflowKind(kind); setWorkflowOpen(true); setWorkflowLoading(true); setWorkflowError("");
+    setWorkflowMessage(kind === "ROTEIRO" ? "PREPARANDO A IDEIA PARA O ROTEIRISTA..." : "ENVIANDO O ROTEIRO PARA O ESPECIALISTA DE IMAGENS...");
+    try {
+      const response = await fetch("/api/corvo/job", {
+        method:"POST",
+        headers:{ "content-type":"application/json" },
+        body:JSON.stringify({
+          specialist:kind,
+          projetoId:project.id,
+          titulo:project.title,
+          tema:project.topic,
+          format:project.format,
+          quantity:project.quantity,
+          mode:project.mode,
+          roteiro:kind === "PROMPTS" ? project.scriptText : undefined,
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result?.jobId || !result?.prompt) throw new Error(result?.message || "O trabalho não pôde ser criado.");
+      setWorkflowMessage(kind === "ROTEIRO" ? "O CORVO ROTEIRO ESTÁ ESCREVENDO..." : "O CORVO ESTÁ DEFININDO AS IMAGENS...");
+      await dispatchCorvoBridge({
+        jobId:result.jobId,
+        prompt:result.prompt,
+        specialist:kind,
+        meta:{ projectId:project.id, format:project.format, quantity:project.quantity, mode:project.mode },
+      });
+
+      for (let attempt = 0; attempt < 240 && token === workflowRunToken.current; attempt++) {
+        await wait(2000);
+        const statusResponse = await fetch(`/api/corvo/resultado?jobId=${encodeURIComponent(result.jobId)}`, { cache:"no-store" });
+        const status = await statusResponse.json().catch(() => ({}));
+        if (!statusResponse.ok) throw new Error(status?.message || "Não foi possível acompanhar o especialista.");
+        if (status.status === "DONE") {
+          const output = typeof status.resultado === "string" ? status.resultado.trim() : "";
+          if (!output) throw new Error("O especialista concluiu sem devolver conteúdo.");
+          setProjects((current) => current.map((item) => item.id === project.id
+            ? kind === "ROTEIRO" ? { ...item, stage:2, scriptText:output } : { ...item, stage:3, promptText:output }
+            : item));
+          setWorkflowMessage("");
+          return;
+        }
+        if (status.status === "ERROR") throw new Error(status?.message || "O especialista não conseguiu concluir o trabalho.");
+      }
+      if (token === workflowRunToken.current) throw new Error("O especialista ainda não respondeu. Tente novamente em alguns instantes.");
+    } catch (error) {
+      if (token === workflowRunToken.current) setWorkflowError(bridgeErrorMessage(error));
+    } finally {
+      if (token === workflowRunToken.current) { setWorkflowLoading(false); setWorkflowMessage(""); }
+    }
+  }
+
+  function continueProduction() {
+    if (!active) return;
+    if (active.stage <= 2) {
+      setWorkflowKind("ROTEIRO"); setWorkflowOpen(true); setWorkflowError("");
+      if (!active.scriptText) void runSpecialist("ROTEIRO", active);
+      return;
+    }
+    if (active.stage === 3) {
+      setWorkflowKind("PROMPTS"); setWorkflowOpen(true); setWorkflowError("");
+      if (!active.promptText) void runSpecialist("PROMPTS", active);
+      return;
+    }
+    if (active.stage === 4) { void startImageFlow(); return; }
+    void downloadProject(active);
+  }
+
+  function approveWorkflow() {
+    if (!active) return;
+    if (workflowKind === "ROTEIRO" && active.scriptText) {
+      const nextProject = { ...active, stage:3 };
+      setProjects((current) => current.map((item) => item.id === active.id ? nextProject : item));
+      void runSpecialist("PROMPTS", nextProject);
+      return;
+    }
+    if (workflowKind === "PROMPTS" && active.promptText) {
+      setProjects((current) => current.map((item) => item.id === active.id ? { ...item, stage:4 } : item));
+      setWorkflowOpen(false);
+      setNotice("PROMPTS APROVADOS. A BUSCA DE IMAGENS ESTÁ LIBERADA.");
+      setTimeout(() => setNotice(""), 4200);
+    }
+  }
+
   async function downloadProject(project:Project) {
     const zip = new JSZip();
     zip.file("projeto.json", JSON.stringify(project, null, 2));
-    zip.folder("roteiro")?.file(`${project.id}.txt`, `PROJETO: ${project.id}\nENTRADA: NAO\nTRANSICOES: SIM\n`);
-    zip.folder("prompts")?.file(`PROMPTS_${project.id}.txt`, defaultQueries(project).map((item) => item.query).join("\n\n"));
+    zip.folder("roteiro")?.file(`${project.id}.txt`, project.scriptText || `PROJETO: ${project.id}\nROTEIRO AINDA NÃO CONCLUÍDO\n`);
+    zip.folder("prompts")?.file(`PROMPTS_${project.id}.txt`, project.promptText || defaultQueries(project).map((item) => `${item.id}|${item.query}`).join("\n"));
     zip.folder("forma")?.file("PACOTE.txt", project.packageCode ? `PACOTE_CODE=${project.packageCode}` : "O pacote de imagens ainda não foi concluído.");
     const blob = await zip.generateAsync({ type:"blob" }); const url = URL.createObjectURL(blob);
     const link = document.createElement("a"); link.href = url; link.download = `${project.id}.zip`; link.click(); URL.revokeObjectURL(url);
+  }
+
+  function downloadTextFile(fileName:string, content:string) {
+    const url = URL.createObjectURL(new Blob([content], { type:"text/plain;charset=utf-8" }));
+    const link = document.createElement("a"); link.href = url; link.download = fileName; link.click(); URL.revokeObjectURL(url);
   }
 
   function friendlyError(error:unknown) {
@@ -179,7 +301,10 @@ export default function Home() {
       if (!ping?.ok) throw new Error(ping?.error || "COLLECTOR_CONNECTION_ERROR");
       if (ping.authorized === false) throw new Error("ORIGIN_NOT_AUTHORIZED");
       if (token !== runToken.current) return;
-      const items = settings.batchText.trim() ? parseGuideText(settings.batchText) : defaultQueries(active);
+      const items = settings.batchText.trim()
+        ? parseGuideText(settings.batchText)
+        : active.promptText?.trim() ? parseGuideText(active.promptText) : defaultQueries(active);
+      if (!items.length) throw new Error("Os prompts retornados não contêm buscas utilizáveis.");
       setImagePhase("searching"); setImageProgress(8); setImageMessage(`Buscando imagens para ${items.length} cenas...`);
       const started = await sendCollectorMessage<{ok?:boolean;error?:string}>("START_JOB", {
         items, maxCandidates:settings.maxCandidates, scrollSteps:settings.scrollSteps, sourceMode:settings.sourceMode,
@@ -297,21 +422,21 @@ export default function Home() {
           <h3>{active.title}</h3><p>{active.id}</p>
           <div className="stepper">{steps.map((step,index) => { const complete=index+1<active.stage; const current=index+1===active.stage; return <div className={`step ${complete?"complete":""} ${current?"current":""}`} key={step}><span>{complete?"✓":String(index+1).padStart(2,"0")}</span><small>{step}</small></div>; })}</div>
           <div className="card-actions">
-            <button className="primary-action" onClick={() => active.stage===4 ? startImageFlow() : setProjects((current) => current.map((project) => project.id===active.id ? {...project,stage:Math.min(5,project.stage+1)} : project))}>{active.stage===4?"BUSCAR IMAGENS":active.stage===5?"ABRIR PRODUÇÃO":"CONTINUAR PRODUÇÃO"} <span>→</span></button>
+            <button className="primary-action" onClick={continueProduction}>{active.stage<=2?(active.scriptText?"REVISAR ROTEIRO":"CRIAR ROTEIRO"):active.stage===3?(active.promptText?"REVISAR PROMPTS":"CRIAR PROMPTS"):active.stage===4?"BUSCAR IMAGENS":"BAIXAR PRODUÇÃO"} <span>→</span></button>
             <button className="secondary-action" onClick={() => downloadProject(active)}>↓ BAIXAR PROJETO</button>
           </div>
         </div>
         <aside className="card-side" id="arquivos">
-          <div className="mini-title"><span>ARQUIVOS</span><b>{active.stage>=5?"4/4":"2/4"}</b></div>
-          <div className="file-row done"><span>▤</span><div><b>ROTEIRO.TXT</b><small>REVISADO</small></div><i>✓</i></div>
-          <div className="file-row done"><span>✦</span><div><b>PROMPTS.TXT</b><small>PRONTO PARA BUSCA</small></div><i>✓</i></div>
-          {active.packageCode ? <button className="package-ready" onClick={() => setImageOpen(true)}><span>✓</span><div><b>IMAGENS PRONTAS</b><small>{active.imageCount || 0} ARQUIVOS · {active.packageCode}</small></div></button> : <button className="collector-box" onClick={startImageFlow}><span>⌁</span><b>BUSCAR COM O CORVO</b><small>TRABALHA EM SEGUNDO PLANO</small></button>}
+          <div className="mini-title"><span>ARQUIVOS</span><b>{[active.scriptText,active.promptText,active.packageCode].filter(Boolean).length}/3</b></div>
+          <div className={`file-row ${active.scriptText?"done":"pending"}`}><span>▤</span><div><b>ROTEIRO.TXT</b><small>{active.scriptText?"DISPONÍVEL PARA REVISÃO":"AGUARDANDO ROTEIRISTA"}</small></div><i>{active.scriptText?"✓":"○"}</i></div>
+          <div className={`file-row ${active.promptText?"done":"pending"}`}><span>✦</span><div><b>PROMPTS.TXT</b><small>{active.promptText?"PRONTO PARA BUSCA":"AGUARDANDO ROTEIRO"}</small></div><i>{active.promptText?"✓":"○"}</i></div>
+          {active.packageCode ? <button className="package-ready" onClick={() => setImageOpen(true)}><span>✓</span><div><b>IMAGENS PRONTAS</b><small>{active.imageCount || 0} ARQUIVOS · {active.packageCode}</small></div></button> : <button className="collector-box" disabled={!active.promptText || active.stage<4} onClick={startImageFlow}><span>⌁</span><b>{active.promptText&&active.stage>=4?"BUSCAR COM O CORVO":"AGUARDANDO PROMPTS"}</b><small>{active.promptText&&active.stage>=4?"TRABALHA EM SEGUNDO PLANO":"A PRÓXIMA ETAPA SERÁ LIBERADA"}</small></button>}
         </aside>
       </article>}
     </section>
 
     <section className="projects" id="projetos"><div className="section-heading"><div><span className="section-number">02</span><h2>PROJETOS RECENTES</h2></div><span className="project-count">{String(projects.length).padStart(2,"0")} PRODUÇÕES</span></div><div className="project-list">{projects.map((project) => <button className={`project-row ${project.id===activeId?"selected":""}`} key={project.id} onClick={() => setActiveId(project.id)}><span className="project-icon">{project.format==="REELS"?"▯":"▭"}</span><span className="project-name"><b>{project.title}</b><small>{project.id}</small></span><span className="project-format">{project.format}</span><span className="progress"><i style={{width:`${project.stage*20}%`}} /></span><span className="stage-label">ETAPA {project.stage}/5</span><span className="row-arrow">→</span></button>)}</div></section>
-    <footer><span>CORVOQUIZ PRODUÇÃO <i>V0.5.6</i></span><span>IDEIA → ROTEIRO → PROMPTS → IMAGENS → FORMA</span></footer>
+    <footer><span>CORVOQUIZ PRODUÇÃO <i>V0.6.0</i></span><span>IDEIA → ROTEIRO → PROMPTS → IMAGENS → FORMA</span></footer>
     {notice && <div className="toast">{notice}</div>}
 
     {createOpen && <div className="modal-backdrop" onMouseDown={(event) => event.target===event.currentTarget&&setCreateOpen(false)}><section className="creation-modal idea-modal" role="dialog" aria-modal="true" aria-labelledby="new-production-title"><button className="modal-close" onClick={() => setCreateOpen(false)} aria-label="Fechar">×</button><div className="modal-symbol">✦</div><span className="modal-kicker">NOVA PRODUÇÃO</span><h2 id="new-production-title">O QUE VAMOS CRIAR?</h2><p>Comece sem tema e peça ideias ao Corvo, ou informe uma direção opcional.</p>
@@ -333,12 +458,25 @@ export default function Home() {
         <div className="downloads-head"><div><span>INSTALAÇÃO E SUPORTE</span><h3 id="downloads-title">ARQUIVOS PARA BAIXAR</h3></div><small>SE PRECISAR REINSTALAR</small></div>
         <div className="download-grid">
           <a className="download-card" href="/downloads/CORVO_COLLECTOR_V074_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.7.4</small></div><i>↓</i></a>
-          <a className="download-card" href="/downloads/CORVO_BRIDGE_V032_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.3.2</small></div><i>↓</i></a>
-          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V056.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
+          <a className="download-card" href="/downloads/CORVO_BRIDGE_V04_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.4.0 · 3 GPTS</small></div><i>↓</i></a>
+          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V060.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
         </div>
       </section>
       <details className="advanced-settings"><summary>CONFIGURAÇÕES AVANÇADAS</summary><div className="settings-grid"><label>CANDIDATAS<input type="number" value={settings.maxCandidates} onChange={(event)=>setSettings({...settings,maxCandidates:Number(event.target.value)})}/></label><label>VARREDURA<input type="number" value={settings.scrollSteps} onChange={(event)=>setSettings({...settings,scrollSteps:Number(event.target.value)})}/></label><label>QUALIDADE JPEG<input type="number" step=".01" value={settings.jpegQuality} onChange={(event)=>setSettings({...settings,jpegQuality:Number(event.target.value)})}/></label><label>PREFIXO<input value={settings.prefix} onChange={(event)=>setSettings({...settings,prefix:event.target.value})}/></label></div><label className="batch-label">COMANDOS EM LOTE — OPCIONAL<textarea value={settings.batchText} onChange={(event)=>setSettings({...settings,batchText:event.target.value})} placeholder={"01|primeira busca\n02|segunda busca"} /></label></details>
       <button className="modal-submit" onClick={()=>setSettingsOpen(false)}>SALVAR E FECHAR <span>✓</span></button>
+    </section></div>}
+
+    {workflowOpen && active && <div className="modal-backdrop workflow-backdrop"><section className="workflow-modal" role="dialog" aria-modal="true" aria-labelledby="workflow-title">
+      <button className="modal-close" onClick={()=>setWorkflowOpen(false)} aria-label="Fechar">×</button>
+      <div className={`workflow-icon ${workflowLoading?"working":""}`}>{workflowKind==="ROTEIRO"?"▤":"✦"}</div>
+      <span className="modal-kicker">{workflowKind==="ROTEIRO"?"CORVO ROTEIRO":"PROMPTS DE IMAGEM"}</span>
+      <h2 id="workflow-title">{workflowLoading?workflowKind==="ROTEIRO"?"CRIANDO O ROTEIRO...":"LENDO O ROTEIRO...":workflowError?"PRECISAMOS TENTAR NOVAMENTE":workflowKind==="ROTEIRO"?"ROTEIRO DISPONÍVEL":"PROMPTS DISPONÍVEIS"}</h2>
+      {workflowLoading ? <div className="workflow-wait"><div className="idea-spinner" /><p>{workflowMessage||"O especialista está trabalhando em segundo plano."}</p><small>O RESULTADO VOLTA AUTOMATICAMENTE PARA ESTE CAMPO.</small></div> : workflowError ? <div className="workflow-error"><p>{workflowError}</p><button className="modal-submit" onClick={()=>runSpecialist(workflowKind)}>TENTAR NOVAMENTE <span>↻</span></button></div> : workflowOutput ? <>
+        <div className="workflow-file-head"><span>{workflowKind==="ROTEIRO"?"ROTEIRO.TXT":"PROMPTS.TXT"}</span><small>{workflowKind==="PROMPTS"?`${parseGuideText(workflowOutput).length} BUSCAS IDENTIFICADAS`:"TEXTO COMPLETO RECEBIDO"}</small></div>
+        <pre className="workflow-output">{workflowOutput}</pre>
+        <div className="workflow-actions"><button onClick={()=>runSpecialist(workflowKind)}>↻ PEDIR OUTRO</button><button onClick={()=>downloadTextFile(workflowKind==="ROTEIRO"?`${active.id}_ROTEIRO.txt`:`${active.id}_PROMPTS.txt`,workflowOutput)}>↓ BAIXAR TXT</button></div>
+        <button className="modal-submit" onClick={approveWorkflow}>{workflowKind==="ROTEIRO"?"APROVAR E CRIAR PROMPTS":"APROVAR E IR PARA IMAGENS"} <span>→</span></button>
+      </> : <div className="workflow-wait"><p>Esta etapa ainda não foi iniciada.</p><button className="modal-submit" onClick={()=>runSpecialist(workflowKind)}>COMEÇAR AGORA <span>→</span></button></div>}
     </section></div>}
 
     {imageOpen && <div className="modal-backdrop image-backdrop"><section className={`image-modal phase-${imagePhase}`}>

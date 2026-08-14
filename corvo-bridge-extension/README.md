@@ -1,8 +1,8 @@
-# CORVO BRIDGE V0.3.2
+# CORVO BRIDGE V0.4.0
 
 Fluxo desta versão:
 
-CORVOQUIZ → EXTENSÃO → GPT PERSONALIZADO (ABA INATIVA)
+CORVOQUIZ → EXTENSÃO → GPT DE IDEIAS / ROTEIRO / PROMPTS (ABA INATIVA)
 
 O retorno esperado é:
 
@@ -16,12 +16,13 @@ GPT PERSONALIZADO → ACTION → VERCEL → CORVOQUIZ
 4. Clique em **Carregar sem compactação**.
 5. Selecione a pasta descompactada `corvo-bridge-extension`.
 6. Abra as opções da extensão.
-7. Cole a URL exata do GPT CORVO SCOUT.
+7. Cole as URLs exatas do GPT de ideias, do GPT de roteiro e do GPT de prompts de imagem.
 8. Salve.
 
 ## O que faz
 
 - recebe `jobId + prompt + specialist + meta` do CorvoQuiz;
+- escolhe automaticamente o GPT correspondente a `IDEIAS`, `ROTEIRO` ou `PROMPTS`;
 - abre ou reutiliza uma aba inativa do GPT configurado, sem tirar o usuário do CorvoQuiz;
 - espera o campo de prompt ficar disponível;
 - preenche o composer disparando `beforeinput` e `input`;
@@ -41,8 +42,8 @@ Inclua/adapte `corvo-bridge-client.js` e chame:
 ```js
 CorvoBridge.dispatch({
   jobId: `corvo_${Date.now()}`,
-  specialist: "SCOUT",
-  prompt: "Procure ideias virais de quiz sobre animais.",
+  specialist: "ROTEIRO",
+  prompt: "Crie o roteiro completo para a ideia aprovada.",
   meta: { formato: "LONGO", quantidade: 10 }
 });
 ```
@@ -51,7 +52,7 @@ CorvoBridge.dispatch({
 
 Quando receber uma solicitação iniciada por `CORVO_BRIDGE_JOB`, considere que toda a solicitação já está na mensagem. Execute o trabalho e chame `entregarResultadoCorvo` com o mesmo `JOB_ID` e o conteúdo integral no campo `resultado`.
 
-Use o arquivo `CORVOQUIZ_OPENAPI_GPT_ACTION.yaml` que acompanha o app. Ele habilita somente a entrega genérica em `/api/corvo/resultado`.
+Use o mesmo arquivo `CORVOQUIZ_OPENAPI_GPT_ACTION.yaml` nos três GPTs. Ele habilita somente a entrega genérica em `/api/corvo/resultado`, portanto o mesmo contrato recebe ideias, roteiros e prompts.
 
 ## Segurança
 

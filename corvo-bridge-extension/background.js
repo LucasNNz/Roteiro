@@ -1,5 +1,8 @@
 const DEFAULTS = {
   gptUrl: "",
+  gptIdeasUrl: "",
+  gptScriptUrl: "",
+  gptPromptsUrl: "",
   appOrigin: "https://roteiro-mu.vercel.app",
   openMode: "reuse"
 };
@@ -16,7 +19,16 @@ let lastStatus = {
 
 async function getConfig() {
   const stored = await chrome.storage.sync.get(DEFAULTS);
-  return { ...DEFAULTS, ...stored };
+  const config = { ...DEFAULTS, ...stored };
+  if (!config.gptIdeasUrl && config.gptUrl) config.gptIdeasUrl = config.gptUrl;
+  return config;
+}
+
+function specialistConfig(job) {
+  const specialist = String(job?.specialist || "IDEIAS").toUpperCase();
+  if (["ROTEIRO", "SCRIPT"].includes(specialist)) return { key: "ROTEIRO", field: "gptScriptUrl", label: "GPT de roteiro" };
+  if (["PROMPTS", "PROMPT", "PROMPT_IMAGENS", "IMAGENS"].includes(specialist)) return { key: "PROMPTS", field: "gptPromptsUrl", label: "GPT de prompts de imagem" };
+  return { key: "IDEIAS", field: "gptIdeasUrl", label: "GPT de ideias" };
 }
 
 async function setStatus(state, jobId, message, extra = {}) {
@@ -89,23 +101,25 @@ async function findReusableGptTab(gptUrl) {
 
 async function dispatchToGpt(job, sourceTabId) {
   const config = await getConfig();
-  if (!config.gptUrl || !config.gptUrl.startsWith("https://chatgpt.com/")) {
-    await setStatus("CONFIG_REQUIRED", job.jobId, "Configure a URL do GPT personalizado nas opções da extensão.");
-    throw new Error("GPT_URL_NOT_CONFIGURED");
+  const target = specialistConfig(job);
+  const gptUrl = config[target.field];
+  if (!gptUrl || !gptUrl.startsWith("https://chatgpt.com/")) {
+    await setStatus("CONFIG_REQUIRED", job.jobId, `Configure o ${target.label} nas opções da extensão.`, { specialist: target.key });
+    throw new Error(`GPT_URL_NOT_CONFIGURED_${target.key}`);
   }
 
   const payload = {
     jobId: String(job.jobId || `corvo_${Date.now()}`),
     prompt: String(job.prompt || "").trim(),
-    specialist: String(job.specialist || "SCOUT"),
+    specialist: target.key,
     meta: job.meta || {},
     createdAt: Date.now()
   };
   if (!payload.prompt) throw new Error("EMPTY_PROMPT");
 
-  await setStatus("OPENING_GPT", payload.jobId, "Abrindo o especialista no ChatGPT...");
+  await setStatus("OPENING_GPT", payload.jobId, `Abrindo ${target.label} no ChatGPT...`, { specialist: target.key });
   let tab = null;
-  if (config.openMode === "reuse") tab = await findReusableGptTab(config.gptUrl);
+  if (config.openMode === "reuse") tab = await findReusableGptTab(gptUrl);
 
   if (tab?.id) {
     pendingByTab.set(tab.id, payload);
@@ -114,7 +128,7 @@ async function dispatchToGpt(job, sourceTabId) {
     return await delivery;
   }
 
-  tab = await chrome.tabs.create({ url: config.gptUrl, active: false });
+  tab = await chrome.tabs.create({ url: gptUrl, active: false });
   if (!tab.id) throw new Error("TAB_CREATE_FAILED");
   pendingByTab.set(tab.id, payload);
   const delivery = waitForDelivery(payload, tab.id, false, sourceTabId);

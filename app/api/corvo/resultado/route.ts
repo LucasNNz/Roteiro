@@ -13,8 +13,9 @@ export async function GET(request: NextRequest) {
       ok: true,
       jobId: job.id,
       status: job.status,
+      specialist: job.request.specialist || "IDEIAS",
       resultado: job.status === "DONE" ? resultado : undefined,
-      ideias: job.status === "DONE" ? ideasFromResult(resultado) : undefined,
+      ideias: job.status === "DONE" && (!job.request.specialist || job.request.specialist === "IDEIAS") ? ideasFromResult(resultado) : undefined,
     });
   } catch (error) { return storageFailure(error); }
 }

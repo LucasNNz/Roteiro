@@ -1,13 +1,18 @@
 import { Redis } from "@upstash/redis";
 
 export type CorvoIdea = { tema: string; titulo: string };
+export type CorvoSpecialist = "IDEIAS" | "ROTEIRO" | "PROMPTS";
 
 export type CorvoJobRequest = {
+  specialist: CorvoSpecialist;
   tema: string | null;
   formato: "REELS" | "VÍDEO COMPLETO";
   quantidade: "1 VÍDEO" | "LOTE";
   modo: "RÁPIDO" | "PESQUISAR ANTES";
   recentes: Array<{ titulo: string; tema: string }>;
+  projetoId?: string;
+  titulo?: string;
+  roteiro?: string;
 };
 
 export type CorvoJob = {

@@ -47,11 +47,17 @@ type ChromeWindow = Window & {
 };
 
 export function parseGuideText(text: string): GuideItem[] {
-  return text.split(/\n+/).map((line) => line.trim()).filter(Boolean).map((line, index) => {
-    const parts = line.split("|");
-    return parts.length > 1
-      ? { id: String(parts.shift()).trim(), query: parts.join("|").trim() }
-      : { id: String(index + 1).padStart(2, "0"), query: line };
+  const lines = text.split(/\n+/).map((line) => line.trim()).filter((line) => line && !/^```/.test(line));
+  const pipeLines = lines.filter((line) => /^[#>*\-\s]*[A-Za-z0-9_-]+\s*\|\s*\S/.test(line));
+  const source = pipeLines.length ? pipeLines : lines.filter((line) => !/^(prompts?|buscas?|imagens?)\s*:?s*$/i.test(line));
+  return source.map((line, index) => {
+    const cleaned = line.replace(/^[#>*\-\s]+/, "").trim();
+    const parts = cleaned.split("|");
+    if (parts.length > 1) return { id: String(parts.shift()).trim(), query: parts.join("|").trim() };
+    const numbered = cleaned.match(/^(\d{1,4})\s*[.):\-]\s*(.+)$/);
+    return numbered
+      ? { id: numbered[1].padStart(2, "0"), query: numbered[2].trim() }
+      : { id: String(index + 1).padStart(2, "0"), query: cleaned };
   }).filter((item) => item.query);
 }
 
