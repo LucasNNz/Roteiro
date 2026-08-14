@@ -1,4 +1,4 @@
-# CorvoQuiz Produção — V0.5.2
+# CorvoQuiz Produção — V0.5.3
 
 Painel visual de pré-produção com geração de ideias via **Corvo Bridge**, retorno por **GPT Action** e coleta de imagens pelo **Corvo Collector**.
 
@@ -16,12 +16,14 @@ O app não redireciona para o ChatGPT e não precisa de `OPENAI_API_KEY`.
 
 1. Configure `CorvoAPI_KEY_IDEIA` com um segredo forte.
 2. No Marketplace da Vercel, conecte um banco **Upstash Redis** ao projeto.
-3. Confirme que foram criadas `UPSTASH_REDIS_REST_URL` e `UPSTASH_REDIS_REST_TOKEN`. Os nomes antigos `KV_REST_API_URL` e `KV_REST_API_TOKEN` também são aceitos.
+3. Confirme que existe um par completo: `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` ou `KV_REST_API_URL` + `KV_REST_API_TOKEN`.
 4. Faça um novo deploy.
 
 Sem Redis, o app usa memória apenas no desenvolvimento local. Em produção a rota informa claramente que o armazenamento precisa ser conectado.
 
-O armazenamento dos trabalhos usa o SDK oficial `@upstash/redis`. O cliente é criado de forma lazy com `Redis.fromEnv()` somente quando as duas variáveis REST estão disponíveis. Cada job é salvo como objeto em `corvoquiz:idea-job:<jobId>` e expira automaticamente após uma hora.
+O armazenamento usa o SDK oficial `@upstash/redis`. O cliente é criado de forma lazy com `new Redis({ url, token })`, priorizando o par `UPSTASH_*` e usando `KV_*` como fallback. Cada job é salvo como objeto em `corvoquiz:idea-job:<jobId>` e expira após uma hora.
+
+`GET /api/corvo/diagnostico` retorna apenas `{ "configured": true }` ou `{ "configured": false }`. A rota nunca devolve nomes resolvidos, URL ou token.
 
 ## Configurar o GPT personalizado
 

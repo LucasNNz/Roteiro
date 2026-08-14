@@ -38,11 +38,26 @@ export class CorvoStorageError extends Error {
   }
 }
 
+function readRedisCredentials() {
+  const upstashUrl = process.env.UPSTASH_REDIS_REST_URL?.trim() || "";
+  const upstashToken = process.env.UPSTASH_REDIS_REST_TOKEN?.trim() || "";
+  if (upstashUrl && upstashToken) return { url: upstashUrl, token: upstashToken };
+
+  const kvUrl = process.env.KV_REST_API_URL?.trim() || "";
+  const kvToken = process.env.KV_REST_API_TOKEN?.trim() || "";
+  if (kvUrl && kvToken) return { url: kvUrl, token: kvToken };
+
+  return null;
+}
+
+export function isRedisConfigured() {
+  return readRedisCredentials() !== null;
+}
+
 function getRedis() {
-  const hasUrl = Boolean(process.env.UPSTASH_REDIS_REST_URL?.trim());
-  const hasToken = Boolean(process.env.UPSTASH_REDIS_REST_TOKEN?.trim());
-  if (!hasUrl || !hasToken) return null;
-  if (!redisClient) redisClient = Redis.fromEnv();
+  const credentials = readRedisCredentials();
+  if (!credentials) return null;
+  if (!redisClient) redisClient = new Redis(credentials);
   return redisClient;
 }
 
