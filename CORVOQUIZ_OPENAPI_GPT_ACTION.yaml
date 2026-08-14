@@ -1,0 +1,87 @@
+openapi: 3.1.0
+info:
+  title: CorvoQuiz API
+  version: 1.1.0
+  description: Envia ideias criadas pelo GPT ao modal de nova produção do CorvoQuiz.
+servers:
+  - url: https://roteiro-git-main-contatolucasnascimentou-3474s-projects.vercel.app
+paths:
+  /api/corvo/ideia:
+    post:
+      operationId: enviarIdeias
+      summary: Envia uma ou mais ideias para seleção no CorvoQuiz
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tema:
+                  type: string
+                  description: Tema de uma ideia única. Mantido para compatibilidade.
+                titulo:
+                  type: string
+                  description: Título recomendado para uma ideia única.
+                ideias:
+                  type: array
+                  minItems: 1
+                  maxItems: 6
+                  description: Opções que serão exibidas para seleção no modal.
+                  items:
+                    type: object
+                    properties:
+                      tema:
+                        type: string
+                      titulo:
+                        type: string
+                    required:
+                      - tema
+                      - titulo
+                    additionalProperties: false
+              anyOf:
+                - required: [tema]
+                - required: [ideias]
+              additionalProperties: false
+      responses:
+        "200":
+          description: Ideias recebidas. O GPT deve mostrar appUrl ao usuário como link clicável.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  id:
+                    type: string
+                  message:
+                    type: string
+                  appUrl:
+                    type: string
+                    format: uri
+                  ideias:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        tema:
+                          type: string
+                        titulo:
+                          type: string
+                      required: [tema, titulo]
+                required: [ok, id, message, appUrl, ideias]
+        "400":
+          description: Conteúdo inválido
+        "401":
+          description: Chave inválida
+        "503":
+          description: Chave não configurada no servidor
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
