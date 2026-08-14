@@ -1,4 +1,4 @@
-# CorvoQuiz Produção — V0.6.1
+# CorvoQuiz Produção — V0.6.5
 
 Painel visual de pré-produção com três especialistas via **Corvo Bridge**, retorno genérico por **GPT Action** e coleta de imagens pelo **Corvo Collector**.
 
@@ -16,7 +16,47 @@ Painel visual de pré-produção com três especialistas via **Corvo Bridge**, r
 
 Cada projeto mantém a ideia escolhida, o roteiro completo e os prompts de imagem no armazenamento do app. Os três conteúdos ficam disponíveis no painel **Memória da produção**, com visualização, cópia e download em TXT. O ZIP do projeto também inclui a pasta `ideia`, além de `roteiro` e `prompts`.
 
+## Refazer etapas aprovadas
+
+Qualquer conteúdo da **Memória da produção** pode ser enviado novamente ao especialista correspondente. O app invalida automaticamente somente os arquivos dependentes:
+
+- refazer `PROMPTS` remove o pacote de imagens e volta para a aprovação dos prompts;
+- refazer `ROTEIRO` remove roteiro, prompts e imagens anteriores; ao aprovar o novo roteiro, os prompts são refeitos;
+- refazer `IDEIA` abre novas opções no mesmo projeto e, depois da escolha, reinicia roteiro, prompts e imagens.
+
+O botão **Pedir outro** dos modais usa a mesma regra de segurança, impedindo a mistura de arquivos de versões diferentes da produção.
+
 O app não redireciona para o ChatGPT e não precisa de `OPENAI_API_KEY`.
+
+## Motor do Corvo Collector
+
+Em **Configurações → Motor do coletor**, escolha entre:
+
+- **Google Imagens** — todas as candidatas vêm do Google Imagens;
+- **Pinterest** — todas as candidatas vêm do Pinterest;
+- **Mesclado** — divide a quantidade de candidatas entre Google Imagens e Pinterest e reúne os resultados.
+
+A opção fica salva no navegador, aparece no cartão de busca da produção e é enviada ao Collector tanto na busca inicial quanto em **Procurar mais**. O padrão para uma instalação nova é **Mesclado**.
+
+## Produções longas e reconexão
+
+A espera da coleta não possui mais o limite global de aproximadamente três minutos. O painel acompanha o job até `DONE`, mesmo em produções com 70, 100 ou mais imagens, e mostra quantidade concluída, posição atual e tempo decorrido.
+
+Se a comunicação oscilar, o app continua tentando se reconectar sem encerrar o trabalho. Ao abrir a etapa novamente, ele reconhece uma busca compatível que já esteja rodando e volta a acompanhá-la em vez de criar outro job. O botão `×` apenas oculta a janela; a interrupção exige o botão explícito **Cancelar busca**.
+
+## Cleaner integrado ao Corvo Bridge
+
+O pacote inclui o **Corvo Bridge V0.5.1**, que registra as conversas técnicas concluídas e pode limpá-las diariamente no horário escolhido.
+
+- o Cleaner começa desativado;
+- o **Modo Teste** começa ativado e apenas informa o que seria removido;
+- somente conversas executadas em abas pertencentes ao Bridge são elegíveis;
+- abas compatíveis abertas manualmente podem ser reutilizadas para envio, mas nunca entram na limpeza;
+- apenas jobs confirmados como `DONE` podem ser candidatos;
+- a execução manual sem Modo Teste exige confirmação adicional;
+- exclusões reais são permanentes.
+
+Configure em **Corvo Bridge → Configurações → Limpeza automática**. Faça primeiro alguns jobs mantendo o Modo Teste marcado.
 
 ## Configurar a Vercel
 
@@ -62,5 +102,5 @@ Envie o conteúdo deste projeto a um repositório do GitHub e importe-o no Verce
 O menu de configurações oferece downloads diretos de três pacotes publicados em `public/downloads`:
 
 - Corvo Collector V0.7.4 — somente a extensão de imagens;
-- Corvo Bridge V0.4.1 — somente a extensão, com três GPTs, retorno genérico e fechamento automático da aba;
+- Corvo Bridge V0.5.1 — três GPTs, fechamento automático da aba e Cleaner protegido;
 - Kit completo CorvoQuiz — app, extensões, schema e instruções.
