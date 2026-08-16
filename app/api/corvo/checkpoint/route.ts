@@ -9,6 +9,10 @@ import { storageFailure } from "../../../../lib/corvo-api";
 
 export const runtime = "nodejs";
 
+function isLegacyVercelBlob(value?:string) {
+  try { return new URL(String(value || "")).hostname.endsWith(".blob.vercel-storage.com"); } catch { return false; }
+}
+
 const STAGES = new Set<CorvoAnalysisPreparationStage>([
   "JOB_CREATED",
   "CANDIDATES_PREPARING",
@@ -25,6 +29,8 @@ async function snapshot(jobId:string, token:string) {
   const storedIdSet = new Set(candidates.map((candidate) => String(candidate.id)));
   const missingIds = expectedIds.filter((id) => !storedIdSet.has(id));
   const zipFile = [...(job.files || [])].reverse().find((file) => file.type === "COLLECTOR_ZIP");
+  const legacyCandidates = candidates.filter((candidate) => [candidate.url, candidate.downloadUrl, candidate.batchUrl, candidate.batchDownloadUrl].some((url) => isLegacyVercelBlob(url)));
+  const legacyZip = Boolean(zipFile && [zipFile.url, zipFile.downloadUrl].some((url) => isLegacyVercelBlob(url)));
   return {
     preparation:job.analysisPreparation || null,
     storedCandidates:candidates.length,
@@ -33,6 +39,9 @@ async function snapshot(jobId:string, token:string) {
     missingIds,
     readyForZip:candidates.length > 0 && missingIds.length === 0,
     zipFile:zipFile || null,
+    legacyStorage:legacyZip || legacyCandidates.length > 0,
+    legacyStorageCount:(legacyZip ? 1 : 0) + legacyCandidates.length,
+    storageProvider:legacyZip || legacyCandidates.length ? "VERCEL_BLOB_LEGACY" : "R2",
   };
 }
 

@@ -202,6 +202,30 @@ export async function openCorvoBlob(raw:string) {
   }
 }
 
+
+export async function probeCorvoObjectStorage() {
+  requireConfig();
+  const key = `corvoquiz/_health/probe-${new Date().toISOString().slice(0,10)}-not-created`;
+  const attempts:string[] = [];
+  try {
+    const response = await fetch(presign("GET", key, 60), { cache:"no-store" });
+    // 404 = assinatura/credenciais/bucket aceitos; o objeto de probe propositalmente não existe.
+    if (response.status === 404 || response.ok) return { ok:true, status:response.status, provider:"R2" as const };
+    const text = await response.text().catch(() => "");
+    attempts.push(`probe:get:status=${response.status}:${text.slice(0,180)}`);
+    const forbidden = response.status === 401 || response.status === 403;
+    throw new CorvoBlobReadError(
+      forbidden ? "R2_PROBE_FORBIDDEN" : `R2_PROBE_${response.status}`,
+      forbidden ? "O teste do Cloudflare R2 foi recusado. Verifique R2_ENDPOINT, bucket e as permissões Object Read & Write do token." : `O teste do Cloudflare R2 retornou HTTP ${response.status}.`,
+      attempts, response.status,
+    );
+  } catch (error) {
+    if (error instanceof CorvoBlobReadError) throw error;
+    attempts.push(`probe:get:${errorText(error)}`);
+    throw new CorvoBlobReadError("R2_PROBE_FAILED", "Não foi possível conectar ao Cloudflare R2 com a configuração atual.", attempts);
+  }
+}
+
 export async function readCorvoBlobBuffer(raw:string) {
   const result:any = await openCorvoBlob(raw);
   const bytes = await new Response(result.stream).arrayBuffer();

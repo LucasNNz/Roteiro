@@ -1,4 +1,11 @@
-## Alteração V0.6.34 — R2 alinhado às variáveis reais da Cloudflare
+## Alteração V0.6.35 — migração de checkpoint legado + probe real do R2
+
+- Checkpoints antigos do Vercel Blob são detectados e não entram em retry infinito.
+- O app reinicia somente a embalagem de imagens no novo storage R2.
+- Se o Collector ainda possui o job `DONE`, ele reutiliza os resultados sem nova pesquisa.
+- O diagnóstico testa assinatura/credenciais/bucket R2 com uma leitura autenticada antes do Collector.
+
+## Alteração V0.6.35 — R2 alinhado às variáveis reais da Cloudflare
 
 O armazenamento físico do pipeline migra para Cloudflare R2. Redis continua responsável por estados/jobs/checkpoints; Vercel continua hospedando o app e as Functions.
 
@@ -46,7 +53,7 @@ Bases: `CORVOQUIZ_ESPECIFICACAO_NOVO_FLUXO_APP_BRIDGE` e `CORVOQUIZ_MUDANCA_MODO
 
 ## Fase 2 — Arquivos e ramos paralelos
 
-- [x] Cloudflare R2 + `POST /api/corvo/arquivo` (V0.6.34; usa R2_BUCKET_NAME + R2_ENDPOINT).
+- [x] Cloudflare R2 + `POST /api/corvo/arquivo` (V0.6.35; usa R2_BUCKET_NAME + R2_ENDPOINT).
 - [x] Thumb paralela e captura pelo Bridge.
 - [x] YouTube/Metadados opcional em paralelo.
 - [ ] Validar a captura da Thumb no deploy real com Blob conectado.

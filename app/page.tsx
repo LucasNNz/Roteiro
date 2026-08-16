@@ -111,6 +111,20 @@ function analysisRetryLabel(rawDate?:string) {
   return `NOVA TENTATIVA EM ${Math.ceil(seconds / 60)} MIN`;
 }
 
+function isLegacyVercelBlobUrl(value?:string) {
+  return /(^|\.)blob\.vercel-storage\.com(?=\/|$)/i.test((() => {
+    try { return new URL(String(value || "")).hostname; } catch { return String(value || ""); }
+  })());
+}
+
+function hasLegacyAnalysisStorage(project:Project | undefined | null) {
+  return Boolean(
+    project
+    && [project.analysisZipUrl, project.analysisZipDownloadUrl].some((url) => isLegacyVercelBlobUrl(url))
+    && project.analysisStatus !== "CONCLUÍDA"
+  );
+}
+
 function sameCollectorItems(jobItems:GuideItem[]|undefined, requestedItems:GuideItem[]) {
   if (!Array.isArray(jobItems) || jobItems.length !== requestedItems.length) return false;
   return jobItems.every((item,index) => {
@@ -310,7 +324,15 @@ export default function Home() {
   useEffect(() => {
     const interrupted = projectsRef.current.filter((project) => project.autoRunStatus === "RUNNING");
     for (const project of interrupted) {
-      if (hasPreparedAnalysis(project)) {
+      if (hasLegacyAnalysisStorage(project)) {
+        patchProject(project.id, {
+          ...EMPTY_IMAGE_PIPELINE,
+          autoRunStatus:"RUNNING", autoRunStep:"COLLECTOR", autoRunError:undefined,
+          autoRunMessage:"Checkpoint antigo do Vercel Blob detectado após a migração. Reconstruindo o pacote no R2.",
+          pipelineStatus:"MIGRANDO CHECKPOINT PARA R2",
+        });
+        setTimeout(() => void startImageFlow({ ...project, ...EMPTY_IMAGE_PIPELINE }, { automaticRun:true, skipParallelBranches:true, selectionMode:"AUTO" }), 800);
+      } else if (hasPreparedAnalysis(project)) {
         const retryAt = project.analysisRetryAt || new Date(Date.now() + 45_000).toISOString();
         patchProject(project.id, {
           autoRunStatus:"RUNNING",
@@ -923,6 +945,8 @@ export default function Home() {
     if (message.includes("JOB_ALREADY_RUNNING")) return "Já existe uma busca em andamento. Abra novamente esta etapa para acompanhar o trabalho atual.";
     if (message.includes("PACKAGE_ALREADY_RUNNING")) return "O Collector já está montando o pacote de outra produção. O pacote da produção atual será retomado automaticamente quando for o mesmo trabalho; se for outro projeto, aguarde a montagem atual terminar.";
     if (message.includes("R2_NOT_CONFIGURED") || message.toLowerCase().includes("cloudflare r2 não configurado")) return "O Cloudflare R2 ainda não está configurado no projeto. Configure R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME e R2_ENDPOINT na Vercel e tente novamente.";
+    if (message.includes("LEGACY_VERCEL_BLOB_CHECKPOINT") || message.includes("Objeto R2 não permitido para este trabalho")) return "Este projeto ainda aponta para um checkpoint antigo do Vercel Blob. O CorvoQuiz vai descartar somente esse checkpoint de arquivos e reconstruí-lo no Cloudflare R2.";
+    if (message.includes("R2_PROBE_")) return `O teste real do Cloudflare R2 falhou antes do Collector: ${message}`;
     if (message.includes("TRATAMENTO_MANUAL_NECESSARIO")) return "Uma ou mais imagens chegaram ao limite de tentativas ou foram marcadas como não recuperáveis. O automático parou para tratamento manual.";
     return message || "Não foi possível concluir esta etapa.";
   }
@@ -933,6 +957,7 @@ export default function Home() {
     if (!response.ok) throw new Error(status?.message || "Não foi possível verificar o armazenamento do pipeline.");
     if (!status?.configured) throw new Error("O Upstash Redis não está configurado para os jobs do Corvo.");
     if (!status?.storageConfigured) throw new Error("R2_NOT_CONFIGURED");
+    if (status?.storageReachable === false) throw new Error(String(status?.storageCode || status?.storageMessage || "R2_PROBE_FAILED"));
     return status;
   }
 
@@ -1054,8 +1079,24 @@ export default function Home() {
   }
 
   async function startImageFlow(projectArg?:Project, options:{automaticRun?:boolean;skipParallelBranches?:boolean;selectionMode?:SelectionMode} = {}) {
-    const project = projectArg || active;
+    let project = projectArg || active;
     if (!project) return false;
+    if (hasLegacyAnalysisStorage(project)) {
+      const wasAutomatic = project.autoRunStatus === "RUNNING" || options.automaticRun === true;
+      patchProject(project.id, {
+        ...EMPTY_IMAGE_PIPELINE,
+        autoRunStatus:wasAutomatic ? "RUNNING" : project.autoRunStatus,
+        autoRunStep:wasAutomatic ? "COLLECTOR" : project.autoRunStep,
+        autoRunMessage:wasAutomatic ? "Checkpoint antigo do Vercel Blob detectado. Reconstruindo o pacote no Cloudflare R2 sem reutilizar o arquivo legado." : project.autoRunMessage,
+        autoRunError:undefined,
+        pipelineStatus:"MIGRANDO CHECKPOINT PARA R2",
+      });
+      project = { ...project, ...EMPTY_IMAGE_PIPELINE, pipelineStatus:"MIGRANDO CHECKPOINT PARA R2" };
+      setImageOpen(true);
+      setImagePhase("connecting"); setImageProgress(3);
+      setImageMessage("Checkpoint antigo do Vercel Blob detectado. Recuperando o resultado do Collector para gravar um novo pacote no R2...");
+      setImageStatusLine("MIGRAÇÃO DE STORAGE · VERCEL BLOB → CLOUDFLARE R2");
+    }
     if (hasPreparedAnalysis(project) && project.pipelineStatus !== "IMAGENS FINAIS PRONTAS") {
       return await resumePreparedAnalysis(project.id, !options.automaticRun);
     }
@@ -1467,6 +1508,7 @@ export default function Home() {
   }
 
   function hasPreparedAnalysis(project:Project | undefined | null) {
+    if (hasLegacyAnalysisStorage(project)) return false;
     return Boolean(
       project?.analysisJobId
       && project?.analysisZipUrl
@@ -1479,6 +1521,7 @@ export default function Home() {
   }
 
   function hasAnalysisPreparationCheckpoint(project:Project | undefined | null) {
+    if (hasLegacyAnalysisStorage(project)) return false;
     return Boolean(
       project?.analysisJobId
       && project?.analysisPrompt
@@ -1607,6 +1650,20 @@ export default function Home() {
       setImageMessage("Recuperando o checkpoint da preparação do Analista...");
       setImageStatusLine(preparationStageLabel(project));
       const checkpoint = await readAnalysisCheckpoint(project);
+      if (checkpoint?.legacyStorage) {
+        patchProject(projectId, {
+          ...EMPTY_IMAGE_PIPELINE,
+          autoRunStatus:project.autoRunStatus,
+          autoRunStep:project.autoRunStatus === "RUNNING" ? "COLLECTOR" : project.autoRunStep,
+          autoRunMessage:project.autoRunStatus === "RUNNING" ? "Checkpoint legado do Vercel Blob descartado. Recriando o pacote no Cloudflare R2." : project.autoRunMessage,
+          autoRunError:undefined,
+          pipelineStatus:"MIGRANDO CHECKPOINT PARA R2",
+        });
+        setImageMessage("O checkpoint do servidor usa arquivos antigos do Vercel Blob. Recriando apenas o pacote de imagens no R2...");
+        setImageStatusLine("CHECKPOINT LEGADO DESCARTADO · R2 ATIVO");
+        setTimeout(() => void startImageFlow({ ...project, ...EMPTY_IMAGE_PIPELINE }, { automaticRun:project.autoRunStatus === "RUNNING", skipParallelBranches:true, selectionMode:"AUTO" }), 200);
+        return false;
+      }
       const expectedIds = [...(project.analysisExpectedIds || [])];
       const serverPreparation = checkpoint?.preparation || {};
       const checkpointPatch:Partial<Project> = {
@@ -2227,13 +2284,13 @@ export default function Home() {
           <button className={`file-row action ${active.analysisStatus==="CONCLUÍDA"?"done":active.analysisStatus?"pending":""}`} disabled={!active.analysisManifest&&!hasPreparedAnalysis(active)&&!hasAnalysisPreparationCheckpoint(active)} onClick={()=>{if(active.analysisManifest){setNotice("MANIFESTO DO ANALISTA SALVO NO PROJETO.");setTimeout(()=>setNotice(""),2800);}else if(hasPreparedAnalysis(active)){void resumePreparedAnalysis(active.id,true);}else if(hasAnalysisPreparationCheckpoint(active)){void resumeAnalysisPreparation(active.id,true);}}}><span>◫</span><div><b>{hasPreparedAnalysis(active)?"PACOTE DO ANALISTA SALVO":hasAnalysisPreparationCheckpoint(active)?"CHECKPOINT DO ANALISTA SALVO":"ANÁLISE DE IMAGENS"}</b><small>{hasPreparedAnalysis(active)?`${active.analysisStatus||"AGUARDANDO ANALISTA"} · ${analysisRetryLabel(active.analysisRetryAt)}`:hasAnalysisPreparationCheckpoint(active)?`${preparationStageLabel(active)} · ${analysisRetryLabel(active.analysisPreparationRetryAt)}`:active.analysisStatus||"COMEÇA APÓS O PACOTE DO COLLECTOR"}</small>{active.analysisLastError&&hasPreparedAnalysis(active)?<em>{active.analysisLastError}</em>:null}{active.analysisPreparationError&&hasAnalysisPreparationCheckpoint(active)?<em>{active.analysisPreparationError}</em>:null}</div><i>{active.analysisStatus==="CONCLUÍDA"?"✓":hasPreparedAnalysis(active)||hasAnalysisPreparationCheckpoint(active)?"↻":"○"}</i></button>
           <button className={`file-row action ${active.youtubeMetadata?"done":active.youtubeStatus==="FALHOU"?"pending":""}`} disabled={!active.youtubeMetadata} onClick={()=>{if(active.youtubeMetadata)downloadTextFile(`${active.id}_YOUTUBE.txt`,active.youtubeMetadata);}}><span>▶</span><div><b>YOUTUBE / METADADOS</b><small>{active.youtubeMetadata?"BAIXAR DADOS EDITORIAIS":active.youtubeError||active.youtubeStatus||(settings.youtubeParallel?"INICIA EM PARALELO":"DESATIVADO NAS CONFIGURAÇÕES")}</small></div><i>{active.youtubeMetadata?"↓":"○"}</i></button>
           <button className={`file-row action ${consolidationState(active).ready?"done":active.pipelineItems?.length?"pending":""}`} disabled={!active.pipelineItems?.length} onClick={()=>{setConsolidationMessage("");setConsolidationOpen(true);}}><span>▦</span><div><b>CONSOLIDAÇÃO / ZIP FINAL</b><small>{active.pipelineItems?.length ? `${consolidationState(active).completed}/${consolidationState(active).items.length} FINAIS · ${consolidationState(active).ready ? "PRONTO PARA GERAR" : active.pipelineStatus || "AGUARDANDO"}` : "AGUARDANDO O ANALISTA"}</small></div><i>{active.finalZipStatus==="CONCLUIDO"?"✓":consolidationState(active).ready?"→":"○"}</i></button>
-          {active.packageCode ? <button className="package-ready" onClick={() => hasPreparedAnalysis(active) ? void resumePreparedAnalysis(active.id,true) : hasAnalysisPreparationCheckpoint(active) ? void resumeAnalysisPreparation(active.id,true) : active.pipelineStatus==="ERRO NO PIPELINE" ? void startImageFlow() : setImageOpen(true)}><span>{active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?"✓":hasPreparedAnalysis(active)||hasAnalysisPreparationCheckpoint(active)?"↻":"⌁"}</span><div><b>{active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?"IMAGENS FINAIS PRONTAS":hasPreparedAnalysis(active)?"PACOTE PRESERVADO · REENVIAR ANALISTA":hasAnalysisPreparationCheckpoint(active)?"CHECKPOINT PRESERVADO · RETOMAR PREPARAÇÃO":"PIPELINE DE IMAGENS"}</b><small>{hasPreparedAnalysis(active)?`${active.analysisZipName||"ZIP DO ANALISTA"} · ${analysisRetryLabel(active.analysisRetryAt)}`:hasAnalysisPreparationCheckpoint(active)?`${preparationStageLabel(active)} · ${analysisRetryLabel(active.analysisPreparationRetryAt)}`:active.pipelineStatus||`${active.imageCount || 0} ARQUIVOS · ${active.packageCode}`}</small></div></button> : <button className="collector-box" disabled={!active.promptText || active.stage<4} onClick={()=>void startImageFlow()}><span>⌁</span><b>{collectorRunning?"ACOMPANHAR BUSCA":active.promptText&&active.stage>=4?"BUSCAR COM O CORVO":"AGUARDANDO PROMPTS"}</b><small>{collectorRunning?"O COLLECTOR CONTINUA TRABALHANDO":active.promptText&&active.stage>=4?`MOTOR: ${collectorEngines[settings.sourceMode].label} · SEGUNDO PLANO`:"A PRÓXIMA ETAPA SERÁ LIBERADA"}</small></button>}
+          {active.packageCode ? <button className="package-ready" onClick={() => hasLegacyAnalysisStorage(active) ? void startImageFlow(active,{ automaticRun:active.autoRunStatus==="RUNNING", skipParallelBranches:true, selectionMode:"AUTO" }) : hasPreparedAnalysis(active) ? void resumePreparedAnalysis(active.id,true) : hasAnalysisPreparationCheckpoint(active) ? void resumeAnalysisPreparation(active.id,true) : active.pipelineStatus==="ERRO NO PIPELINE" ? void startImageFlow() : setImageOpen(true)}><span>{active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?"✓":hasLegacyAnalysisStorage(active)||hasPreparedAnalysis(active)||hasAnalysisPreparationCheckpoint(active)?"↻":"⌁"}</span><div><b>{active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?"IMAGENS FINAIS PRONTAS":hasLegacyAnalysisStorage(active)?"CHECKPOINT ANTIGO · MIGRAR PARA R2":hasPreparedAnalysis(active)?"PACOTE PRESERVADO · REENVIAR ANALISTA":hasAnalysisPreparationCheckpoint(active)?"CHECKPOINT PRESERVADO · RETOMAR PREPARAÇÃO":"PIPELINE DE IMAGENS"}</b><small>{hasLegacyAnalysisStorage(active)?"O VERCEL BLOB ANTIGO NÃO SERÁ REUTILIZADO":hasPreparedAnalysis(active)?`${active.analysisZipName||"ZIP DO ANALISTA"} · ${analysisRetryLabel(active.analysisRetryAt)}`:hasAnalysisPreparationCheckpoint(active)?`${preparationStageLabel(active)} · ${analysisRetryLabel(active.analysisPreparationRetryAt)}`:active.pipelineStatus||`${active.imageCount || 0} ARQUIVOS · ${active.packageCode}`}</small></div></button> : <button className="collector-box" disabled={!active.promptText || active.stage<4} onClick={()=>void startImageFlow()}><span>⌁</span><b>{collectorRunning?"ACOMPANHAR BUSCA":active.promptText&&active.stage>=4?"BUSCAR COM O CORVO":"AGUARDANDO PROMPTS"}</b><small>{collectorRunning?"O COLLECTOR CONTINUA TRABALHANDO":active.promptText&&active.stage>=4?`MOTOR: ${collectorEngines[settings.sourceMode].label} · SEGUNDO PLANO`:"A PRÓXIMA ETAPA SERÁ LIBERADA"}</small></button>}
         </aside>
       </article>}
     </section>
 
     <section className="projects" id="projetos"><div className="section-heading"><div><span className="section-number">02</span><h2>PROJETOS RECENTES</h2></div><span className="project-count">{String(projects.length).padStart(2,"0")} PRODUÇÕES</span></div><div className="project-list">{projects.map((project) => <button className={`project-row ${project.id===activeId?"selected":""}`} key={project.id} onClick={() => setActiveId(project.id)}><span className="project-icon">{project.format==="REELS"?"▯":"▭"}</span><span className="project-name"><b>{project.title}</b><small>{project.id}</small></span><span className="project-format">{project.format}</span><span className="progress"><i style={{width:`${project.stage*20}%`}} /></span><span className="stage-label">ETAPA {project.stage}/5</span><span className="row-arrow">→</span></button>)}</div></section>
-    <footer><span>CORVOQUIZ PRODUÇÃO <i>V0.6.34</i></span><span>R2 ENDPOINT NATIVO + CHECKPOINT DO ANALISTA · V0.6.34</span></footer>
+    <footer><span>CORVOQUIZ PRODUÇÃO <i>V0.6.35</i></span><span>R2 PROBE + MIGRAÇÃO DE CHECKPOINT LEGADO · V0.6.35</span></footer>
     {notice && <div className="toast">{notice}</div>}
 
     {createOpen && <div className="modal-backdrop" onMouseDown={(event) => event.target===event.currentTarget&&closeCreationModal()}><section className="creation-modal idea-modal" role="dialog" aria-modal="true" aria-labelledby="new-production-title"><button className="modal-close" disabled={ideaLoading} onClick={closeCreationModal} aria-label="Fechar">×</button><div className="modal-symbol">✦</div><span className="modal-kicker">{ideaRevisionProjectId?"REFAZER IDEIA":"NOVA PRODUÇÃO"}</span><h2 id="new-production-title">{ideaRevisionProjectId?"ESCOLHA UMA NOVA DIREÇÃO":"O QUE VAMOS CRIAR?"}</h2><p>{ideaRevisionProjectId?"Ao confirmar, roteiro, prompts e imagens serão refeitos automaticamente.":"Comece sem tema e peça ideias ao Corvo, ou informe uma direção opcional."}</p>
@@ -2276,7 +2333,7 @@ export default function Home() {
         <div className="download-grid">
           <a className="download-card" href="/downloads/CORVO_COLLECTOR_V080_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.8.0</small></div><i>↓</i></a>
           <a className="download-card" href="/downloads/CORVO_BRIDGE_V0620_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.20 · R2 + RETOMADA DO ENVIO + DIAGNÓSTICO</small></div><i>↓</i></a>
-          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0634.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
+          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0635.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
         </div>
       </section>
       <details className="advanced-settings"><summary>CONFIGURAÇÕES AVANÇADAS</summary><div className="settings-grid"><label>CANDIDATAS COLETADAS/ID<input type="number" min="1" max="20" value={settings.maxCandidates} onChange={(event)=>setSettings({...settings,maxCandidates:Math.max(1,Math.min(20,Number(event.target.value)||20))})}/></label><label>CANDIDATAS/ID → ANALISTA<input type="number" min="1" max="30" value={settings.analystCandidatesPerId} onChange={(event)=>setSettings({...settings,analystCandidatesPerId:Math.max(1,Math.min(30,Number(event.target.value)||10))})}/></label><label>VARREDURA<input type="number" value={settings.scrollSteps} onChange={(event)=>setSettings({...settings,scrollSteps:Number(event.target.value)})}/></label><label>QUALIDADE JPEG<input type="number" step=".01" value={settings.jpegQuality} onChange={(event)=>setSettings({...settings,jpegQuality:Number(event.target.value)})}/></label><label>PREFIXO<input value={settings.prefix} onChange={(event)=>setSettings({...settings,prefix:event.target.value})}/></label></div><p>A busca coleta no máximo 20 candidatas únicas por ID. No modo Mesclado, a meta é dividida entre Google e Pinterest. Depois, o limite do Analista reduz apenas o transporte; o app não escolhe a vencedora.</p><label className="batch-label">COMANDOS EM LOTE — OPCIONAL<textarea value={settings.batchText} onChange={(event)=>setSettings({...settings,batchText:event.target.value})} placeholder={"01|primeira busca\n02|segunda busca"} /></label></details>

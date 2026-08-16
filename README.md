@@ -1,6 +1,14 @@
-# CorvoQuiz Produção — V0.6.34
+# CorvoQuiz Produção — V0.6.35
 
-## V0.6.34 — configuração R2 alinhada ao painel Cloudflare
+## V0.6.35 — migração automática de checkpoints Vercel Blob → R2
+
+- Detecta projetos/checkpoints antigos que ainda apontam para `*.blob.vercel-storage.com`.
+- Não fica mais tentando enviar um ZIP legado para o Bridge.
+- Descarta somente o checkpoint de arquivos antigo e refaz a embalagem no R2; o Collector reaproveita o resultado já concluído quando ainda estiver disponível na extensão.
+- `GET /api/corvo/checkpoint` informa `legacyStorage` e `storageProvider`.
+- `/api/corvo/download` retorna `LEGACY_VERCEL_BLOB_CHECKPOINT` para referências antigas.
+- `/api/corvo/diagnostico` executa probe real do R2 antes de permitir o pipeline pesado.
+
 
 - O Vercel Blob deixa de ser usado como armazenamento operacional do pipeline.
 - Cloudflare R2 passa a armazenar lotes do Collector, ZIP do Analista, imagens refinadas/geradas, thumbnail e checkpoints físicos.
@@ -304,7 +312,7 @@ Use `public/downloads/CORVO_COLLECTOR_V080_EXTENSION.zip` ou carregue a pasta `c
 
 - Corvo Collector V0.8.0;
 - Corvo Bridge V0.6.20;
-- Kit completo CorvoQuiz V0.6.34.
+- Kit completo CorvoQuiz V0.6.35.
 
 ## Fora do escopo atual
 

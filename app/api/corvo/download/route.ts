@@ -37,9 +37,14 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ ok: false, message: "Informe jobId, token e url do arquivo." }, { status: 400, headers: corsHeaders() });
   }
 
+  let legacyHost = false;
+  try { legacyHost = new URL(rawUrl).hostname.endsWith(".blob.vercel-storage.com"); } catch {}
+  if (legacyHost) {
+    return NextResponse.json({ ok:false, code:"LEGACY_VERCEL_BLOB_CHECKPOINT", message:"Este checkpoint ainda aponta para o Vercel Blob antigo e precisa ser reconstruído no Cloudflare R2." }, { status:409, headers:corsHeaders() });
+  }
   const key = corvoBlobPathname(rawUrl);
   if (!key || !key.startsWith(`corvoquiz/${jobId}/`)) {
-    return NextResponse.json({ ok: false, message: "Objeto R2 não permitido para este trabalho." }, { status: 400, headers: corsHeaders() });
+    return NextResponse.json({ ok: false, code:"R2_OBJECT_NOT_ALLOWED", message: "Objeto R2 não permitido para este trabalho." }, { status: 400, headers: corsHeaders() });
   }
 
   try {
