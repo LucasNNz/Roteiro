@@ -1,4 +1,14 @@
-# CorvoQuiz Produção — V0.6.31
+# CorvoQuiz Produção — V0.6.32
+
+## V0.6.32 — envio robusto ao Analista por microcheckpoint
+
+- O envio ao Analista agora preserva e reutiliza o rascunho do mesmo `JOB_ID`.
+- O Bridge distingue composer preenchido, anexo presente, controle de envio disponível, clique disparado, mensagem commitada e resposta iniciada.
+- O timeout deixou de ser um cronômetro seco: cada progresso real renova a janela de espera, com limite absoluto de segurança.
+- Se a mensagem já estiver no composer, o retry não reescreve o prompt; continua de onde parou.
+- Se o ZIP já estiver anexado, o retry não o baixa/anexa novamente.
+- A leitura de Blob usa origem autenticada no servidor e expõe erro estruturado caso a própria store recuse leitura.
+- Corvo Bridge atual: **V0.6.19**. Collector permanece **V0.8.0**.
 
 ## V0.6.31 — proxy autenticado para anexos do Analista
 
@@ -270,9 +280,9 @@ Configure no projeto:
 
 ## Instalação
 
-### Corvo Bridge V0.6.18
+### Corvo Bridge V0.6.19
 
-Use `public/downloads/CORVO_BRIDGE_V0618_EXTENSION.zip` ou carregue a pasta `corvo-bridge-extension` em `chrome://extensions`.
+Use `public/downloads/CORVO_BRIDGE_V0619_EXTENSION.zip` ou carregue a pasta `corvo-bridge-extension` em `chrome://extensions`.
 
 ### Corvo Collector V0.8.0
 
@@ -281,8 +291,8 @@ Use `public/downloads/CORVO_COLLECTOR_V077_EXTENSION.zip` ou carregue a pasta `c
 ## Downloads dentro do app
 
 - Corvo Collector V0.8.0;
-- Corvo Bridge V0.6.18;
-- Kit completo CorvoQuiz V0.6.31.
+- Corvo Bridge V0.6.19;
+- Kit completo CorvoQuiz V0.6.32.
 
 ## Fora do escopo atual
 

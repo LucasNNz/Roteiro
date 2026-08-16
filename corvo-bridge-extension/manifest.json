@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Corvo Bridge",
-  "version": "0.6.18",
-  "description": "Encaminha especialistas do CorvoQuiz com autorrecuperação do content script, proxy autenticado de download para anexos, diagnóstico detalhado, captura de arquivos e Cleaner.",
+  "version": "0.6.19",
+  "description": "Encaminha especialistas do CorvoQuiz com envio ao Analista por checkpoint, retomada por progresso, proxy autenticado de anexos, diagnóstico detalhado, captura de arquivos e Cleaner.",
   "permissions": [
     "storage",
     "tabs",

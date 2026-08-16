@@ -1,4 +1,13 @@
-# CORVO BRIDGE V0.6.18 — PROXY DE DOWNLOAD + DIAGNÓSTICO
+# CORVO BRIDGE V0.6.19 — CHECKPOINT DO ENVIO AO ANALISTA
+
+## V0.6.19 — retomada por progresso + diagnóstico de Blob
+
+- Reutiliza rascunho do mesmo JOB_ID em vez de preencher novamente o composer.
+- Se o ZIP já estiver anexado, retoma diretamente do envio.
+- Timeouts são renovados enquanto houver progresso real no composer/anexo/envio.
+- A mensagem só é considerada enviada quando o JOB_ID aparece como mensagem do usuário ou há confirmação equivalente de commit da conversa.
+- Erros do proxy de Blob agora preservam o código real (`BLOB_CONTENT_READ_FORBIDDEN`, etc.) em vez de terminar sempre como `ATTACHMENT_FETCH_403`.
+- O background usa o proxy autenticado do CorvoQuiz antes do fetch bruto e mantém diagnóstico por microetapa.
 
 ## V0.6.18 — hotfix ATTACHMENT_FETCH_403
 

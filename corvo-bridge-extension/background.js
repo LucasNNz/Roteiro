@@ -91,7 +91,7 @@ async function getDiagnostic(jobId) {
   const start = events[0]?.at || job.createdAt || Date.now();
   const lines = [
     "CORVO BRIDGE DIAGNÓSTICO V1",
-    `Bridge: V0.6.18`,
+    `Bridge: V0.6.19`,
     `JOB_ID: ${id}`,
     `Eventos: ${events.length}`,
     `Status atual: ${data.corvoBridgeStatus?.state || ""} | ${data.corvoBridgeStatus?.message || ""}`,
@@ -377,6 +377,7 @@ async function fetchAttachmentForChat(payload = {}) {
   const appOrigin = String(payload.appOrigin || config.appOrigin || "").trim().replace(/\/$/, "");
   let response = null;
   let source = "blob-direct";
+  let proxyFailure = "";
 
   if (jobId && uploadToken && /^https:\/\//i.test(appOrigin)) {
     const proxyUrl = `${appOrigin}/api/corvo/download?jobId=${encodeURIComponent(jobId)}&url=${encodeURIComponent(rawUrl)}&name=${encodeURIComponent(String(payload.name || "arquivo"))}`;
@@ -387,21 +388,30 @@ async function fetchAttachmentForChat(payload = {}) {
         headers:{ "x-corvo-upload-token":uploadToken },
       });
       if (!response.ok) {
-        await appendDiagnostic(jobId, "ATTACHMENT_BACKGROUND_PROXY_FAIL", { status:response.status }, "background").catch(() => {});
+        let body = {};
+        try { body = await response.clone().json(); } catch {}
+        const code = String(body?.code || "").trim();
+        const message = String(body?.message || "").trim();
+        proxyFailure = code || (message ? `ATTACHMENT_PROXY_FETCH_${response.status}:${message}` : `ATTACHMENT_PROXY_FETCH_${response.status}`);
+        await appendDiagnostic(jobId, "ATTACHMENT_BACKGROUND_PROXY_FAIL", { status:response.status, code, message }, "background").catch(() => {});
         response = null;
       } else {
         source = "app-proxy";
-        await appendDiagnostic(jobId, "ATTACHMENT_BACKGROUND_PROXY_OK", { status:response.status, contentLength:response.headers.get("content-length") || "" }, "background").catch(() => {});
+        await appendDiagnostic(jobId, "ATTACHMENT_BACKGROUND_PROXY_OK", { status:response.status, contentLength:response.headers.get("content-length") || "", downloadSource:response.headers.get("x-corvo-download-source") || "" }, "background").catch(() => {});
       }
     } catch (error) {
-      await appendDiagnostic(jobId, "ATTACHMENT_BACKGROUND_PROXY_EXCEPTION", { error:String(error?.message || error || "") }, "background").catch(() => {});
+      proxyFailure = String(error?.message || error || "ATTACHMENT_PROXY_EXCEPTION");
+      await appendDiagnostic(jobId, "ATTACHMENT_BACKGROUND_PROXY_EXCEPTION", { error:proxyFailure }, "background").catch(() => {});
       response = null;
     }
   }
 
   if (!response) {
     response = await fetch(rawUrl, { cache: "no-store", credentials: "omit" });
-    if (!response.ok) throw new Error(`ATTACHMENT_FETCH_${response.status}`);
+    if (!response.ok) {
+      if (proxyFailure) throw new Error(proxyFailure);
+      throw new Error(`ATTACHMENT_FETCH_${response.status}`);
+    }
   }
 
   const buffer = await response.arrayBuffer();
@@ -604,23 +614,58 @@ function normalizeUrl(url) {
   catch { return ""; }
 }
 
+function clearDeliveryTimers(delivery) {
+  if (!delivery) return;
+  if (delivery.idleTimeoutId) clearTimeout(delivery.idleTimeoutId);
+  if (delivery.hardTimeoutId) clearTimeout(delivery.hardTimeoutId);
+}
+
+function armDeliveryIdleTimeout(jobId) {
+  const delivery = deliveryByJob.get(jobId);
+  if (!delivery) return;
+  if (delivery.idleTimeoutId) clearTimeout(delivery.idleTimeoutId);
+  delivery.lastProgressAt = Date.now();
+  delivery.idleTimeoutId = setTimeout(() => {
+    appendDiagnostic(jobId, "DELIVERY_PROGRESS_TIMEOUT", { tabId:delivery.tabId, lastProgressAt:delivery.lastProgressAt }, "background").catch(() => {});
+    deliveryByJob.delete(jobId);
+    pendingByTab.delete(delivery.tabId);
+    sendingTabs.delete(delivery.tabId);
+    clearDeliveryTimers(delivery);
+    delivery.reject(new Error("GPT_SEND_PROGRESS_TIMEOUT"));
+  }, 5 * 60 * 1000);
+}
+
+function touchDelivery(jobId, state = "") {
+  const delivery = deliveryByJob.get(jobId);
+  if (!delivery) return;
+  armDeliveryIdleTimeout(jobId);
+  appendDiagnostic(jobId, "DELIVERY_PROGRESS", { state, tabId:delivery.tabId }, "background").catch(() => {});
+}
+
 function waitForDelivery(payload, tabId, reused, sourceTabId) {
   return new Promise((resolve, reject) => {
-    const timeoutId = setTimeout(() => {
-      appendDiagnostic(payload.jobId, "DELIVERY_TIMEOUT", { tabId, reused, sourceTabId }, "background").catch(() => {});
+    const delivery = {
+      resolve, reject, tabId, reused, sourceTabId,
+      startedAt:Date.now(), lastProgressAt:Date.now(),
+      idleTimeoutId:null, hardTimeoutId:null,
+    };
+    delivery.hardTimeoutId = setTimeout(() => {
+      appendDiagnostic(payload.jobId, "DELIVERY_HARD_TIMEOUT", { tabId, reused, sourceTabId, startedAt:delivery.startedAt }, "background").catch(() => {});
       deliveryByJob.delete(payload.jobId);
       pendingByTab.delete(tabId);
       sendingTabs.delete(tabId);
-      reject(new Error("GPT_SEND_FAILED"));
-    }, 12 * 60 * 1000);
-    deliveryByJob.set(payload.jobId, { resolve, reject, timeoutId, tabId, reused, sourceTabId });
+      clearDeliveryTimers(delivery);
+      reject(new Error("GPT_SEND_HARD_TIMEOUT"));
+    }, 25 * 60 * 1000);
+    deliveryByJob.set(payload.jobId, delivery);
+    armDeliveryIdleTimeout(payload.jobId);
   });
 }
 
 function resolveDelivery(jobId, result) {
   const delivery = deliveryByJob.get(jobId);
   if (!delivery) return;
-  clearTimeout(delivery.timeoutId);
+  clearDeliveryTimers(delivery);
   deliveryByJob.delete(jobId);
   delivery.resolve(result);
 }
@@ -628,7 +673,7 @@ function resolveDelivery(jobId, result) {
 function rejectDelivery(jobId, error) {
   const delivery = deliveryByJob.get(jobId);
   if (!delivery) return;
-  clearTimeout(delivery.timeoutId);
+  clearDeliveryTimers(delivery);
   deliveryByJob.delete(jobId);
   delivery.reject(error instanceof Error ? error : new Error(String(error || "GPT_SEND_FAILED")));
 }
@@ -874,6 +919,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const jobId = payload.jobId || null;
     const state = String(payload.state || "SENDING_TO_GPT");
     const statusMessage = String(payload.message || "Preparando envio ao GPT...");
+    touchDelivery(jobId, state);
     setStatus(state, jobId, statusMessage, payload).catch(() => {});
     sendResponse({ ok: true });
     return;

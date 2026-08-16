@@ -44,6 +44,7 @@ type Project = {
   thumbJobId?:string; thumbStatus?:string; thumbUrl?:string; thumbFileName?:string; thumbError?:string;
   analysisJobId?:string; analysisStatus?:string; analysisZipUrl?:string; analysisZipName?:string; analysisManifest?:string; analysisExpectedIds?:string[];
   analysisPrompt?:string; analysisUploadToken?:string; analysisPreparedAt?:string; analysisLastDispatchAt?:string; analysisRetryAt?:string; analysisRetryCount?:number; analysisLastError?:string;
+  analysisBridgeStage?:string; analysisBridgeUpdatedAt?:string; analysisZipDownloadUrl?:string;
   analysisPreparationStage?:"JOB_CREATED"|"CANDIDATES_PREPARING"|"CANDIDATES_STORED"|"ZIP_BUILDING"|"ZIP_SAVED";
   analysisExpectedCandidates?:number; analysisStoredCandidates?:number; analysisStoredIds?:number; analysisBatchTotal?:number; analysisBatchesUploaded?:number;
   analysisCollectorPackageId?:string; analysisCollectorPackageCode?:string; analysisPackageFileName?:string; analysisSelectionMode?:"AUTO"|"MANUAL";
@@ -63,7 +64,7 @@ const EMPTY_IMAGE_PIPELINE:Partial<Project> = {
   packageCode:undefined, imageCount:undefined,
   analysisJobId:undefined, analysisStatus:undefined, analysisZipUrl:undefined, analysisZipName:undefined, analysisManifest:undefined,
   analysisExpectedIds:undefined, analysisPrompt:undefined, analysisUploadToken:undefined, analysisPreparedAt:undefined,
-  analysisLastDispatchAt:undefined, analysisRetryAt:undefined, analysisRetryCount:undefined, analysisLastError:undefined,
+  analysisLastDispatchAt:undefined, analysisRetryAt:undefined, analysisRetryCount:undefined, analysisLastError:undefined, analysisBridgeStage:undefined, analysisBridgeUpdatedAt:undefined, analysisZipDownloadUrl:undefined,
   analysisPreparationStage:undefined, analysisExpectedCandidates:undefined, analysisStoredCandidates:undefined, analysisStoredIds:undefined,
   analysisBatchTotal:undefined, analysisBatchesUploaded:undefined, analysisCollectorPackageId:undefined, analysisCollectorPackageCode:undefined,
   analysisPackageFileName:undefined, analysisSelectionMode:undefined, analysisPreparationRetryAt:undefined, analysisPreparationRetryCount:undefined, analysisPreparationError:undefined,
@@ -87,6 +88,18 @@ const ANALYSIS_RETRY_DELAYS = [60_000, 120_000, 300_000, 600_000];
 
 function analysisRetryDelay(retryCount:number) {
   return ANALYSIS_RETRY_DELAYS[Math.min(Math.max(0, retryCount), ANALYSIS_RETRY_DELAYS.length - 1)];
+}
+
+function analysisRetryDelayForError(error:unknown, retryCount:number) {
+  const text = String(error instanceof Error ? error.message : error || "").toUpperCase();
+  // Falha de envio/composer: retomar rápido na MESMA aba e aproveitar rascunho/anexo.
+  if (/(GPT_SEND|SEND_CONTROL|SEND_PENDING|COMPOSER_|ATTACHMENT_(INPUT|NOT_CONFIRMED)|CORVO_BRIDGE_PROGRESS_TIMEOUT)/.test(text)) {
+    const quick = [20_000, 45_000, 90_000, 120_000];
+    return quick[Math.min(Math.max(0, retryCount), quick.length - 1)];
+  }
+  // 403 de conteúdo do Blob não melhora com retry agressivo; mantém o checkpoint sem martelar a store.
+  if (/(BLOB_CONTENT_READ_FORBIDDEN|ATTACHMENT_FETCH_403|ATTACHMENT_PROXY_FETCH_503)/.test(text)) return 10 * 60_000;
+  return analysisRetryDelay(retryCount);
 }
 
 function analysisRetryLabel(rawDate?:string) {
@@ -258,13 +271,19 @@ export default function Home() {
       const message = String(payload.message || "");
       const labels:Record<string,string> = {
         WAITING_COMPOSER:"ANALISTA · ABRINDO EDITOR",
-        FILLING_COMPOSER:"ANALISTA · MENSAGEM PREENCHIDA",
+        FILLING_COMPOSER:"ANALISTA · PREENCHENDO MENSAGEM",
+        DRAFT_RECOVERED:"ANALISTA · RASCUNHO RECUPERADO",
         FETCHING_ATTACHMENT:"ANALISTA · BAIXANDO ZIP",
+        FETCHING_ATTACHMENT_PROXY:"ANALISTA · RECUPERANDO ZIP PELO APP",
         ATTACHING_FILE:"ANALISTA · ANEXANDO ZIP",
         ATTACHMENT_READY:"ANALISTA · ZIP ANEXADO",
+        WAITING_SEND_CONTROL:"ANALISTA · AGUARDANDO BOTÃO ENVIAR",
         READY_TO_SEND:"ANALISTA · PRONTO PARA ENVIAR",
+        SEND_TRIGGERED:"ANALISTA · CLIQUE EM ENVIAR",
         SENDING_MESSAGE:"ANALISTA · ENVIANDO MENSAGEM",
+        USER_MESSAGE_COMMITTED:"ANALISTA · MENSAGEM ENVIADA",
         MESSAGE_CONFIRMED:"ANALISTA · MENSAGEM CONFIRMADA",
+        SEND_PENDING_RECOVERY:"ANALISTA · ENVIO PRESERVADO PARA RETOMADA",
         FOCUSED_RETRY:"ANALISTA · RETRY COM ABA ATIVA",
         WAITING_ACTION:"ANALISTA PROCESSANDO",
       };
@@ -272,12 +291,14 @@ export default function Home() {
       if (!label) return;
       patchProject(project.id, {
         analysisStatus:label,
-        pipelineStatus:state === "WAITING_ACTION" || state === "MESSAGE_CONFIRMED" ? "ANALISANDO IMAGENS" : "ENVIANDO AO ANALISTA",
+        analysisBridgeStage:state,
+        analysisBridgeUpdatedAt:new Date().toISOString(),
+        pipelineStatus:["WAITING_ACTION","MESSAGE_CONFIRMED","USER_MESSAGE_COMMITTED"].includes(state) ? "ANALISANDO IMAGENS" : "ENVIANDO AO ANALISTA",
       });
       if (project.autoRunStatus === "RUNNING") updateAutoRun(project.id, "ANALISTA", message || label);
       if (activeId === project.id) {
         setImagePhase("searching");
-        setImageProgress(state === "MESSAGE_CONFIRMED" || state === "WAITING_ACTION" ? 92 : 90);
+        setImageProgress(["MESSAGE_CONFIRMED","USER_MESSAGE_COMMITTED","WAITING_ACTION"].includes(state) ? 92 : state === "ATTACHMENT_READY" || state === "WAITING_SEND_CONTROL" ? 91 : 90);
         setImageMessage(message || label);
         setImageStatusLine(label);
       }
@@ -1509,8 +1530,8 @@ export default function Home() {
     const current = latestProject(projectId);
     if (!current || !hasAnalysisPreparationCheckpoint(current)) return;
     const count = (current.analysisPreparationRetryCount || 0) + 1;
-    const nextAt = new Date(Date.now() + analysisRetryDelay(count - 1)).toISOString();
     const message = bridgeErrorMessage(error);
+    const nextAt = new Date(Date.now() + analysisRetryDelayForError(error, count - 1)).toISOString();
     patchProject(projectId, {
       analysisStatus:"CHECKPOINT SALVO · AGUARDANDO RETOMADA",
       analysisPreparationRetryCount:count,
@@ -1564,6 +1585,7 @@ export default function Home() {
       analysisPreparationStage:"ZIP_SAVED",
       analysisStatus:"PACOTE DO ANALISTA SALVO",
       analysisZipUrl:String(packageResult.file.url),
+      analysisZipDownloadUrl:String(packageResult.file.downloadUrl || packageResult.file.url),
       analysisZipName:String(packageResult.file.name || fileName),
       analysisPreparedAt:new Date().toISOString(),
       analysisPreparationRetryAt:undefined,
@@ -1608,6 +1630,7 @@ export default function Home() {
           analysisPreparationStage:"ZIP_SAVED",
           analysisStatus:"PACOTE DO ANALISTA SALVO",
           analysisZipUrl:String(zipFile.url),
+          analysisZipDownloadUrl:String(zipFile.downloadUrl || zipFile.url),
           analysisZipName:String(zipFile.name || project.analysisPackageFileName || `${project.id}_ANALISE_CANDIDATAS.zip`),
           analysisPreparedAt:project.analysisPreparedAt || new Date().toISOString(),
           analysisPreparationRetryAt:undefined,
@@ -1639,8 +1662,8 @@ export default function Home() {
     const current = latestProject(projectId);
     if (!current || !hasPreparedAnalysis(current)) return;
     const count = (current.analysisRetryCount || 0) + 1;
-    const nextAt = new Date(Date.now() + analysisRetryDelay(count - 1)).toISOString();
     const message = bridgeErrorMessage(error);
+    const nextAt = new Date(Date.now() + analysisRetryDelayForError(error, count - 1)).toISOString();
     patchProject(projectId, {
       analysisStatus:"PACOTE SALVO · AGUARDANDO ANALISTA",
       analysisRetryCount:count,
@@ -1649,13 +1672,13 @@ export default function Home() {
       pipelineStatus:"AGUARDANDO ANALISTA",
       autoRunStatus:current.autoRunStatus === "RUNNING" ? "RUNNING" : current.autoRunStatus,
       autoRunStep:current.autoRunStatus === "RUNNING" ? "ANALISTA" : current.autoRunStep,
-      autoRunMessage:current.autoRunStatus === "RUNNING" ? `Pacote do Analista preservado. ${analysisRetryLabel(nextAt)}.` : current.autoRunMessage,
+      autoRunMessage:current.autoRunStatus === "RUNNING" ? `Envio ao Analista preservado no último ponto. ${analysisRetryLabel(nextAt)}.` : current.autoRunMessage,
       autoRunError:current.autoRunStatus === "RUNNING" ? undefined : current.autoRunError,
     });
     setImagePhase("searching");
     setImageProgress(90);
-    setImageMessage("O pacote já está salvo. O Analista será chamado novamente sem repetir o Collector.");
-    setImageStatusLine(`PACOTE PRESERVADO · ${analysisRetryLabel(nextAt)} · TENTATIVA ${count + 1}`);
+    setImageMessage("O pacote e o estado de envio estão preservados. O Bridge retomará da mesma aba sem repetir o Collector.");
+    setImageStatusLine(`ENVIO PRESERVADO · ${analysisRetryLabel(nextAt)} · TENTATIVA ${count + 1}`);
   }
 
   async function resetAnalysisJob(jobId:string, uploadToken:string) {
@@ -1742,11 +1765,14 @@ export default function Home() {
       analysisJobId:analysisJob.jobId,
       analysisStatus:"ENVIANDO AO ANALISTA",
       analysisZipUrl:zipFile.url,
+      analysisZipDownloadUrl:zipFile.downloadUrl || zipFile.url,
       analysisZipName:zipFile.name,
       analysisExpectedIds:expectedIds,
       analysisPrompt:analysisJob.prompt,
       analysisUploadToken:analysisJob.uploadToken,
       analysisLastDispatchAt:new Date().toISOString(),
+      analysisBridgeStage:"DISPATCHING",
+      analysisBridgeUpdatedAt:new Date().toISOString(),
       analysisRetryAt:undefined,
       pipelineStatus:"ANALISANDO IMAGENS",
     });
@@ -1794,7 +1820,7 @@ export default function Home() {
         uploadToken:String(project.analysisUploadToken),
       };
       const expectedIds = [...(project.analysisExpectedIds || [])];
-      const zipFile = { url:String(project.analysisZipUrl), name:String(project.analysisZipName || `${project.id}_ANALISE_CANDIDATAS.zip`) };
+      const zipFile = { url:String(project.analysisZipUrl), downloadUrl:String(project.analysisZipDownloadUrl || project.analysisZipUrl), name:String(project.analysisZipName || `${project.id}_ANALISE_CANDIDATAS.zip`) };
 
       const currentResponse = await fetch(`/api/corvo/resultado?jobId=${encodeURIComponent(analysisJob.jobId)}`, { cache:"no-store" });
       const currentStatus = await currentResponse.json().catch(() => ({}));
@@ -1807,6 +1833,24 @@ export default function Home() {
           await resetAnalysisJob(analysisJob.jobId, analysisJob.uploadToken);
         }
       } else {
+        const committedStages = new Set(["USER_MESSAGE_COMMITTED", "MESSAGE_CONFIRMED", "WAITING_ACTION"]);
+        const bridgeStage = String(project.analysisBridgeStage || "");
+        const bridgeUpdatedAt = project.analysisBridgeUpdatedAt ? new Date(project.analysisBridgeUpdatedAt).getTime() : 0;
+        const committedRecently = committedStages.has(bridgeStage) && (!bridgeUpdatedAt || Date.now() - bridgeUpdatedAt < 45 * 60_000);
+        if (currentResponse.ok && committedRecently && currentStatus?.status !== "ERROR") {
+          patchProject(projectId, {
+            analysisStatus:"ANALISTA PROCESSANDO",
+            pipelineStatus:"ANALISANDO IMAGENS",
+            analysisRetryAt:undefined,
+            analysisLastError:undefined,
+          });
+          setImageMessage("A mensagem já foi enviada ao Analista. Retomando apenas a espera pelo resultado, sem reenviar o prompt.");
+          setImageStatusLine("MENSAGEM JÁ ENVIADA · AGUARDANDO ACTION");
+          const completedStatus = await pollPipelineJob(analysisJob.jobId, project.id);
+          const routed = await finishAnalysisFromStatus(project, analysisJob, expectedIds, completedStatus);
+          if (routed && latestProject(projectId)?.autoRunStatus === "RUNNING") setTimeout(() => void runAutomaticProduction(projectId), 100);
+          return routed;
+        }
         await resetAnalysisJob(analysisJob.jobId, analysisJob.uploadToken);
       }
 
@@ -2189,7 +2233,7 @@ export default function Home() {
     </section>
 
     <section className="projects" id="projetos"><div className="section-heading"><div><span className="section-number">02</span><h2>PROJETOS RECENTES</h2></div><span className="project-count">{String(projects.length).padStart(2,"0")} PRODUÇÕES</span></div><div className="project-list">{projects.map((project) => <button className={`project-row ${project.id===activeId?"selected":""}`} key={project.id} onClick={() => setActiveId(project.id)}><span className="project-icon">{project.format==="REELS"?"▯":"▭"}</span><span className="project-name"><b>{project.title}</b><small>{project.id}</small></span><span className="project-format">{project.format}</span><span className="progress"><i style={{width:`${project.stage*20}%`}} /></span><span className="stage-label">ETAPA {project.stage}/5</span><span className="row-arrow">→</span></button>)}</div></section>
-    <footer><span>CORVOQUIZ PRODUÇÃO <i>V0.6.31</i></span><span>PROXY DE DOWNLOAD DO ANALISTA · CHECKPOINT PRESERVADO · V0.6.31</span></footer>
+    <footer><span>CORVOQUIZ PRODUÇÃO <i>V0.6.32</i></span><span>ENVIO DO ANALISTA COM CHECKPOINT · RETOMADA POR PROGRESSO · V0.6.32</span></footer>
     {notice && <div className="toast">{notice}</div>}
 
     {createOpen && <div className="modal-backdrop" onMouseDown={(event) => event.target===event.currentTarget&&closeCreationModal()}><section className="creation-modal idea-modal" role="dialog" aria-modal="true" aria-labelledby="new-production-title"><button className="modal-close" disabled={ideaLoading} onClick={closeCreationModal} aria-label="Fechar">×</button><div className="modal-symbol">✦</div><span className="modal-kicker">{ideaRevisionProjectId?"REFAZER IDEIA":"NOVA PRODUÇÃO"}</span><h2 id="new-production-title">{ideaRevisionProjectId?"ESCOLHA UMA NOVA DIREÇÃO":"O QUE VAMOS CRIAR?"}</h2><p>{ideaRevisionProjectId?"Ao confirmar, roteiro, prompts e imagens serão refeitos automaticamente.":"Comece sem tema e peça ideias ao Corvo, ou informe uma direção opcional."}</p>
@@ -2231,8 +2275,8 @@ export default function Home() {
         <div className="downloads-head"><div><span>INSTALAÇÃO E SUPORTE</span><h3 id="downloads-title">ARQUIVOS PARA BAIXAR</h3></div><small>SE PRECISAR REINSTALAR</small></div>
         <div className="download-grid">
           <a className="download-card" href="/downloads/CORVO_COLLECTOR_V080_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.8.0</small></div><i>↓</i></a>
-          <a className="download-card" href="/downloads/CORVO_BRIDGE_V0618_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.18 · PROXY DE DOWNLOAD DO ZIP + DIAGNÓSTICO</small></div><i>↓</i></a>
-          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0631.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
+          <a className="download-card" href="/downloads/CORVO_BRIDGE_V0619_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.19 · RETOMADA DO ENVIO + DIAGNÓSTICO</small></div><i>↓</i></a>
+          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0632.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
         </div>
       </section>
       <details className="advanced-settings"><summary>CONFIGURAÇÕES AVANÇADAS</summary><div className="settings-grid"><label>CANDIDATAS COLETADAS/ID<input type="number" min="1" max="20" value={settings.maxCandidates} onChange={(event)=>setSettings({...settings,maxCandidates:Math.max(1,Math.min(20,Number(event.target.value)||20))})}/></label><label>CANDIDATAS/ID → ANALISTA<input type="number" min="1" max="30" value={settings.analystCandidatesPerId} onChange={(event)=>setSettings({...settings,analystCandidatesPerId:Math.max(1,Math.min(30,Number(event.target.value)||10))})}/></label><label>VARREDURA<input type="number" value={settings.scrollSteps} onChange={(event)=>setSettings({...settings,scrollSteps:Number(event.target.value)})}/></label><label>QUALIDADE JPEG<input type="number" step=".01" value={settings.jpegQuality} onChange={(event)=>setSettings({...settings,jpegQuality:Number(event.target.value)})}/></label><label>PREFIXO<input value={settings.prefix} onChange={(event)=>setSettings({...settings,prefix:event.target.value})}/></label></div><p>A busca coleta no máximo 20 candidatas únicas por ID. No modo Mesclado, a meta é dividida entre Google e Pinterest. Depois, o limite do Analista reduz apenas o transporte; o app não escolhe a vencedora.</p><label className="batch-label">COMANDOS EM LOTE — OPCIONAL<textarea value={settings.batchText} onChange={(event)=>setSettings({...settings,batchText:event.target.value})} placeholder={"01|primeira busca\n02|segunda busca"} /></label></details>

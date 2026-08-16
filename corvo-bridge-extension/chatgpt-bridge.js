@@ -1,11 +1,11 @@
 (() => {
-  if (globalThis.__CORVO_CHATGPT_BRIDGE_V0618__) return;
-  globalThis.__CORVO_CHATGPT_BRIDGE_V0618__ = true;
+  if (globalThis.__CORVO_CHATGPT_BRIDGE_V0619__) return;
+  globalThis.__CORVO_CHATGPT_BRIDGE_V0619__ = true;
 
   let busy = false;
   const COMPOSER_TIMEOUT_MS = 30000;
-  const BUTTON_TIMEOUT_MS = 12000;
-  const CONFIRM_TIMEOUT_MS = 9000;
+  const BUTTON_TIMEOUT_MS = 60000;
+  const CONFIRM_TIMEOUT_MS = 60000;
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
   function shortText(value, max = 180) {
@@ -367,8 +367,11 @@
         signal:controller.signal,
       });
       if (!response.ok) {
-        let message = "";
-        try { message = String((await response.json())?.message || ""); } catch {}
+        let body = {};
+        try { body = await response.json(); } catch {}
+        const code = String(body?.code || "").trim();
+        const message = String(body?.message || "").trim();
+        if (code) throw new Error(`${code}${message ? `:${message}` : ""}`);
         throw new Error(`ATTACHMENT_PROXY_FETCH_${response.status}${message ? `:${message}` : ""}`);
       }
       const blob = await response.blob();
@@ -395,6 +398,7 @@
       if (!url) continue;
 
       if (attachmentVisible(name)) {
+        await reportDiagnostic(job.jobId, "ATTACHMENT_REUSED", { fileName:name, page:pageDiagnostic() });
         await reportStage(job.jobId, "ATTACHMENT_READY", `${name} já está anexado.`, { fileName:name, attachmentIndex:index + 1, attachmentTotal:attachments.length });
         continue;
       }
@@ -458,21 +462,27 @@
     throw new Error("COMPOSER_NOT_FOUND");
   }
 
-  async function waitForEnabledButtons(composer, timeout = BUTTON_TIMEOUT_MS) {
-    const deadline = Date.now() + timeout;
-    while (Date.now() < deadline) {
-      const buttons = findSendButtons(composer);
-      if (buttons.length) return buttons;
-      await sleep(200);
-    }
-    return [];
+  function responseIsStreaming() {
+    const selectors = [
+      'button[data-testid="stop-button"]',
+      'button[aria-label*="Stop" i]',
+      'button[aria-label*="Parar" i]',
+      '[data-is-streaming="true"]',
+      '[aria-busy="true"][data-message-author-role="assistant"]'
+    ];
+    return selectors.some((selector) => [...document.querySelectorAll(selector)].some(isVisible));
   }
 
   function userMessageState() {
-    const messages = [...document.querySelectorAll('[data-message-author-role="user"]')];
+    const userMessages = [...document.querySelectorAll('[data-message-author-role="user"]')];
+    const assistantMessages = [...document.querySelectorAll('[data-message-author-role="assistant"]')];
     return {
-      count: messages.length,
-      lastText: (messages.at(-1)?.textContent || "").trim()
+      count: userMessages.length,
+      lastText: (userMessages.at(-1)?.textContent || "").trim(),
+      assistantCount: assistantMessages.length,
+      streaming: responseIsStreaming(),
+      conversationId: conversationIdFromPath(),
+      composerLength: composerText(findComposer()).length
     };
   }
 
@@ -481,13 +491,48 @@
       .some((message) => (message.textContent || "").includes(jobId));
   }
 
+  async function waitForEnabledButtons(composer, timeout = BUTTON_TIMEOUT_MS, jobId = "") {
+    const deadline = Date.now() + timeout;
+    let lastHeartbeat = 0;
+    while (Date.now() < deadline) {
+      if (jobId && conversationHasJob(jobId)) return [];
+      const buttons = findSendButtons(composer || findComposer());
+      if (buttons.length) return buttons;
+      const now = Date.now();
+      if (jobId && now - lastHeartbeat >= 5000) {
+        lastHeartbeat = now;
+        await reportDiagnostic(jobId, "SEND_CONTROL_WAIT", { elapsedMs:timeout - Math.max(0, deadline - now), composer:elementDiagnostic(findComposer()), streaming:responseIsStreaming(), page:pageDiagnostic() });
+      }
+      await sleep(250);
+    }
+    return [];
+  }
+
   async function waitForSendConfirmation(previousState, jobId, timeout = CONFIRM_TIMEOUT_MS) {
     const deadline = Date.now() + timeout;
+    let lastHeartbeat = 0;
+    let draftGoneSince = 0;
     while (Date.now() < deadline) {
       if (conversationHasJob(jobId)) return true;
       const currentState = userMessageState();
       if (currentState.count > previousState.count && currentState.lastText.includes(jobId)) return true;
       if (currentState.lastText !== previousState.lastText && currentState.lastText.includes(jobId)) return true;
+
+      const draftHasJob = composerText(findComposer()).includes(jobId);
+      const threadAdvanced = currentState.assistantCount > (previousState.assistantCount || 0) || currentState.streaming;
+      const routeCommitted = Boolean(currentState.conversationId && currentState.conversationId !== previousState.conversationId);
+      if (!draftHasJob && (threadAdvanced || routeCommitted)) {
+        if (!draftGoneSince) draftGoneSince = Date.now();
+        if (Date.now() - draftGoneSince >= 800) return true;
+      } else {
+        draftGoneSince = 0;
+      }
+
+      const now = Date.now();
+      if (now - lastHeartbeat >= 5000) {
+        lastHeartbeat = now;
+        await reportDiagnostic(jobId, "SEND_CONFIRM_WAIT", { elapsedMs:timeout - Math.max(0, deadline - now), previousState, currentState, draftHasJob, threadAdvanced, routeCommitted });
+      }
       await sleep(250);
     }
     return false;
@@ -1105,12 +1150,18 @@
       const message = compose(job);
       const previousState = userMessageState();
 
-      await reportStage(job.jobId, "FILLING_COMPOSER", "Preenchendo a solicitação no GPT...");
-      setComposerText(composer, message);
-      const fillDeadline = Date.now() + 8000;
-      while (Date.now() < fillDeadline && !composerText(findComposer()).includes(job.jobId)) await sleep(180);
-      if (!composerText(findComposer()).includes(job.jobId)) throw new Error("COMPOSER_FILL_FAILED");
-      await reportDiagnostic(job.jobId, "COMPOSER_FILL_OK", { length:composerText(findComposer()).length, containsJob:true, composer:elementDiagnostic(findComposer()) });
+      const existingDraft = composerText(composer);
+      if (existingDraft.includes(job.jobId)) {
+        await reportStage(job.jobId, "DRAFT_RECOVERED", "Rascunho do Analista recuperado. Continuando do ponto anterior...");
+        await reportDiagnostic(job.jobId, "COMPOSER_DRAFT_REUSED", { length:existingDraft.length, composer:elementDiagnostic(composer) });
+      } else {
+        await reportStage(job.jobId, "FILLING_COMPOSER", "Preenchendo a solicitação no GPT...");
+        setComposerText(composer, message);
+        const fillDeadline = Date.now() + 45000;
+        while (Date.now() < fillDeadline && !composerText(findComposer()).includes(job.jobId)) await sleep(180);
+        if (!composerText(findComposer()).includes(job.jobId)) throw new Error("COMPOSER_FILL_FAILED");
+        await reportDiagnostic(job.jobId, "COMPOSER_FILL_OK", { length:composerText(findComposer()).length, containsJob:true, composer:elementDiagnostic(findComposer()) });
+      }
 
       const attachmentBytes = await attachJobFiles(job);
       await reportDiagnostic(job.jobId, "ATTACHMENTS_FINISHED", { attachmentBytes, page:pageDiagnostic() });
@@ -1121,21 +1172,27 @@
       }
       if (!composerText(findComposer()).includes(job.jobId)) throw new Error("COMPOSER_LOST_AFTER_ATTACHMENT");
 
-      await reportStage(job.jobId, "READY_TO_SEND", attachmentBytes ? "Arquivo anexado. Preparando envio ao GPT..." : "Solicitação pronta para envio...");
+      await reportStage(job.jobId, "WAITING_SEND_CONTROL", attachmentBytes ? "ZIP pronto. Aguardando o botão de enviar ficar disponível..." : "Solicitação pronta. Aguardando o botão de enviar...");
       const attachmentButtonTimeout = attachmentBytes
-        ? Math.max(30000, Math.min(180000, 15000 + Math.floor(attachmentBytes / 250)))
-        : BUTTON_TIMEOUT_MS;
-      const buttons = await waitForEnabledButtons(findComposer(), attachmentButtonTimeout);
+        ? Math.max(120000, Math.min(300000, 45000 + Math.floor(attachmentBytes / 180)))
+        : Math.max(BUTTON_TIMEOUT_MS, 90000);
+      const buttons = await waitForEnabledButtons(findComposer(), attachmentButtonTimeout, job.jobId);
+      if (conversationHasJob(job.jobId)) {
+        await reportDiagnostic(job.jobId, "MESSAGE_FOUND_BEFORE_CLICK", { page:pageDiagnostic() });
+        await reportStage(job.jobId, "USER_MESSAGE_COMMITTED", "A mensagem já aparece na conversa. Aguardando o Analista...");
+        await reportSent(job.jobId);
+        return;
+      }
       await reportDiagnostic(job.jobId, "SEND_BUTTON_SCAN", { timeout:attachmentButtonTimeout, found:buttons.length, buttons:buttons.map(elementDiagnostic), page:pageDiagnostic() });
       for (const button of buttons) {
         if (!isEnabled(button)) continue;
-        await reportStage(job.jobId, "SENDING_MESSAGE", "Enviando a mensagem ao GPT...");
+        await reportStage(job.jobId, "SEND_TRIGGERED", "Botão de enviar encontrado. Confirmando o envio...");
         await reportDiagnostic(job.jobId, "SEND_BUTTON_CLICK", { button:elementDiagnostic(button), previousState, composerLength:composerText(findComposer()).length });
         clickButton(button);
-        const confirmed = await waitForSendConfirmation(previousState, job.jobId, 12000);
+        const confirmed = await waitForSendConfirmation(previousState, job.jobId, 75000);
         await reportDiagnostic(job.jobId, confirmed ? "SEND_BUTTON_CONFIRMED" : "SEND_BUTTON_NOT_CONFIRMED", { button:elementDiagnostic(button), afterState:userMessageState(), page:pageDiagnostic() });
         if (confirmed) {
-          await reportStage(job.jobId, "MESSAGE_CONFIRMED", "Mensagem confirmada na conversa. Aguardando o especialista...");
+          await reportStage(job.jobId, "USER_MESSAGE_COMMITTED", "Mensagem confirmada na conversa. Aguardando o especialista...");
           await reportSent(job.jobId);
           return;
         }
@@ -1149,7 +1206,7 @@
           await reportStage(job.jobId, "SENDING_MESSAGE", "Confirmando envio pelo formulário do GPT...");
           await reportDiagnostic(job.jobId, "FORM_REQUEST_SUBMIT", { submitButton:elementDiagnostic(submitButton), form:elementDiagnostic(form) });
           form.requestSubmit(submitButton);
-          const confirmed = await waitForSendConfirmation(previousState, job.jobId, 12000);
+          const confirmed = await waitForSendConfirmation(previousState, job.jobId, 75000);
           await reportDiagnostic(job.jobId, confirmed ? "FORM_SUBMIT_CONFIRMED" : "FORM_SUBMIT_NOT_CONFIRMED", { afterState:userMessageState(), page:pageDiagnostic() });
           if (confirmed) {
             await reportStage(job.jobId, "MESSAGE_CONFIRMED", "Mensagem confirmada na conversa. Aguardando o especialista...");
@@ -1164,7 +1221,7 @@
         await reportStage(job.jobId, "SENDING_MESSAGE", "Tentando envio pelo teclado...");
         await reportDiagnostic(job.jobId, "KEYBOARD_SUBMIT", { composer:elementDiagnostic(fallbackComposer), composerLength:composerText(fallbackComposer).length });
         submitWithEnter(fallbackComposer);
-        const confirmed = await waitForSendConfirmation(previousState, job.jobId, 15000);
+        const confirmed = await waitForSendConfirmation(previousState, job.jobId, 75000);
         await reportDiagnostic(job.jobId, confirmed ? "KEYBOARD_SUBMIT_CONFIRMED" : "KEYBOARD_SUBMIT_NOT_CONFIRMED", { afterState:userMessageState(), page:pageDiagnostic() });
         if (confirmed) {
           await reportStage(job.jobId, "MESSAGE_CONFIRMED", "Mensagem confirmada na conversa. Aguardando o especialista...");
@@ -1173,6 +1230,9 @@
         }
       }
 
+            if (composerText(findComposer()).includes(job.jobId)) {
+        await reportStage(job.jobId, "SEND_PENDING_RECOVERY", "A solicitação continua no editor. O Bridge vai retomar desta mesma aba sem recriar o pacote.");
+      }
       throw new Error("GPT_SEND_NOT_CONFIRMED");
     } catch (error) {
       await reportDiagnostic(job?.jobId, "SEND_PROMPT_ERROR", { error:String(error?.message || error || "GPT_SEND_FAILED"), stack:shortText(error?.stack || "", 700), page:pageDiagnostic() });
@@ -1185,7 +1245,7 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "CORVO_BRIDGE_PING") {
       chrome.runtime.sendMessage({ type: "CORVO_GPT_READY" }).catch(() => {});
-      sendResponse({ ok: true, version:"0.6.18", page:pageDiagnostic() });
+      sendResponse({ ok: true, version:"0.6.19", page:pageDiagnostic() });
       return;
     }
     if (message?.type === "CORVO_SEND_PROMPT") {

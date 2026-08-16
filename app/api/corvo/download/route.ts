@@ -1,7 +1,7 @@
-import { get } from "@vercel/blob";
 import { NextRequest, NextResponse } from "next/server";
 import { getCorvoJob } from "../../../../lib/corvo-jobs";
 import { storageFailure } from "../../../../lib/corvo-api";
+import { CorvoBlobReadError, openCorvoBlob } from "../../../../lib/corvo-blob";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -61,12 +61,12 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ ok: false, message: "Trabalho ou token inválido." }, { status: 404, headers: corsHeaders() });
     }
 
-    const result = await get(blobUrl.toString(), { access: "public" });
+    const result:any = await openCorvoBlob(blobUrl.toString());
     if (!result || result.statusCode !== 200 || !result.stream) {
       return NextResponse.json({ ok: false, message: "Arquivo não encontrado no Blob." }, { status: 404, headers: corsHeaders() });
     }
 
-    const size = Number(result.blob.size || 0);
+    const size = Number(result.blob?.size || 0);
     if (size > MAX_PROXY_FILE_SIZE) {
       return NextResponse.json({ ok: false, message: "Arquivo grande demais para envio ao ChatGPT." }, { status: 413, headers: corsHeaders() });
     }
@@ -76,12 +76,15 @@ export async function GET(request: NextRequest) {
     headers.set("Content-Type", result.blob.contentType || "application/octet-stream");
     headers.set("Content-Disposition", `attachment; filename="${fileName.replaceAll('"', "")}"`);
     headers.set("X-Content-Type-Options", "nosniff");
-    headers.set("X-Corvo-Download-Source", "vercel-blob-proxy");
+    headers.set("X-Corvo-Download-Source", String(result.source || "vercel-blob-proxy"));
     if (size) headers.set("Content-Length", String(size));
     if (result.blob.etag) headers.set("ETag", result.blob.etag);
 
     return new NextResponse(result.stream, { status: 200, headers });
   } catch (error) {
+    if (error instanceof CorvoBlobReadError) {
+      return NextResponse.json({ ok:false, code:error.code, message:error.message, attempts:error.attempts }, { status:error.status === 403 ? 503 : 502, headers:corsHeaders() });
+    }
     const fallback = storageFailure(error);
     const headers = new Headers(fallback.headers);
     for (const [key, value] of Object.entries(corsHeaders())) headers.set(key, value);

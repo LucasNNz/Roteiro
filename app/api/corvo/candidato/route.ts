@@ -3,6 +3,7 @@ import JSZip from "jszip";
 import { NextRequest, NextResponse } from "next/server";
 import { getCollectorCandidatesByName, getCorvoJob } from "../../../../lib/corvo-jobs";
 import { storageFailure } from "../../../../lib/corvo-api";
+import { readCorvoBlobBuffer } from "../../../../lib/corvo-blob";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -39,9 +40,8 @@ export async function POST(request: NextRequest) {
     const absentFromRegistry = names.filter((name) => !registryByName.has(name.toLocaleLowerCase("pt-BR")));
     if (absentFromRegistry.length) return NextResponse.json({ ok:false, message:`${absentFromRegistry.length} arquivo(s) escolhido(s) pelo Analista não existem no registro do pacote bruto.`, missing:absentFromRegistry }, { status:409 });
 
-    const packageResponse = await fetch(packageFile.url, { cache:"no-store" });
-    if (!packageResponse.ok) return NextResponse.json({ ok:false, message:`Não foi possível abrir o ZIP bruto (HTTP ${packageResponse.status}).` }, { status:502 });
-    const zip = await JSZip.loadAsync(await packageResponse.arrayBuffer());
+    const packageSource = await readCorvoBlobBuffer(packageFile.downloadUrl || packageFile.url);
+    const zip = await JSZip.loadAsync(packageSource.buffer);
     const entries = Object.values(zip.files).filter((entry) => !entry.dir);
     const zipByName = new Map(entries.map((entry) => [entry.name.toLocaleLowerCase("pt-BR"), entry]));
     const extracted = [];

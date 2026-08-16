@@ -1,3 +1,15 @@
+## Alteração V0.6.32 — checkpoint fino do envio ao Analista
+
+O despacho do Analista deixa de usar um timeout único e passa a persistir microestados: editor pronto, rascunho preenchido, anexo recuperado, anexo confirmado, controle de envio pronto, envio disparado, mensagem commitada e resposta iniciada.
+
+Regras:
+- retry do mesmo JOB_ID reutiliza o rascunho já presente no composer;
+- ZIP já visível no composer não é baixado/anexado novamente;
+- qualquer progresso real renova o timeout ocioso;
+- existe um limite absoluto de segurança para impedir espera infinita;
+- falha do Blob mantém código estruturado e o checkpoint do pacote;
+- somente ausência real de progresso leva o job ao timer de retry.
+
 ## Alteração V0.6.31 — proxy autenticado do ZIP do Analista
 
 O diagnóstico V1 chegou até `COMPOSER_FILL_OK` e falhou exatamente em `ATTACHMENT_FETCH_DIRECT_FAIL` / `ATTACHMENT_FETCH_403`. O transporte do ZIP deixa de depender da leitura direta do domínio Blob dentro do ChatGPT. O app fornece `appOrigin` + token do job ao Bridge; quando a leitura direta falha, o Bridge chama `GET /api/corvo/download`, que autentica o job, valida que a origem é um Blob interno `corvoquiz/` e usa `@vercel/blob.get()` no servidor para devolver o stream. O mesmo pacote `ZIP_SAVED` é reutilizado; nenhuma etapa do Collector/preparo é refeita.

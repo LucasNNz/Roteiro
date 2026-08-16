@@ -3,6 +3,7 @@ import JSZip from "jszip";
 import { NextRequest, NextResponse } from "next/server";
 import { attachCorvoFile, getCorvoJob, listCollectorCandidates, updateCorvoAnalysisPreparation } from "../../../../lib/corvo-jobs";
 import { storageFailure } from "../../../../lib/corvo-api";
+import { readCorvoBlobBuffer } from "../../../../lib/corvo-blob";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -80,9 +81,8 @@ export async function POST(request: NextRequest) {
         if (index >= directCandidates.length) return;
         const candidate = directCandidates[index];
         try {
-          const response = await fetch(candidate.url, { cache:"no-store" });
-          if (!response.ok) throw new Error(`HTTP_${response.status}`);
-          zip.file(candidate.name, await response.arrayBuffer());
+          const source = await readCorvoBlobBuffer(candidate.downloadUrl || candidate.url);
+          zip.file(candidate.name, source.buffer);
         } catch (error) {
           failures.push(`${candidate.id}|${candidate.name}|${error instanceof Error ? error.message : String(error)}`);
         }
@@ -100,9 +100,9 @@ export async function POST(request: NextRequest) {
         if (index >= batchEntries.length) return;
         const [batchUrl, batchCandidates] = batchEntries[index];
         try {
-          const response = await fetch(batchUrl, { cache:"no-store" });
-          if (!response.ok) throw new Error(`HTTP_${response.status}`);
-          const batchZip = await JSZip.loadAsync(await response.arrayBuffer());
+          const sample = batchCandidates[0];
+          const source = await readCorvoBlobBuffer(String(sample?.batchDownloadUrl || batchUrl));
+          const batchZip = await JSZip.loadAsync(source.buffer);
           const byName = new Map(Object.values(batchZip.files).filter((entry) => !entry.dir).map((entry) => [entry.name.toLocaleLowerCase("pt-BR"), entry]));
           for (const candidate of batchCandidates) {
             const entryName = String(candidate.batchEntry || candidate.name).toLocaleLowerCase("pt-BR");
