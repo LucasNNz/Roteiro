@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import JSZip from "jszip";
 import {
   allCandidateUrls,
+  buildAnalystRawSelections,
   buildFormaSelections,
   candidateUrl,
   CORVO_COLLECTOR_EXTENSION_ID,
@@ -185,6 +186,7 @@ export default function Home() {
   const workflowRunToken = useRef(0);
   const thumbRuns = useRef(new Set<string>());
   const generatorQueue = useRef<Promise<void>>(Promise.resolve());
+  const packageRetryRef = useRef<RankedGroup[] | null>(null);
 
   useEffect(() => { localStorage.setItem("corvoquiz-projects-v02", JSON.stringify(projects)); }, [projects]);
   useEffect(() => { localStorage.setItem("corvo-collector-settings-v02", JSON.stringify(settings)); }, [settings]);
@@ -464,7 +466,17 @@ export default function Home() {
     if (message.includes("COLLECTOR_NOT_AVAILABLE") || message.includes("Receiving end does not exist")) return "O Corvo Collector não foi encontrado. Instale ou atualize a extensão incluída no pacote.";
     if (message.includes("JOB_ALREADY_RUNNING_DIFFERENT")) return "O Collector está trabalhando em outra produção. Aguarde essa busca terminar ou cancele-a antes de iniciar esta.";
     if (message.includes("JOB_ALREADY_RUNNING")) return "Já existe uma busca em andamento. Abra novamente esta etapa para acompanhar o trabalho atual.";
+    if (message.includes("VERCEL_BLOB_NOT_CONFIGURED") || message.toLowerCase().includes("vercel blob não configurado")) return "O Vercel Blob ainda não está conectado ao projeto. As imagens foram salvas pelo Collector, mas o app não tem onde armazená-las. Conecte um Blob Store ao projeto roteiro na Vercel e tente novamente.";
     return message || "Não foi possível concluir esta etapa.";
+  }
+
+  async function ensurePipelineStorageReady() {
+    const response = await fetch("/api/corvo/diagnostico", { cache:"no-store" });
+    const status = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(status?.message || "Não foi possível verificar o armazenamento do pipeline.");
+    if (!status?.configured) throw new Error("O Upstash Redis não está configurado para os jobs do Corvo.");
+    if (!status?.blobConfigured) throw new Error("VERCEL_BLOB_NOT_CONFIGURED");
+    return status;
   }
 
   function updateThumb(projectId:string, patch:Partial<Project>) {
@@ -585,15 +597,16 @@ export default function Home() {
 
   async function startImageFlow() {
     if (!active) return;
-    void startThumbBranch(active);
-    void startYoutubeBranch(active);
     const token = ++runToken.current;
     setImageOpen(true); setImagePhase("connecting"); setImageProgress(4); setImageMessage("Conectando ao coletor..."); setImageStatusLine(""); setGroups([]); setPackageCode("");
     try {
       const ping = await sendCollectorMessage<{ok?:boolean;authorized?:boolean;error?:string}>("PING", undefined, settings.extensionId);
       if (!ping?.ok) throw new Error(ping?.error || "COLLECTOR_CONNECTION_ERROR");
       if (ping.authorized === false) throw new Error("ORIGIN_NOT_AUTHORIZED");
+      await ensurePipelineStorageReady();
       if (token !== runToken.current) return;
+      void startThumbBranch(active);
+      void startYoutubeBranch(active);
       const items = settings.batchText.trim()
         ? parseGuideText(settings.batchText)
         : active.promptText?.trim() ? parseGuideText(active.promptText) : defaultQueries(active);
@@ -967,20 +980,27 @@ export default function Home() {
     setImageStatusLine(`${items.length}/${items.length} IMAGENS FINAIS`);
   }
 
-  async function dispatchAnalysis(project:Project, analysisJob:{jobId:string;prompt:string;uploadToken:string}, zipFile:any, selections:any[]) {
+  async function dispatchAnalysis(project:Project, analysisJob:{jobId:string;prompt:string;uploadToken:string}, zipFile:any, expectedIds:string[]) {
     setProjects((current) => current.map((entry) => entry.id === project.id ? { ...entry, analysisJobId:analysisJob.jobId, analysisStatus:"ENVIANDO AO ANALISTA", analysisZipUrl:zipFile.url, pipelineStatus:"ANALISANDO IMAGENS" } : entry));
-    setImagePhase("searching"); setImageProgress(90); setImageMessage("Enviando o ZIP real ao Corvo Analista..."); setImageStatusLine("PACOTE SALVO NO APP · ABRINDO ANALISTA");
+    setImagePhase("searching"); setImageProgress(90); setImageMessage("Enviando todas as candidatas ao Corvo Analista..."); setImageStatusLine("ZIP BRUTO SALVO · ANALISTA ESCOLHENDO POR ID");
     await dispatchCorvoBridge({
       jobId:analysisJob.jobId,
-      prompt:[analysisJob.prompt,"","O arquivo ZIP do Collector está anexado a esta conversa. Abra o pacote, analise todas as imagens e preserve todos os IDs."].join("\n"),
+      prompt:[
+        analysisJob.prompt,
+        "",
+        "O ZIP bruto completo do Collector está anexado a esta conversa.",
+        "Para CADA ID, compare TODAS as candidatas disponíveis antes de decidir.",
+        "Não escolha pela ordem do arquivo. Elimine erros e duplicatas inferiores.",
+        "Em PASSOU/PASSOU_COM_RESSALVAS, ARQUIVO deve conter exatamente o nome real da candidata escolhida no ZIP.",
+        "Em NAO_PASSOU, deixe ARQUIVO vazio e forneça PROMPT_GERACAO completo.",
+        "Preserve todos os IDs e entregue [CORVO_IMAGE_ANALYSIS] VERSION=1.1.",
+      ].join("\n"),
       specialist:"ANALISTA",
       meta:{ projectId:project.id, attachments:[{ url:zipFile.url, name:zipFile.name, contentType:"application/zip" }] },
     });
     const status = await pollPipelineJob(analysisJob.jobId, project.id);
     const manifestItems = Array.isArray(status.manifest?.items) ? status.manifest.items : [];
     if (!manifestItems.length) throw new Error("O Analista concluiu sem um manifesto por ID.");
-    const collectorFiles = Array.isArray(status.files) ? status.files.filter((file:any) => file?.type === "COLLECTOR_IMAGE") : [];
-    const expectedIds = selections.map((selection:any) => String(selection.id));
     const returnedIds = manifestItems.map((manifestItem:any) => String(manifestItem?.id || "").trim()).filter(Boolean);
     const duplicateReturned = returnedIds.filter((id:string,index:number) => returnedIds.indexOf(id) !== index);
     const missingReturned = expectedIds.filter((id:string) => !returnedIds.includes(id));
@@ -988,14 +1008,29 @@ export default function Home() {
     if (duplicateReturned.length || missingReturned.length || unexpectedReturned.length) {
       throw new Error(`Manifesto do Analista inconsistente. Ausentes: ${missingReturned.join(",") || "nenhum"}; duplicados: ${[...new Set(duplicateReturned)].join(",") || "nenhum"}; inesperados: ${unexpectedReturned.join(",") || "nenhum"}.`);
     }
-    const selectionById = new Map(selections.map((selection:any) => [String(selection.id), selection]));
+
+    const chosenNames = manifestItems.flatMap((manifestItem:any) => {
+      const statusName = String(manifestItem.status || "").toUpperCase();
+      if (statusName !== "PASSOU" && statusName !== "PASSOU_COM_RESSALVAS") return [];
+      const file = String(manifestItem.file || "").trim();
+      if (!file) throw new Error(`O Analista aprovou o ID ${String(manifestItem.id || "?")} sem informar ARQUIVO.`);
+      return [file];
+    });
+    const sourceResponse = chosenNames.length ? await fetch("/api/corvo/candidato", {
+      method:"POST",
+      headers:{ "content-type":"application/json", "x-corvo-upload-token":analysisJob.uploadToken },
+      body:JSON.stringify({ jobId:analysisJob.jobId, fileNames:chosenNames }),
+    }) : null;
+    const sourceResult = sourceResponse ? await sourceResponse.json().catch(() => ({})) : { ok:true, files:[] };
+    if (sourceResponse && (!sourceResponse.ok || !sourceResult?.ok)) throw new Error(sourceResult?.message || "Não foi possível localizar as candidatas escolhidas pelo Analista.");
+    const collectorFiles = Array.isArray(sourceResult?.files) ? sourceResult.files : [];
+
     const pipelineItems:PipelineItem[] = manifestItems.flatMap((manifestItem:any) => {
       const id = String(manifestItem.id || "").trim();
       const statusName = String(manifestItem.status || "").toUpperCase();
-      const selection = selectionById.get(id);
-      const sourceFile = String(manifestItem.file || selection?.outputName || "");
-      const sourceRecord = collectorFiles.find((file:any) => String(file?.name || "").toLowerCase() === sourceFile.toLowerCase());
-      const finalFile = sourceFile ? sourceFile.replace(/\.[^.]+$/, ".png") : `video1_${String(id).padStart(2,"0")}.png`;
+      const sourceFile = String(manifestItem.file || "").trim();
+      const sourceRecord = sourceFile ? collectorFiles.find((file:any) => String(file?.name || "").toLowerCase() === sourceFile.toLowerCase()) : null;
+      const finalFile = sourceFile ? sourceFile.replace(/_c\d+(?=\.[^.]+$)/i, "").replace(/\.[^.]+$/, ".png") : `video1_${String(id).padStart(2,"0")}.png`;
       if (statusName === "PASSOU" || statusName === "PASSOU_COM_RESSALVAS") return [{
         id,
         route:"REFINADOR" as const,
@@ -1010,17 +1045,17 @@ export default function Home() {
       if (statusName === "NAO_PASSOU") return [{
         id,
         route:"GERADOR" as const,
-        sourceFile,
+        sourceFile:"",
         generationPrompt:String(manifestItem.generationPrompt || ""),
         reason:String(manifestItem.reason || ""),
-        finalFile,
+        finalFile:`video1_${String(id).padStart(2,"0")}.png`,
         status:"PENDENTE",
         tentativaAtual:1,
       }];
       return [];
     });
-    if (pipelineItems.length !== selections.length) throw new Error(`O Analista devolveu ${pipelineItems.length}/${selections.length} IDs roteáveis.`);
-    if (pipelineItems.some((item) => item.route === "REFINADOR" && !item.sourceUrl)) throw new Error("Uma imagem aprovada pelo Analista não foi encontrada no armazenamento do app.");
+    if (pipelineItems.length !== expectedIds.length) throw new Error(`O Analista devolveu ${pipelineItems.length}/${expectedIds.length} IDs roteáveis.`);
+    if (pipelineItems.some((item) => item.route === "REFINADOR" && !item.sourceUrl)) throw new Error("Uma candidata aprovada pelo Analista não foi localizada no pacote bruto do Collector.");
     setProjects((current) => current.map((entry) => entry.id === project.id ? { ...entry, analysisStatus:"CONCLUÍDA", analysisManifest:String(status.resultado || ""), pipelineItems } : entry));
     await runRoutedPipeline(project, pipelineItems);
   }
@@ -1028,24 +1063,46 @@ export default function Home() {
   async function buildPackage(selectedGroups:RankedGroup[], token = runToken.current) {
     if (!active) return;
     const project = active;
-    setImagePhase("packaging"); setImageProgress(84); setImageMessage("Preparando o pacote e a entrada do Analista...");
+    packageRetryRef.current = selectedGroups;
+    const automatic = settings.selectionMode === "AUTO";
+    setImagePhase("packaging"); setImageProgress(84);
+    setImageMessage(automatic ? "Preparando todas as candidatas para o Analista..." : "Preparando as imagens escolhidas e a entrada do Analista...");
     try {
-      const selections = buildFormaSelections(selectedGroups, settings.prefix);
+      await ensurePipelineStorageReady();
+      const expectedIds = selectedGroups.map((group) => String(group.id));
+      const selections = automatic ? buildAnalystRawSelections(selectedGroups, settings.prefix) : buildFormaSelections(selectedGroups, settings.prefix);
+      if (!selections.length) throw new Error("O Collector não possui candidatas utilizáveis para enviar ao Analista.");
+      const idsWithCandidates = new Set(selections.map((selection:any) => String(selection.id)));
+      const missingCandidateIds = expectedIds.filter((id) => !idsWithCandidates.has(id));
+      if (missingCandidateIds.length) throw new Error(`Sem candidatas para os IDs: ${missingCandidateIds.join(", ")}.`);
       const analysisJob = await createPipelineJob(
         "ANALISTA",
         project,
         [
           `PROJETO=${project.id}`,
-          `TOTAL_IDS=${selections.length}`,
-          "O ZIP de imagens do Collector será anexado pelo Corvo Bridge.",
-          "Analise cada arquivo e devolva todos os IDs no manifesto CORVO_IMAGE_ANALYSIS.",
+          `MODO_SELECAO=${automatic ? "AUTOMATICO_ANALISTA" : "MANUAL_USUARIO"}`,
+          `TOTAL_IDS=${expectedIds.length}`,
+          `TOTAL_CANDIDATAS=${selections.length}`,
+          `IDS_ESPERADOS=${expectedIds.join(",")}`,
+          automatic
+            ? "O app NÃO selecionou candidatas. O ZIP anexado conterá TODAS as candidatas disponíveis do Collector para cada ID."
+            : "O usuário escolheu uma candidata por ID no modo manual; ainda assim valide visualmente cada imagem antes de classificar.",
+          "Para PASSOU ou PASSOU_COM_RESSALVAS, informe ARQUIVO com o nome EXATO do arquivo escolhido no ZIP.",
+          "Para NAO_PASSOU, ARQUIVO= e PROMPT_GERACAO completo.",
+          "",
+          "PROMPTS / CONTEXTO POR ID:",
+          project.promptText || "",
+          "",
+          "ROTEIRO COMPLETO:",
+          project.scriptText || "",
         ].join("\n"),
-        selections.map((selection:any) => String(selection.id)),
+        expectedIds,
       );
-      setProjects((currentProjects) => currentProjects.map((entry) => entry.id === project.id ? { ...entry, analysisJobId:analysisJob.jobId, analysisStatus:"RECEBENDO IMAGENS", pipelineStatus:"PREPARANDO ANÁLISE" } : entry));
+      setProjects((currentProjects) => currentProjects.map((entry) => entry.id === project.id ? { ...entry, analysisJobId:analysisJob.jobId, analysisStatus:automatic?"RECEBENDO CANDIDATAS":"RECEBENDO IMAGENS", pipelineStatus:"PREPARANDO ANÁLISE" } : entry));
       const response = await sendCollectorMessage<any>("BUILD_FORMA_PACKAGE", {
         selections, productionId:project.id, prefix:settings.prefix, jpegQuality:settings.jpegQuality,
-        fileName:`${project.id}_COLLECTOR.zip`, includeManifest:true, autoDownload:false,
+        fileName:automatic ? `${project.id}_CANDIDATAS_BRUTAS.zip` : `${project.id}_COLLECTOR.zip`,
+        includeManifest:true, autoDownload:false, pipelineOnly:automatic, packageMode:automatic?"ANALYST_RAW":"FORMA",
         pipelineUpload:{ jobId:analysisJob.jobId, uploadToken:analysisJob.uploadToken, appOrigin:window.location.origin },
       }, settings.extensionId);
       if (!response?.ok) throw new Error(response?.error || "Falha ao montar o pacote.");
@@ -1054,28 +1111,32 @@ export default function Home() {
         await wait(700);
         let status:any;
         try { status = (await sendCollectorMessage<any>("GET_PACKAGE_STATUS", undefined, settings.extensionId))?.package; }
-        catch { setImageMessage("O pacote continua sendo montado. Reconectando..."); await wait(1800); continue; }
+        catch { setImageMessage("O pacote continua sendo preparado. Reconectando..."); await wait(1800); continue; }
         const total = Number(status?.total || selections.length); const current = Number(status?.current || 0);
         setImageProgress(Math.max(84, Math.min(89, 84 + (current / Math.max(1, total)) * 5)));
-        setImageMessage(status?.currentName ? `Salvando ${status.currentName} no app...` : "Finalizando o pacote do Collector...");
-        setImageStatusLine(`${Number(status?.pipelineUploaded || 0)}/${total} ENVIADAS AO APP`);
+        setImageMessage(status?.currentName
+          ? automatic ? `Enviando candidata ${current}/${total}: ${status.currentName}` : `Salvando ${status.currentName} no app...`
+          : automatic ? "Finalizando envio das candidatas brutas..." : "Finalizando o pacote do Collector...");
+        setImageStatusLine(`${Number(status?.pipelineUploaded || 0)}/${total} CANDIDATAS NO APP · ${expectedIds.length} IDS`);
         if (status?.status === "DONE") {
-          if (Number(status.failed || 0) > 0) throw new Error(`O Collector não conseguiu montar ${status.failed} arquivo(s).`);
+          if (Number(status.failed || 0) > 0) throw new Error(`O Collector não conseguiu preparar ${status.failed} candidata(s).`);
           if (Number(status.pipelineUploadFailed || 0) > 0 || Number(status.pipelineUploaded || 0) !== selections.length) {
-            throw new Error(`O app recebeu ${Number(status.pipelineUploaded || 0)}/${selections.length} imagens. Refaça o pacote antes da análise.`);
+            const detail = Array.isArray(status.pipelineErrors) && status.pipelineErrors.length ? ` Motivo: ${status.pipelineErrors[0]}` : "";
+            throw new Error(`O app recebeu ${Number(status.pipelineUploaded || 0)}/${selections.length} candidatas.${detail}`);
           }
           const finalCode = status.packageCode || code;
           setPackageCode(finalCode);
-          setProjects((currentProjects) => currentProjects.map((entry) => entry.id === project.id ? { ...entry, packageCode:finalCode, imageCount:selections.length, analysisStatus:"MONTANDO ZIP DE ANÁLISE" } : entry));
-          setImageProgress(89); setImageMessage("Montando o ZIP persistente para o Analista...");
+          setProjects((currentProjects) => currentProjects.map((entry) => entry.id === project.id ? { ...entry, packageCode:finalCode, imageCount:expectedIds.length, analysisStatus:"MONTANDO ZIP BRUTO DE ANÁLISE" } : entry));
+          setImageProgress(89); setImageMessage(`Montando ZIP com ${selections.length} candidatas para o Analista...`);
           const packageResponse = await fetch("/api/corvo/pacote", {
             method:"POST",
             headers:{ "content-type":"application/json", "x-corvo-upload-token":analysisJob.uploadToken },
-            body:JSON.stringify({ jobId:analysisJob.jobId, fileName:`${project.id}_ANALISE.zip` }),
+            body:JSON.stringify({ jobId:analysisJob.jobId, fileName:`${project.id}_ANALISE_CANDIDATAS.zip`, selectionMode:automatic?"AUTO":"MANUAL" }),
           });
           const packageResult = await packageResponse.json().catch(() => ({}));
-          if (!packageResponse.ok || !packageResult?.file?.url) throw new Error(packageResult?.message || "Não foi possível consolidar o ZIP do Analista.");
-          await dispatchAnalysis(project, analysisJob, packageResult.file, selections);
+          if (!packageResponse.ok || !packageResult?.file?.url) throw new Error(packageResult?.message || "Não foi possível consolidar o ZIP bruto do Analista.");
+          await dispatchAnalysis(project, analysisJob, packageResult.file, expectedIds);
+          packageRetryRef.current = null;
           return;
         }
         if (status?.status === "ERROR") throw new Error(status.error || "Falha no pacote.");
@@ -1086,6 +1147,23 @@ export default function Home() {
       setImagePhase("error"); setImageMessage(friendlyError(error)); setImageProgress(0);
       setProjects((current) => current.map((entry) => entry.id === project.id ? { ...entry, pipelineStatus:"ERRO NO PIPELINE", analysisStatus:entry.analysisStatus || "FALHOU" } : entry));
     }
+  }
+
+  async function retryImageFlow() {
+    if (packageRetryRef.current?.length) {
+      const token = ++runToken.current;
+      setImageOpen(true);
+      try {
+        await ensurePipelineStorageReady();
+        if (token !== runToken.current) return;
+        await buildPackage(packageRetryRef.current, token);
+      } catch (error) {
+        if (token !== runToken.current) return;
+        setImagePhase("error"); setImageMessage(friendlyError(error)); setImageProgress(0);
+      }
+      return;
+    }
+    await startImageFlow();
   }
 
   async function buildFinalZip(project:Project) {
@@ -1218,7 +1296,7 @@ export default function Home() {
     </section>
 
     <section className="projects" id="projetos"><div className="section-heading"><div><span className="section-number">02</span><h2>PROJETOS RECENTES</h2></div><span className="project-count">{String(projects.length).padStart(2,"0")} PRODUÇÕES</span></div><div className="project-list">{projects.map((project) => <button className={`project-row ${project.id===activeId?"selected":""}`} key={project.id} onClick={() => setActiveId(project.id)}><span className="project-icon">{project.format==="REELS"?"▯":"▭"}</span><span className="project-name"><b>{project.title}</b><small>{project.id}</small></span><span className="project-format">{project.format}</span><span className="progress"><i style={{width:`${project.stage*20}%`}} /></span><span className="stage-label">ETAPA {project.stage}/5</span><span className="row-arrow">→</span></button>)}</div></section>
-    <footer><span>CORVOQUIZ PRODUÇÃO <i>V0.6.9</i></span><span>ROTEAMENTO · FALLBACK · ZIP FINAL · V0.6.9</span></footer>
+    <footer><span>CORVOQUIZ PRODUÇÃO <i>V0.6.11</i></span><span>ANALISTA ESCOLHE · ROTEAMENTO · ZIP FINAL · V0.6.11</span></footer>
     {notice && <div className="toast">{notice}</div>}
 
     {createOpen && <div className="modal-backdrop" onMouseDown={(event) => event.target===event.currentTarget&&closeCreationModal()}><section className="creation-modal idea-modal" role="dialog" aria-modal="true" aria-labelledby="new-production-title"><button className="modal-close" disabled={ideaLoading} onClick={closeCreationModal} aria-label="Fechar">×</button><div className="modal-symbol">✦</div><span className="modal-kicker">{ideaRevisionProjectId?"REFAZER IDEIA":"NOVA PRODUÇÃO"}</span><h2 id="new-production-title">{ideaRevisionProjectId?"ESCOLHA UMA NOVA DIREÇÃO":"O QUE VAMOS CRIAR?"}</h2><p>{ideaRevisionProjectId?"Ao confirmar, roteiro, prompts e imagens serão refeitos automaticamente.":"Comece sem tema e peça ideias ao Corvo, ou informe uma direção opcional."}</p>
@@ -1246,7 +1324,7 @@ export default function Home() {
     {settingsOpen && <div className="modal-backdrop" onMouseDown={(event)=>event.target===event.currentTarget&&setSettingsOpen(false)}><section className="settings-modal">
       <button className="modal-close" onClick={()=>setSettingsOpen(false)} aria-label="Fechar configurações">×</button>
       <span className="modal-kicker">COMPORTAMENTO DAS IMAGENS</span><h2>COMO O CORVO DEVE ESCOLHER?</h2><p>Estas opções ficam salvas e não aparecem durante a produção.</p>
-      <div className="choice-cards"><button className={settings.selectionMode==="AUTO"?"selected":""} onClick={()=>setSettings({...settings,selectionMode:"AUTO"})}><b>⚡ AUTOMÁTICO</b><small>BUSCA, ESCOLHE E ORGANIZA SOZINHO</small></button><button className={settings.selectionMode==="MANUAL"?"selected":""} onClick={()=>setSettings({...settings,selectionMode:"MANUAL"})}><b>◉ REVISÃO RÁPIDA</b><small>MOSTRA UMA IMAGEM POR CENA</small></button></div>
+      <div className="choice-cards"><button className={settings.selectionMode==="AUTO"?"selected":""} onClick={()=>setSettings({...settings,selectionMode:"AUTO"})}><b>⚡ AUTOMÁTICO</b><small>ENVIA TODAS AS CANDIDATAS AO ANALISTA</small></button><button className={settings.selectionMode==="MANUAL"?"selected":""} onClick={()=>setSettings({...settings,selectionMode:"MANUAL"})}><b>◉ REVISÃO RÁPIDA</b><small>VOCÊ ESCOLHE UMA CANDIDATA POR ID</small></button></div>
       <div className="choice-cards"><button className={settings.youtubeParallel?"selected":""} onClick={()=>setSettings({...settings,youtubeParallel:true})}><b>▶ METADADOS EM PARALELO</b><small>CHAMA O CORVO YOUTUBE JUNTO AO COLLECTOR</small></button><button className={!settings.youtubeParallel?"selected":""} onClick={()=>setSettings({...settings,youtubeParallel:false})}><b>○ METADADOS DESATIVADOS</b><small>PODE SER ATIVADO QUANDO O GPT YOUTUBE ESTIVER PRONTO</small></button></div>
       <section className="collector-engine-settings" aria-labelledby="collector-engine-title">
         <div className="engine-heading"><div><span>MOTOR DO COLETOR</span><h3 id="collector-engine-title">ONDE BUSCAR AS IMAGENS?</h3></div><small>ATIVO: {collectorEngines[settings.sourceMode].label}</small></div>
@@ -1259,9 +1337,9 @@ export default function Home() {
       <section className="downloads-section" aria-labelledby="downloads-title">
         <div className="downloads-head"><div><span>INSTALAÇÃO E SUPORTE</span><h3 id="downloads-title">ARQUIVOS PARA BAIXAR</h3></div><small>SE PRECISAR REINSTALAR</small></div>
         <div className="download-grid">
-          <a className="download-card" href="/downloads/CORVO_COLLECTOR_V075_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.7.5</small></div><i>↓</i></a>
-          <a className="download-card" href="/downloads/CORVO_BRIDGE_V062_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.2 · ARQUIVOS DO PIPELINE</small></div><i>↓</i></a>
-          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V069.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
+          <a className="download-card" href="/downloads/CORVO_COLLECTOR_V077_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.7.7</small></div><i>↓</i></a>
+          <a className="download-card" href="/downloads/CORVO_BRIDGE_V065_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.5 · ZIP GRANDE + CAPTURA + LIMPEZA</small></div><i>↓</i></a>
+          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0611.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
         </div>
       </section>
       <details className="advanced-settings"><summary>CONFIGURAÇÕES AVANÇADAS</summary><div className="settings-grid"><label>CANDIDATAS<input type="number" value={settings.maxCandidates} onChange={(event)=>setSettings({...settings,maxCandidates:Number(event.target.value)})}/></label><label>VARREDURA<input type="number" value={settings.scrollSteps} onChange={(event)=>setSettings({...settings,scrollSteps:Number(event.target.value)})}/></label><label>QUALIDADE JPEG<input type="number" step=".01" value={settings.jpegQuality} onChange={(event)=>setSettings({...settings,jpegQuality:Number(event.target.value)})}/></label><label>PREFIXO<input value={settings.prefix} onChange={(event)=>setSettings({...settings,prefix:event.target.value})}/></label></div><label className="batch-label">COMANDOS EM LOTE — OPCIONAL<textarea value={settings.batchText} onChange={(event)=>setSettings({...settings,batchText:event.target.value})} placeholder={"01|primeira busca\n02|segunda busca"} /></label></details>
@@ -1299,7 +1377,7 @@ export default function Home() {
       {imagePhase==="review" && currentGroup && currentRank ? <>
         <div className="review-top"><div><span className="modal-kicker">SELEÇÃO RÁPIDA · {groupIndex+1}/{groups.length}</span><h2>{currentGroup.query}</h2></div><div className="review-counter">CENA {String(groupIndex+1).padStart(2,"0")}</div></div>
         <div className="review-layout"><div className="candidate-stage"><img src={currentRank.candidate.previewUrl} alt={currentGroup.query} referrerPolicy="no-referrer" /><div className="image-quality"><span>{currentRank.candidate.width||"—"} × {currentRank.candidate.height||"—"}</span><span>OPÇÃO {candidatePos+1}/{currentGroup.ranked.length}</span></div></div><aside className="review-side"><span className="review-label">ESTA IMAGEM FUNCIONA?</span><p>Escolha rapidamente. O Corvo guarda reservas e prepara os nomes automaticamente.</p><button className="use-image" onClick={useCurrentCandidate}>✓ USAR ESTA IMAGEM</button><button className="next-image" onClick={()=>setCandidatePos((value)=>Math.min(value+1,currentGroup.ranked.length-1))}>VER PRÓXIMA <span>→</span></button><button className="search-more" disabled={searchingMore} onClick={searchMore}>{searchingMore?"PROCURANDO...":"↻ PROCURAR MAIS"}</button><div className="thumb-strip">{currentGroup.ranked.slice(0,4).map((rank,index)=><button className={candidatePos===index?"active":""} onClick={()=>setCandidatePos(index)} key={candidateUrl(rank.candidate)}><img src={rank.candidate.previewUrl} alt="" referrerPolicy="no-referrer"/></button>)}</div></aside></div>
-      </> : <div className="image-status-view"><div className={`status-orb ${imagePhase}`}>{imagePhase==="done"?"✓":imagePhase==="error"?"!":"⌁"}</div><span className="modal-kicker">{imagePhase==="connecting"?"CONECTANDO":imagePhase==="searching"?"BUSCANDO IMAGENS":imagePhase==="packaging"?"ORGANIZANDO":imagePhase==="done"?"PACOTE PRONTO":"PRECISAMOS AJUSTAR"}</span><h2>{imagePhase==="done"?"TUDO CERTO.":imagePhase==="error"?"NÃO FOI POSSÍVEL CONTINUAR":imageMessage}</h2>{!["searching","packaging"].includes(imagePhase)&&<p>{imageMessage}</p>}<div className="image-progress"><i style={{width:`${imageProgress}%`}} /></div>{imagePhase==="searching"&&<div className="collector-live-status"><b>{imageStatusLine}</b><small>SEM LIMITE CURTO DE TEMPO · VOCÊ PODE OCULTAR ESTA JANELA E VOLTAR DEPOIS</small><button onClick={cancelImageFlow}>CANCELAR BUSCA</button></div>}{imagePhase==="done"&&<><div className="package-summary"><span>✓ IMAGENS</span><span>✓ NOMES CONFERIDOS</span><span>✓ PIPELINE</span><b>{packageCode||active?.packageCode}</b></div><button className="modal-submit success" onClick={()=>setImageOpen(false)}>CONCLUIR ETAPA <span>→</span></button><details className="package-options"><summary>OPÇÕES DO PACOTE</summary><button onClick={savePackageCopy}>SALVAR ZIP ORIGINAL DO COLLECTOR</button></details></>}{imagePhase==="error"&&<><button className="modal-submit" onClick={startImageFlow}>TENTAR NOVAMENTE <span>↻</span></button><button className="plain-close" onClick={()=>setImageOpen(false)}>FECHAR</button></>}</div>}
+      </> : <div className="image-status-view"><div className={`status-orb ${imagePhase}`}>{imagePhase==="done"?"✓":imagePhase==="error"?"!":"⌁"}</div><span className="modal-kicker">{imagePhase==="connecting"?"CONECTANDO":imagePhase==="searching"?"BUSCANDO IMAGENS":imagePhase==="packaging"?"ORGANIZANDO":imagePhase==="done"?"PACOTE PRONTO":"PRECISAMOS AJUSTAR"}</span><h2>{imagePhase==="done"?"TUDO CERTO.":imagePhase==="error"?"NÃO FOI POSSÍVEL CONTINUAR":imageMessage}</h2>{!["searching","packaging"].includes(imagePhase)&&<p>{imageMessage}</p>}<div className="image-progress"><i style={{width:`${imageProgress}%`}} /></div>{imagePhase==="searching"&&<div className="collector-live-status"><b>{imageStatusLine}</b><small>SEM LIMITE CURTO DE TEMPO · VOCÊ PODE OCULTAR ESTA JANELA E VOLTAR DEPOIS</small><button onClick={cancelImageFlow}>CANCELAR BUSCA</button></div>}{imagePhase==="done"&&<><div className="package-summary"><span>✓ IMAGENS</span><span>✓ NOMES CONFERIDOS</span><span>✓ PIPELINE</span><b>{packageCode||active?.packageCode}</b></div><button className="modal-submit success" onClick={()=>setImageOpen(false)}>CONCLUIR ETAPA <span>→</span></button><details className="package-options"><summary>OPÇÕES DO PACOTE</summary><button onClick={savePackageCopy}>SALVAR ZIP ORIGINAL DO COLLECTOR</button></details></>}{imagePhase==="error"&&<><button className="modal-submit" onClick={retryImageFlow}>{packageRetryRef.current?.length?"REENVIAR AS IMAGENS":"TENTAR NOVAMENTE"} <span>↻</span></button><button className="plain-close" onClick={()=>setImageOpen(false)}>FECHAR</button></>}</div>}
     </section></div>}
   </main>;
 }

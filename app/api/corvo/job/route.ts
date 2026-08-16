@@ -76,10 +76,12 @@ function buildPromptImagesRequest(request: CorvoJobRequest) {
 function buildPipelinePrompt(request: CorvoJobRequest) {
   const contracts: Partial<Record<CorvoSpecialist, string[]>> = {
     ANALISTA: [
-      "Analise o pacote de imagens do Collector e preserve todos os IDs.",
-      "Classifique cada ID como PASSOU, PASSOU_COM_RESSALVAS ou NAO_PASSOU.",
-      "Em PASSOU use REFINAMENTO=LEVE; em PASSOU_COM_RESSALVAS use REFINAMENTO=FORTE; em NAO_PASSOU forneça PROMPT_GERACAO.",
-      "Entregue o manifesto [CORVO_IMAGE_ANALYSIS] VERSION=1.0.",
+      "Analise o ZIP completo de candidatas do Collector e preserve todos os IDs.",
+      "Para cada ID, localize e compare visualmente TODAS as candidatas antes de escolher uma melhor opção.",
+      "Elimine imagens erradas e duplicatas inferiores. Não escolha pela ordem do arquivo.",
+      "Classifique a candidata escolhida como PASSOU ou PASSOU_COM_RESSALVAS; se nenhuma servir, use NAO_PASSOU.",
+      "Em PASSOU use REFINAMENTO=LEVE e informe ARQUIVO com o nome exato escolhido; em PASSOU_COM_RESSALVAS use REFINAMENTO=FORTE e informe ARQUIVO; em NAO_PASSOU deixe ARQUIVO vazio e forneça PROMPT_GERACAO.",
+      "Entregue o manifesto [CORVO_IMAGE_ANALYSIS] VERSION=1.1.",
     ],
     REFINADOR: [
       "Refine somente as imagens aprovadas recebidas, preservando identidade, personagem, jogo, objeto e conceito.",

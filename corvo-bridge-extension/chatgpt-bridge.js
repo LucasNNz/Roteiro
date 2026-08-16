@@ -184,27 +184,49 @@
     return false;
   }
 
+  async function fetchAttachmentDirect(attachment) {
+    const url = String(attachment?.url || "").trim();
+    const name = String(attachment?.name || "arquivo").trim() || "arquivo";
+    if (!/^https:\/\//i.test(url)) throw new Error("ATTACHMENT_URL_INVALID");
+    const response = await fetch(url, { cache:"no-store", credentials:"omit" });
+    if (!response.ok) throw new Error(`ATTACHMENT_DIRECT_FETCH_${response.status}`);
+    const blob = await response.blob();
+    if (!blob.size) throw new Error("ATTACHMENT_EMPTY");
+    if (blob.size > 480 * 1024 * 1024) throw new Error("ATTACHMENT_TOO_LARGE_FOR_CHAT");
+    return new File([blob], name, { type:blob.type || String(attachment?.contentType || "application/octet-stream") });
+  }
+
   async function attachJobFiles(job) {
     const attachments = Array.isArray(job?.meta?.attachments) ? job.meta.attachments : [];
-    if (!attachments.length) return;
+    if (!attachments.length) return 0;
+    let totalBytes = 0;
     for (const attachment of attachments) {
       const url = String(attachment?.url || "").trim();
       const name = String(attachment?.name || "arquivo").trim() || "arquivo";
       if (!url) continue;
-      const fetched = await chrome.runtime.sendMessage({
-        type: "CORVO_FETCH_ATTACHMENT",
-        payload: { url, name, contentType: String(attachment?.contentType || "") }
-      });
-      if (!fetched?.ok || !fetched?.dataUrl) throw new Error(fetched?.error || "ATTACHMENT_FETCH_FAILED");
+      let file;
+      try {
+        file = await fetchAttachmentDirect(attachment);
+      } catch (directError) {
+        const fetched = await chrome.runtime.sendMessage({
+          type: "CORVO_FETCH_ATTACHMENT",
+          payload: { url, name, contentType: String(attachment?.contentType || "") }
+        });
+        if (!fetched?.ok || !fetched?.dataUrl) throw new Error(fetched?.error || directError?.message || "ATTACHMENT_FETCH_FAILED");
+        file = dataUrlToFile(fetched.dataUrl, name, fetched.contentType);
+      }
       const input = await waitForAttachmentInput();
       const transfer = new DataTransfer();
-      transfer.items.add(dataUrlToFile(fetched.dataUrl, name, fetched.contentType));
+      transfer.items.add(file);
+      totalBytes += Number(file?.size || 0);
       input.files = transfer.files;
       input.dispatchEvent(new Event("input", { bubbles: true }));
       input.dispatchEvent(new Event("change", { bubbles: true }));
-      await attachmentLoaded(name).catch(() => false);
+      const loadTimeout = Math.max(30000, Math.min(600000, 30000 + Math.floor(Number(file?.size || 0) / 2000)));
+      await attachmentLoaded(name, loadTimeout).catch(() => false);
       await sleep(700);
     }
+    return totalBytes;
   }
 
   async function waitForComposer(timeout = COMPOSER_TIMEOUT_MS) {
@@ -342,25 +364,47 @@
     throw new Error("DELETE_NOT_CONFIRMED");
   }
 
-  function generatedImageCandidates() {
-    const assistantScopes = [...document.querySelectorAll('[data-message-author-role="assistant"]')];
-    const images = assistantScopes.flatMap((scope, messageIndex) => [...scope.querySelectorAll("img")].map((image) => ({ image, scope, messageIndex })));
-    return images.filter(({ image }) => {
-      if (!visible(image)) return false;
-      const width = image.naturalWidth || image.width || 0;
-      const height = image.naturalHeight || image.height || 0;
+  function generatedImageCandidates(payload = {}) {
+    const seen = new Set();
+    const items = [];
+    const scopes = [
+      ...document.querySelectorAll('article[data-testid^="conversation-turn"]'),
+      ...document.querySelectorAll('[data-message-author-role="assistant"]')
+    ];
+
+    function addImage(image, scope = null, scopeIndex = -1) {
+      if (!image || seen.has(image)) return;
+      seen.add(image);
+      if (!visible(image)) return;
+      const width = image.naturalWidth || image.width || image.clientWidth || 0;
+      const height = image.naturalHeight || image.height || image.clientHeight || 0;
       const src = String(image.currentSrc || image.src || "");
       const alt = String(image.alt || "").toLowerCase();
-      if (!src || src.startsWith("data:image/svg")) return false;
-      if (/avatar|profile|ícone|icon|logo/.test(alt)) return false;
-      return width >= 512 && height >= 256 && width * height >= 250000;
-    }).sort((a, b) => {
-      const aText = String(a.scope.textContent || "");
-      const bText = String(b.scope.textContent || "");
-      const aManifest = /\[CORVO_THUMBNAIL\]|TIPO_ARQUIVO\s*=\s*THUMBNAIL/i.test(aText) ? 1 : 0;
-      const bManifest = /\[CORVO_THUMBNAIL\]|TIPO_ARQUIVO\s*=\s*THUMBNAIL/i.test(bText) ? 1 : 0;
-      return aManifest - bManifest || a.messageIndex - b.messageIndex;
+      if (!src || src.startsWith("data:image/svg")) return;
+      if (/avatar|profile|ícone|icon|favicon/.test(alt)) return;
+      if (width < 420 || height < 220 || width * height < 180000) return;
+      const turn = scope || image.closest('article[data-testid^="conversation-turn"], [data-message-author-role="assistant"]');
+      const text = String(turn?.textContent || "");
+      const manifest = /\[CORVO_THUMBNAIL\]|TIPO_ARQUIVO\s*=\s*THUMBNAIL|\[CORVO_IMAGE_(GENERATION|REFINEMENT)\]/i.test(text) ? 1 : 0;
+      const jobMatch = payload?.jobId && text.includes(String(payload.jobId)) ? 1 : 0;
+      const fileMatch = payload?.name && text.includes(String(payload.name)) ? 1 : 0;
+      const rect = image.getBoundingClientRect();
+      items.push({ image, scope: turn, scopeIndex, manifest, jobMatch, fileMatch, area: width * height, y: rect.top + window.scrollY });
+    }
+
+    scopes.forEach((scope, scopeIndex) => {
+      [...scope.querySelectorAll('img')].forEach((image) => addImage(image, scope, scopeIndex));
     });
+    [...document.querySelectorAll('img')].forEach((image) => addImage(image));
+
+    return items.sort((a, b) =>
+      a.jobMatch - b.jobMatch ||
+      a.fileMatch - b.fileMatch ||
+      a.manifest - b.manifest ||
+      a.scopeIndex - b.scopeIndex ||
+      a.y - b.y ||
+      a.area - b.area
+    );
   }
 
   function blobToDataUrl(blob) {
@@ -372,35 +416,87 @@
     });
   }
 
-  async function captureGeneratedImage(timeout = 120000) {
-    const deadline = Date.now() + timeout;
+  async function fetchImageBlob(src, timeout = 8000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    try {
+      const response = await fetch(src, { credentials: "include", cache: "no-store", signal: controller.signal });
+      if (!response.ok) throw new Error(`IMAGE_FETCH_${response.status}`);
+      const blob = await response.blob();
+      if (!blob.type.startsWith("image/") || !blob.size) throw new Error("INVALID_IMAGE_BLOB");
+      if (blob.size > 8 * 1024 * 1024) throw new Error("IMAGE_TOO_LARGE");
+      return blob;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function canvasImageDataUrl(image) {
+    const width = image.naturalWidth || image.width || 0;
+    const height = image.naturalHeight || image.height || 0;
+    if (!width || !height) throw new Error("IMAGE_DIMENSIONS_MISSING");
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("CANVAS_UNAVAILABLE");
+    ctx.drawImage(image, 0, 0, width, height);
+    const blob = await new Promise((resolve, reject) => canvas.toBlob((value) => value ? resolve(value) : reject(new Error("CANVAS_EXPORT_FAILED")), "image/png"));
+    if (blob.size > 8 * 1024 * 1024) throw new Error("IMAGE_TOO_LARGE");
+    return { dataUrl: await blobToDataUrl(blob), contentType: blob.type || "image/png", size: blob.size };
+  }
+
+  async function captureGeneratedImage(payload = {}, timeout = 30000) {
+    const deadline = Date.now() + Math.max(5000, Number(payload?.timeout || timeout));
     let lastError = "GENERATED_IMAGE_NOT_FOUND";
     while (Date.now() < deadline) {
-      const candidate = generatedImageCandidates().at(-1);
+      const candidate = generatedImageCandidates(payload).at(-1);
       if (candidate) {
+        const src = String(candidate.image.currentSrc || candidate.image.src || "");
         try {
-          const src = String(candidate.image.currentSrc || candidate.image.src || "");
-          const response = await fetch(src, { credentials: "include" });
-          if (!response.ok) throw new Error(`IMAGE_FETCH_${response.status}`);
-          const blob = await response.blob();
-          if (!blob.type.startsWith("image/") || !blob.size) throw new Error("INVALID_IMAGE_BLOB");
-          if (blob.size > 8 * 1024 * 1024) throw new Error("IMAGE_TOO_LARGE");
+          const blob = await fetchImageBlob(src, 7000);
           return {
             ok: true,
             dataUrl: await blobToDataUrl(blob),
+            src,
             contentType: blob.type,
             size: blob.size,
             width: candidate.image.naturalWidth || candidate.image.width || 0,
             height: candidate.image.naturalHeight || candidate.image.height || 0
           };
         } catch (error) {
-          lastError = error.message || "IMAGE_FETCH_FAILED";
+          lastError = error?.name === "AbortError" ? "IMAGE_FETCH_TIMEOUT" : (error?.message || "IMAGE_FETCH_FAILED");
+          try {
+            const canvas = await canvasImageDataUrl(candidate.image);
+            return {
+              ok: true,
+              ...canvas,
+              src,
+              width: candidate.image.naturalWidth || candidate.image.width || 0,
+              height: candidate.image.naturalHeight || candidate.image.height || 0
+            };
+          } catch (canvasError) {
+            lastError = `${lastError};${canvasError?.message || "CANVAS_CAPTURE_FAILED"}`;
+            // Retorna a URL como último recurso. O background possui permissões de host
+            // e tentará baixar a imagem fora do contexto isolado da página.
+            if (/^https:\/\//i.test(src)) {
+              return {
+                ok: true,
+                src,
+                contentType: "",
+                size: 0,
+                width: candidate.image.naturalWidth || candidate.image.width || 0,
+                height: candidate.image.naturalHeight || candidate.image.height || 0
+              };
+            }
+          }
         }
       }
-      await sleep(1000);
+      await sleep(750);
     }
     throw new Error(lastError);
   }
+
 
   async function sendPrompt(job) {
     if (busy) throw new Error("BRIDGE_BUSY");
@@ -412,7 +508,7 @@
       }
 
       const composer = await waitForComposer();
-      await attachJobFiles(job);
+      const attachmentBytes = await attachJobFiles(job);
       const message = compose(job);
       const previousState = userMessageState();
       setComposerText(composer, message);
@@ -421,7 +517,10 @@
       while (Date.now() < fillDeadline && !composerText(findComposer()).includes(job.jobId)) await sleep(150);
       if (!composerText(findComposer()).includes(job.jobId)) throw new Error("COMPOSER_FILL_FAILED");
 
-      const buttons = await waitForEnabledButtons(findComposer());
+      const attachmentButtonTimeout = attachmentBytes
+        ? Math.max(BUTTON_TIMEOUT_MS, Math.min(600000, 30000 + Math.floor(attachmentBytes / 1500)))
+        : BUTTON_TIMEOUT_MS;
+      const buttons = await waitForEnabledButtons(findComposer(), attachmentButtonTimeout);
       for (const button of buttons) {
         if (!isEnabled(button)) continue;
         clickButton(button);
@@ -480,7 +579,7 @@
       return true;
     }
     if (message?.type === "CORVO_CAPTURE_GENERATED_IMAGE") {
-      captureGeneratedImage()
+      captureGeneratedImage(message.payload || {})
         .then(sendResponse)
         .catch((error) => sendResponse({ ok: false, error: error.message || "GENERATED_IMAGE_NOT_FOUND" }));
       return true;

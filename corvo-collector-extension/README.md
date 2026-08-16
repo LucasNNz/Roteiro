@@ -1,6 +1,6 @@
-# Corvo Collector Bridge V0.4
+# Corvo Collector Bridge V0.7.7
 
-Mantém o modo manual da V0.3.1 e adiciona uma interface externa para o Corvo Produção.
+Mantém o modo manual e, no automático, envia todas as candidatas ao Corvo Analista sem escolher uma vencedora no app.
 
 ## ID fixo desta extensão
 `eaekknadnghlpncgbhnmldofajelmlbo`
@@ -69,3 +69,12 @@ A extensão usa um documento offscreen para:
 
 Corrige `provider is not defined` durante a varredura Google Imagens/Pinterest.
 O seletor Vercel V0.7.3 continua compatível; basta atualizar a extensão.
+
+
+## V0.7.7 — todas as candidatas no automático
+
+- `AUTO`: nenhuma candidata é escolhida pelo app; todas as opções retornadas por ID são transportadas ao job do Analista.
+- cada candidata recebe nome único por ID e índice;
+- uploads carregam o campo `id`;
+- até 4 candidatas são processadas em paralelo no transporte automático;
+- o ZIP persistente é montado no app/Vercel para evitar manter um segundo ZIP enorme na memória da extensão.

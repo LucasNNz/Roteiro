@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Corvo Bridge",
-  "version": "0.6.2",
-  "description": "Encaminha especialistas do CorvoQuiz, anexa arquivos de entrada e captura imagens finais geradas no ChatGPT.",
+  "version": "0.6.5",
+  "description": "Encaminha especialistas do CorvoQuiz, anexa ZIPs grandes diretamente do Blob e captura imagens finais geradas no ChatGPT.",
   "permissions": [
     "storage",
     "tabs",
@@ -11,6 +11,7 @@
   "host_permissions": [
     "https://*.blob.vercel-storage.com/*",
     "https://*.public.blob.vercel-storage.com/*",
+    "https://*.oaiusercontent.com/*",
     "https://chatgpt.com/*",
     "https://roteiro-mu.vercel.app/*"
   ],

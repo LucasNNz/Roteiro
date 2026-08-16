@@ -1,4 +1,14 @@
-# CORVO BRIDGE V0.6.2 — ARQUIVOS DO PIPELINE + THUMB
+# CORVO BRIDGE V0.6.5 — ANEXOS GRANDES + CAPTURA + LIMPEZA MANUAL
+
+## Hotfix V0.6.3 mantido
+
+- captura de imagem não fica mais aguardando indefinidamente: cada tentativa tem timeout real;
+- busca da imagem ficou compatível com os novos contêineres/turnos da interface do ChatGPT;
+- fallback de leitura: fetch da página, canvas e download pelo background com permissão para `*.oaiusercontent.com`;
+- popup atualiza automaticamente a cada segundo;
+- estados `CAPTURING_FILE`, `UPLOADING_FILE` e `FILE_DELIVERED` aparecem com nomes amigáveis;
+- botão **Tentar captura novamente** permite recuperar um job já parado em `CAPTURING_FILE`, inclusive a thumb atual, sem recriar o JOB_ID.
+
 
 ## Especialistas configuráveis
 
@@ -34,6 +44,16 @@ Para Thumb, Refinador e Gerador, o manifesto textual não garante que o arquivo 
 ## Cleaner
 
 O Cleaner continua protegido pelas mesmas regras da V0.6.1: começa desativado, possui Modo Teste, só considera conversas executadas em abas pertencentes ao Bridge e só remove jobs confirmados como concluídos.
+
+### Mantido da V0.6.4 — limpeza manual
+
+O popup possui o botão **Apagar mapeadas agora**. Ele usa exatamente as conversas já registradas pelo Cleaner como `eligible=true`, concluídas, ainda não excluídas e com `conversationId` conhecido. A ação manual pede confirmação e executa a exclusão real imediatamente, independentemente do horário agendado e sem alterar a configuração de Modo Teste da limpeza automática.
+
+### Novo na V0.6.5 — ZIP bruto do Analista
+
+O Bridge tenta buscar anexos públicos do Vercel Blob diretamente na aba do ChatGPT e os injeta como `File` no seletor de upload. Isso evita transformar ZIPs grandes em Base64 dentro da mensageria da extensão. O método antigo pelo background continua como fallback para anexos menores.
+
+O tempo de espera do botão de envio também passa a considerar o tamanho do anexo, evitando disparar o prompt antes de um ZIP grande ficar disponível no composer.
 
 ## Segurança
 

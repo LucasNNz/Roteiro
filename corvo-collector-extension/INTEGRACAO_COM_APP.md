@@ -1,28 +1,29 @@
-# Integração com CorvoQuiz Produção — Collector V0.7.5
+# Integração com CorvoQuiz Produção — Collector V0.7.7
 
-O app usa o protocolo `corvo-collector/1` e os comandos:
+O app usa o protocolo `corvo-collector/1` e os comandos existentes do Collector.
 
-- `PING`
-- `START_JOB`
-- `GET_STATUS`
-- `GET_RESULT`
-- `SEARCH_MORE_GROUP`
-- `BUILD_FORMA_PACKAGE`
-- `GET_PACKAGE_STATUS`
-- `SAVE_PACKAGE_AS`
+## V0.7.7 — automático delegado ao Corvo Analista
 
-## Entrega paralela para o Analista
+No modo `AUTO`, o app não escolhe uma candidata por ID. Ele transforma cada candidata retornada pelo Collector em uma entrada física independente e envia todas ao armazenamento do trabalho do Analista.
 
-`BUILD_FORMA_PACKAGE` pode receber `pipelineUpload` com `jobId`, `uploadToken` e `appOrigin`.
+Nomes no automático seguem o padrão:
 
-Quando presente, o offscreen:
+- `video1_001_c001.jpg`
+- `video1_001_c002.jpg`
+- `video1_002_c001.jpg`
 
-1. busca a imagem selecionada;
-2. mantém o JPEG normal no ZIP original do Collector/Forma;
-3. cria uma cópia reduzida exclusiva para análise;
-4. envia essa cópia como `COLLECTOR_IMAGE` para `/api/corvo/arquivo`;
-5. informa `pipelineUploaded` e `pipelineUploadFailed` no status do pacote.
+Cada upload `COLLECTOR_IMAGE` envia também o campo `id`, permitindo manter a associação física `ID → candidatas` sem gravar milhares de URLs dentro do objeto principal do job.
 
-A cópia de análise é limitada agressivamente para que lotes grandes possam ser reunidos em um ZIP anexável ao GPT Analista. Isso não altera a qualidade do arquivo mantido no ZIP original do Collector.
+`BUILD_FORMA_PACKAGE` aceita agora:
 
-Para aceitar o site, adicione a origem Vercel no popup da extensão. O manifesto aceita domínios `*.vercel.app`.
+- `pipelineOnly=true`: não mantém um segundo ZIP local em memória; envia as candidatas ao app para o ZIP persistente do Analista;
+- `packageMode=ANALYST_RAW`: identifica o pacote bruto de análise;
+- `pipelineUpload`: `jobId`, `uploadToken` e `appOrigin`.
+
+As cópias destinadas ao Analista continuam sendo JPEGs reduzidos para transporte, mas nenhuma candidata é descartada ou escolhida pelo app. O conjunto é completo em relação às candidatas retornadas pelo Collector.
+
+No modo `MANUAL`, permanece o fluxo em que o usuário escolhe uma candidata por ID antes do envio.
+
+## Diagnóstico de armazenamento
+
+O app consulta `/api/corvo/diagnostico` antes do empacotamento. Redis e Vercel Blob precisam estar disponíveis. O Collector preserva `pipelineErrors[]` para mostrar a causa real quando um upload falhar.

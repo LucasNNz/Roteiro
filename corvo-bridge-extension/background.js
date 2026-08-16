@@ -24,6 +24,8 @@ const OWNED_TABS_KEY = "corvoBridgeOwnedTabs";
 const CLEANER_RECORDS_KEY = "corvoBridgeCleanerRecords";
 const CLEANER_LOG_KEY = "corvoBridgeCleanerLog";
 const CLEANER_ALARM = "corvoBridgeDailyCleaner";
+const CAPTURE_RECOVERY_KEY = "corvoBridgeCaptureRecovery";
+const captureByJob = new Map();
 let cleanerRunning = false;
 let lastStatus = {
   state: "IDLE",
@@ -134,7 +136,7 @@ async function deleteConversationRecord(record, dryRun) {
   }
 }
 
-async function runCleaner({ manual = false } = {}) {
+async function runCleaner({ manual = false, forceDelete = false } = {}) {
   if (cleanerRunning) return { ok: false, error: "CLEANER_BUSY" };
   cleanerRunning = true;
   try {
@@ -142,11 +144,12 @@ async function runCleaner({ manual = false } = {}) {
     if (!manual && !config.cleanerEnabled) return { ok: true, skipped: true };
     const records = await getCleanerRecords();
     const candidates = records.filter((r) => r.eligible === true && r.done && !r.deleted && r.conversationUrl && r.conversationId);
+    const dryRun = forceDelete ? false : config.cleanerDryRun !== false;
     let deleted = 0, failed = 0;
     for (const record of candidates) {
       try {
-        const result = await deleteConversationRecord(record, config.cleanerDryRun !== false);
-        await upsertCleanerRecord(record.jobId, { deleted: config.cleanerDryRun === false, lastCleanerAt: Date.now(), lastCleanerResult: result.dryRun ? "DRY_RUN" : "DELETED" });
+        const result = await deleteConversationRecord(record, dryRun);
+        await upsertCleanerRecord(record.jobId, { deleted: !result.dryRun, lastCleanerAt: Date.now(), lastCleanerResult: result.dryRun ? "DRY_RUN" : "DELETED" });
         await appendCleanerLog({ jobId: record.jobId, conversationId: record.conversationId, result: result.dryRun ? "DRY_RUN" : "DELETED" });
         if (!result.dryRun) deleted++;
       } catch (error) {
@@ -156,8 +159,8 @@ async function runCleaner({ manual = false } = {}) {
       }
       await new Promise((r) => setTimeout(r, 1200));
     }
-    await chrome.storage.local.set({ corvoBridgeCleanerStatus: { at: Date.now(), candidates: candidates.length, deleted, failed, dryRun: config.cleanerDryRun !== false } });
-    return { ok: failed === 0, candidates: candidates.length, deleted, failed, dryRun: config.cleanerDryRun !== false };
+    await chrome.storage.local.set({ corvoBridgeCleanerStatus: { at: Date.now(), candidates: candidates.length, deleted, failed, dryRun, manual, forceDelete } });
+    return { ok: failed === 0, candidates: candidates.length, deleted, failed, dryRun, forceDelete };
   } finally {
     cleanerRunning = false;
   }
@@ -212,38 +215,117 @@ async function fetchAttachmentForChat(payload = {}) {
   };
 }
 
-async function captureAndUploadFile(jobId, payload = {}) {
+async function withTimeout(promise, timeoutMs, code) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(code)), timeoutMs); })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function setCaptureRecovery(jobId, payload = {}, patch = {}) {
+  const data = await chrome.storage.local.get(CAPTURE_RECOVERY_KEY);
+  const current = data[CAPTURE_RECOVERY_KEY] || {};
+  current[jobId] = {
+    ...(current[jobId] || {}),
+    jobId,
+    name: String(payload.name || current[jobId]?.name || "").trim(),
+    type: String(payload.type || current[jobId]?.type || "THUMBNAIL").trim().toUpperCase(),
+    updatedAt: Date.now(),
+    ...patch
+  };
+  await chrome.storage.local.set({ [CAPTURE_RECOVERY_KEY]: current });
+}
+
+async function clearCaptureRecovery(jobId) {
+  const data = await chrome.storage.local.get(CAPTURE_RECOVERY_KEY);
+  const current = data[CAPTURE_RECOVERY_KEY] || {};
+  delete current[jobId];
+  await chrome.storage.local.set({ [CAPTURE_RECOVERY_KEY]: current });
+}
+
+async function fetchCapturedBlob(captured) {
+  if (captured?.dataUrl) {
+    const response = await withTimeout(fetch(captured.dataUrl), 12000, "DATA_URL_FETCH_TIMEOUT");
+    const blob = await response.blob();
+    if (!blob.size || !blob.type.startsWith("image/")) throw new Error("INVALID_CAPTURED_IMAGE");
+    return blob;
+  }
+  const src = String(captured?.src || "").trim();
+  if (!/^https:\/\//i.test(src)) throw new Error("CAPTURED_IMAGE_SOURCE_MISSING");
+  const response = await withTimeout(fetch(src, { cache: "no-store", credentials: "include" }), 15000, "IMAGE_BACKGROUND_FETCH_TIMEOUT");
+  if (!response.ok) throw new Error(`IMAGE_BACKGROUND_FETCH_${response.status}`);
+  const blob = await response.blob();
+  if (!blob.size || !blob.type.startsWith("image/")) throw new Error("INVALID_CAPTURED_IMAGE");
+  return blob;
+}
+
+async function performCaptureAndUploadFile(jobId, payload = {}) {
   const data = await chrome.storage.local.get(JOB_TABS_KEY);
   const record = (data[JOB_TABS_KEY] || {})[jobId];
   if (!record?.tabId) throw new Error("JOB_TAB_NOT_FOUND");
   if (!record.uploadToken) throw new Error("UPLOAD_TOKEN_MISSING");
   const name = String(payload.name || "").trim();
   if (!name) throw new Error("FILE_NAME_REQUIRED");
-  await setStatus("CAPTURING_FILE", jobId, `Capturando ${name} na conversa...`);
-  const captured = await chrome.tabs.sendMessage(record.tabId, {
+  const fileType = String(payload.type || "THUMBNAIL").trim().toUpperCase();
+  await setCaptureRecovery(jobId, { name, type: fileType }, { stage: "CAPTURING", startedAt: Date.now() });
+  await setStatus("CAPTURING_FILE", jobId, `Capturando ${name} na conversa...`, { fileName: name, fileType });
+  const captured = await withTimeout(chrome.tabs.sendMessage(record.tabId, {
     type: "CORVO_CAPTURE_GENERATED_IMAGE",
-    payload: { jobId, name }
-  });
-  if (!captured?.ok || !captured.dataUrl) throw new Error(captured?.error || "GENERATED_IMAGE_NOT_FOUND");
-  const response = await fetch(captured.dataUrl);
-  const blob = await response.blob();
+    payload: { jobId, name, timeout: 30000 }
+  }), 38000, "GENERATED_IMAGE_CAPTURE_TIMEOUT");
+  if (!captured?.ok || (!captured.dataUrl && !captured.src)) throw new Error(captured?.error || "GENERATED_IMAGE_NOT_FOUND");
+  const blob = await fetchCapturedBlob(captured);
+  if (blob.size > 8 * 1024 * 1024) throw new Error("IMAGE_TOO_LARGE");
   const config = await getConfig();
   const form = new FormData();
   form.append("jobId", jobId);
-  form.append("tipo", String(payload.type || "THUMBNAIL"));
+  form.append("tipo", fileType);
   form.append("nomeArquivo", name);
   form.append("arquivo", blob, name);
-  await setStatus("UPLOADING_FILE", jobId, `Enviando ${name} ao CorvoQuiz...`);
-  const upload = await fetch(`${config.appOrigin}/api/corvo/arquivo`, {
+  await setCaptureRecovery(jobId, { name, type: fileType }, { stage: "UPLOADING" });
+  await setStatus("UPLOADING_FILE", jobId, `Enviando ${name} ao CorvoQuiz...`, { fileName: name, fileType });
+  const upload = await withTimeout(fetch(`${config.appOrigin}/api/corvo/arquivo`, {
     method: "POST",
     headers: { "x-corvo-upload-token": record.uploadToken },
     body: form
-  });
+  }), 45000, "FILE_UPLOAD_TIMEOUT");
   const result = await upload.json().catch(() => ({}));
   if (!upload.ok || !result?.ok) throw new Error(result?.message || `FILE_UPLOAD_${upload.status}`);
-  await setStatus("FILE_DELIVERED", jobId, `${name} associado ao trabalho.`, { file: result.file });
+  await clearCaptureRecovery(jobId);
+  await setStatus("FILE_DELIVERED", jobId, `${name} associado ao trabalho.`, { file: result.file, fileName: name, fileType });
   return { ok: true, jobId, file: result.file, status: result.status };
 }
+
+async function captureAndUploadFile(jobId, payload = {}) {
+  if (captureByJob.has(jobId)) return captureByJob.get(jobId);
+  const operation = performCaptureAndUploadFile(jobId, payload)
+    .finally(() => captureByJob.delete(jobId));
+  captureByJob.set(jobId, operation);
+  return operation;
+}
+
+async function retryLastCapture() {
+  const data = await chrome.storage.local.get(["corvoBridgeStatus", CAPTURE_RECOVERY_KEY, JOB_TABS_KEY]);
+  const status = data.corvoBridgeStatus || lastStatus;
+  const jobId = String(status?.jobId || "").trim();
+  if (!jobId) throw new Error("CAPTURE_JOB_NOT_FOUND");
+  const recovery = (data[CAPTURE_RECOVERY_KEY] || {})[jobId] || {};
+  let name = String(recovery.name || status.fileName || "").trim();
+  if (!name) {
+    const match = String(status.message || "").match(/(?:Capturando|Enviando)\s+(.+?)\s+(?:na conversa|ao CorvoQuiz)/i);
+    name = String(match?.[1] || "").trim();
+  }
+  if (!name) throw new Error("CAPTURE_FILE_NAME_UNKNOWN");
+  let type = String(recovery.type || status.fileType || "").trim().toUpperCase();
+  if (!type) type = /^thumb_/i.test(name) ? "THUMBNAIL" : "OTHER";
+  return captureAndUploadFile(jobId, { name, type });
+}
+
 
 async function completeJobTab(jobId) {
   const data = await chrome.storage.local.get([JOB_TABS_KEY, OWNED_TABS_KEY]);
@@ -486,7 +568,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "CORVO_GET_STATUS") {
-    chrome.storage.local.get("corvoBridgeStatus").then((data) => sendResponse(data.corvoBridgeStatus || lastStatus));
+    chrome.storage.local.get(["corvoBridgeStatus", CAPTURE_RECOVERY_KEY]).then((data) => {
+      const status = data.corvoBridgeStatus || lastStatus;
+      const recovery = status?.jobId ? (data[CAPTURE_RECOVERY_KEY] || {})[status.jobId] : null;
+      sendResponse({ ...status, canRetryCapture: Boolean(status?.jobId && (["CAPTURING_FILE", "UPLOADING_FILE", "ERROR"].includes(status.state))), captureRecovery: recovery ? { stage: recovery.stage, updatedAt: recovery.updatedAt } : null });
+    });
     return true;
   }
 
@@ -516,8 +602,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+
+  if (message.type === "CORVO_RETRY_LAST_CAPTURE") {
+    retryLastCapture()
+      .then(sendResponse)
+      .catch(async (error) => {
+        const data = await chrome.storage.local.get("corvoBridgeStatus");
+        const jobId = data.corvoBridgeStatus?.jobId || null;
+        await setStatus("ERROR", jobId, `Falha ao capturar arquivo: ${error.message}`);
+        sendResponse({ ok: false, error: error.message || "FILE_CAPTURE_FAILED" });
+      });
+    return true;
+  }
+
   if (message.type === "CORVO_CLEANER_RUN_NOW") {
     runCleaner({ manual: true }).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message.type === "CORVO_CLEANER_DELETE_MAPPED_NOW") {
+    runCleaner({ manual: true, forceDelete: true }).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
 

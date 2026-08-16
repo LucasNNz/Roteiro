@@ -1,6 +1,6 @@
 import { put } from "@vercel/blob";
 import { NextRequest, NextResponse } from "next/server";
-import { attachCorvoFile, getCorvoJob } from "../../../../lib/corvo-jobs";
+import { attachCollectorCandidate, attachCorvoFile, getCorvoJob } from "../../../../lib/corvo-jobs";
 import { storageFailure } from "../../../../lib/corvo-api";
 
 export const runtime = "nodejs";
@@ -32,6 +32,7 @@ export async function POST(request: NextRequest) {
   const token = request.headers.get("x-corvo-upload-token")?.trim() || String(form.get("uploadToken") || "").trim();
   const name = safeName(String(form.get("nomeArquivo") || ""));
   const type = fileType(form.get("tipo"));
+  const itemId = safeName(String(form.get("id") || ""));
   const file = form.get("arquivo");
   if (!jobId || !token || !name || !(file instanceof File)) {
     return NextResponse.json({ ok: false, message: "Envie jobId, token, nomeArquivo e arquivo." }, { status: 400 });
@@ -55,13 +56,28 @@ export async function POST(request: NextRequest) {
     if (type === "REFINED_IMAGE" && job.request.specialist !== "REFINADOR") {
       return NextResponse.json({ ok: false, message: "Este trabalho não aceita uma imagem refinada." }, { status: 409 });
     }
-    const blob = await put(`corvoquiz/${jobId}/${name}`, file, {
+    const blobPath = type === "COLLECTOR_IMAGE" ? `corvoquiz/${jobId}/collector/${name}` : `corvoquiz/${jobId}/${name}`;
+    const blob = await put(blobPath, file, {
       access: "public",
       addRandomSuffix: false,
       allowOverwrite: true,
       contentType: file.type,
       cacheControlMaxAge: 60 * 60 * 24 * 365,
     });
+    if (type === "COLLECTOR_IMAGE") {
+      if (!itemId) return NextResponse.json({ ok: false, message: "Imagens do Collector precisam informar o ID de origem." }, { status: 400 });
+      const candidate = await attachCollectorCandidate(jobId, token, {
+        id:itemId,
+        name,
+        url:blob.url,
+        downloadUrl:blob.downloadUrl,
+        contentType:file.type,
+        size:file.size,
+        createdAt:new Date().toISOString(),
+      });
+      if (!candidate) return NextResponse.json({ ok: false, message: "Trabalho não encontrado, expirado ou incompatível com o Collector." }, { status: 404 });
+      return NextResponse.json({ ok: true, jobId, status: job.status, file:candidate });
+    }
     const updated = await attachCorvoFile(jobId, token, {
       type,
       name,

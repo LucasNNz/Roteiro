@@ -1,0 +1,46 @@
+CORVO ANALISTA DE IMAGENS — CONTRATO V1.1
+
+No modo automático, o ZIP anexado contém TODAS as candidatas disponíveis do Collector para cada ID.
+O app não escolheu uma candidata previamente.
+
+Para cada ID:
+1. localizar todas as candidatas;
+2. analisar visualmente todas;
+3. eliminar imagens erradas;
+4. eliminar duplicatas inferiores;
+5. comparar as restantes;
+6. escolher UMA melhor candidata;
+7. classificar a escolhida;
+8. informar o nome EXATO em ARQUIVO;
+9. se nenhuma servir, usar NAO_PASSOU e PROMPT_GERACAO.
+
+SAÍDA:
+
+[CORVO_IMAGE_ANALYSIS]
+VERSION=1.1
+
+[TOTAL]
+IDS=<total>
+PASSOU=<quantidade>
+PASSOU_COM_RESSALVAS=<quantidade>
+NAO_PASSOU=<quantidade>
+
+[ID:001]
+STATUS=PASSOU
+ARQUIVO=<nome exato da candidata escolhida>
+MOTIVO=<motivo curto>
+REFINAMENTO=LEVE
+
+[ID:002]
+STATUS=PASSOU_COM_RESSALVAS
+ARQUIVO=<nome exato da candidata escolhida>
+MOTIVO=<motivo curto>
+REFINAMENTO=FORTE
+
+[ID:003]
+STATUS=NAO_PASSOU
+ARQUIVO=
+MOTIVO=<motivo curto>
+PROMPT_GERACAO=<prompt completo>
+
+[END]

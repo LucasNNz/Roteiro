@@ -142,6 +142,32 @@ export function allCandidateUrls(group: RankedGroup) {
   return [...new Set(urls.map((url) => String(url || "").trim()).filter(Boolean))];
 }
 
+
+export function buildAnalystRawSelections(groups: RankedGroup[], prefix = "video1_") {
+  const selections: Array<{ id:string; query:string; outputName:string; urls:string[]; candidateIndex:number }> = [];
+  for (const group of groups) {
+    const safeId = String(group.id || "").trim().replace(/[^a-zA-Z0-9_-]+/g, "_") || "ID";
+    (group.candidates || []).forEach((candidate, candidateIndex) => {
+      const urls = [
+        ...(candidate.urlCandidates || []),
+        candidate.bestUrl,
+        candidate.url,
+        candidate.previewUrl,
+      ].map((value) => String(value || "").trim()).filter(Boolean);
+      const uniqueUrls = [...new Set(urls)];
+      if (!uniqueUrls.length) return;
+      selections.push({
+        id: String(group.id),
+        query: group.query,
+        outputName: `${prefix}${safeId}_c${String(candidateIndex + 1).padStart(3, "0")}.jpg`,
+        urls: uniqueUrls,
+        candidateIndex: candidateIndex + 1,
+      });
+    });
+  }
+  return selections;
+}
+
 export function buildFormaSelections(groups: RankedGroup[], prefix = "video1_") {
   return groups.map((group, index) => {
     const candidate = group.candidates[group.principalIndex];

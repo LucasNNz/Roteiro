@@ -1,75 +1,62 @@
 # Plano de implementação — Novo fluxo CorvoQuiz
 
-Base: especificação `CORVOQUIZ_ESPECIFICACAO_NOVO_FLUXO_APP_BRIDGE`, versão 1.0.
+Bases: `CORVOQUIZ_ESPECIFICACAO_NOVO_FLUXO_APP_BRIDGE` e `CORVOQUIZ_MUDANCA_MODO_AUTOMATICO_ANALISTA`.
 
-## Fase 1 — Fundação de orquestração (V0.6.6)
+## Fase 1 — Fundação
 
-- [x] Registrar Analista, Refinador, Gerador, Fallback, Thumb e YouTube como especialistas válidos.
-- [x] Adicionar URLs configuráveis para todos os especialistas no Corvo Bridge.
-- [x] Criar prompts/contratos base para os novos jobs.
-- [x] Aumentar a retenção dos jobs de 1 hora para 7 dias.
-- [x] Adicionar estados de longa duração e campos de resultado/arquivo.
-- [x] Interpretar manifestos de análise, refinamento, geração, fallback e thumbnail.
-- [x] Impedir que `THUMB STATUS=GERADA` conclua o job sem o arquivo real.
-- [x] Preservar o fluxo existente de Ideias, Roteiro, Prompts e Collector.
+- [x] Especialistas configuráveis: Analista, Refinador, Gerador, Fallback, Thumb e YouTube.
+- [x] Jobs persistentes por 7 dias.
+- [x] Manifestos estruturados e regra de arquivo real para Thumb/Refinador/Gerador.
 
-## Fase 2 — Arquivos reais e ramos paralelos
+## Fase 2 — Arquivos e ramos paralelos
 
-- [x] Implementar armazenamento persistente de arquivos do pipeline com Vercel Blob.
-- [x] Criar `POST /api/corvo/arquivo` com validação de job, token, tipo, nome e tamanho.
-- [x] Fazer o Bridge identificar e capturar a imagem gerada pelo Corvo Thumb.
-- [x] Associar o arquivo ao `JOB_ID` e concluir a Thumb somente com manifesto + arquivo.
-- [x] Iniciar Thumb em paralelo quando o Collector começar.
-- [x] Preparar o disparo paralelo opcional do Corvo YouTube/Metadados.
-- [ ] Validar em produção real a captura da Thumb com o Blob conectado e o GPT Thumb configurado.
+- [x] Vercel Blob + `POST /api/corvo/arquivo`.
+- [x] Thumb paralela e captura pelo Bridge.
+- [x] YouTube/Metadados opcional em paralelo.
+- [ ] Validar a captura da Thumb no deploy real com Blob conectado.
 
-## Fase 3 — Roteamento automático de imagens (V0.6.8)
+## Fase 3 — Collector → Analista → roteamento
 
-- [x] Criar um job do Analista antes da montagem do pacote.
-- [x] Enviar ao app cópias leves das imagens escolhidas pelo Collector.
-- [x] Montar no servidor um ZIP persistente de análise sem enviar um ZIP grande pela Function de entrada.
-- [x] Fazer o Bridge anexar o ZIP real ao Corvo Analista.
-- [x] Interpretar todos os IDs do manifesto e rejeitar IDs ausentes, duplicados ou inesperados.
-- [x] Separar `PASSOU` para Refinador leve.
-- [x] Separar `PASSOU_COM_RESSALVAS` para Refinador forte.
-- [x] Separar `NAO_PASSOU` para Gerador.
-- [x] Fazer o Bridge anexar a imagem de origem real ao Refinador.
-- [x] Capturar e armazenar as imagens finais do Refinador e do Gerador.
-- [x] Manter o Gerador em uma fila global de um único worker.
+- [x] Job do Analista criado antes do transporte das imagens.
+- [x] ZIP persistente anexado ao Corvo Analista.
+- [x] Validação de IDs do manifesto.
+- [x] `PASSOU` → Refinador leve.
+- [x] `PASSOU_COM_RESSALVAS` → Refinador forte.
+- [x] `NAO_PASSOU` → Gerador.
+- [x] Arquivo real de origem anexado ao Refinador.
+- [x] Arquivos finais de Refinador/Gerador capturados e persistidos.
+- [x] Gerador com um worker global.
 
-## Fase 4 — Fallback e recuperação (V0.6.9)
+## Alteração V0.6.11 — automático delegado ao Analista
 
-- [x] Detectar `FALHOU`, `ERROR_CODE` e `MOTIVO` por ID.
-- [x] Encaminhar falhas de Gerador/Refinador ao Corvo Fallback.
-- [x] Interpretar `RETRY` e `NAO_RECUPERAVEL`.
-- [x] Executar o retry no destino indicado pelo Fallback.
-- [x] Limitar a duas novas tentativas (`3` execuções no máximo contando a original).
-- [x] Manter histórico de tentativa, especialista, erro, decisão e prompt de retry por ID.
-- [x] Exibir tentativa atual, erro e histórico resumido na Consolidação.
-- [x] Marcar `NAO_RECUPERAVEL` / limite atingido como tratamento manual.
+- [x] Remover seleção visual automática do app.
+- [x] No modo `AUTO`, incluir todas as candidatas retornadas pelo Collector.
+- [x] Nomear candidatas de forma única por `ID + índice`.
+- [x] Transportar `id` junto de cada `COLLECTOR_IMAGE`.
+- [x] Separar o registro das candidatas do objeto principal do job para suportar lotes grandes.
+- [x] Montar ZIP completo com índice `ID → candidatas`.
+- [x] Atualizar Analista para `CORVO_IMAGE_ANALYSIS VERSION=1.1`.
+- [x] Exigir `ARQUIVO=<nome exato>` em PASSOU/PASSOU_COM_RESSALVAS.
+- [x] Resolver fisicamente os nomes escolhidos pelo Analista no armazenamento original do Collector.
+- [x] Manter modo manual disponível.
+- [x] Manter Refinador e Gerador em ramos paralelos após a análise.
 
-## Fase 5 — Consolidação e ZIP final (V0.6.9)
+## Fase 4 — Fallback
 
-- [x] Criar área **Consolidação / ZIP Final**.
-- [x] Reunir as imagens finais reais do Refinador e Gerador.
-- [x] Bloquear conclusão quando existir ID sem arquivo final.
-- [x] Detectar IDs duplicados, nomes duplicados e extensões inválidas.
-- [x] Ordenar por ID e renomear pelo nome final contratado.
-- [x] Gerar `CORVO_FINAL_MANIFEST.json` com origem e histórico de cada ID.
-- [x] Incluir thumbnail real quando disponível.
-- [x] Incluir metadados do Corvo YouTube quando disponíveis.
-- [x] Incluir manifesto do Analista.
-- [x] Gerar o ZIP final para o Forma somente quando a validação estiver verde.
-- [x] Manter a Consolidação em estado de espera enquanto os jobs ainda não terminaram.
-- [ ] Automatizar a retomada dos *pollers* de Gerador/Refinador/Fallback após uma recarga completa do navegador. Os jobs continuam persistidos por 7 dias no servidor, mas a retomada automática do acompanhamento ainda precisa de uma rotina de reidratação.
+- [x] Detectar `FALHOU`, `ERROR_CODE`, `MOTIVO`.
+- [x] `RETRY` / `NAO_RECUPERAVEL`.
+- [x] Até duas novas tentativas.
+- [x] Histórico por ID e tratamento manual quando necessário.
 
-## Fora do escopo desta versão
+## Fase 5 — Consolidação
 
-- Upload automático do vídeo final para o YouTube.
-- Aplicação automática da thumbnail no vídeo publicado.
-- Agendamento/publicação via YouTube API.
+- [x] Validar todos os IDs finais.
+- [x] Detectar ausentes/duplicados/formato inválido.
+- [x] ZIP final com imagens, thumb, metadados, análise e histórico.
+- [x] Aguardar os dois ramos antes de concluir.
+- [ ] Reidratar automaticamente pollers de jobs após F5/reabertura do app.
+
+## Fora do escopo
+
+- Upload/publicação automática no YouTube.
 - Métricas pós-publicação.
-
-## Regra central
-
-O app é o orquestrador. Os GPTs executam especialidades; o Bridge transporta jobs, anexa arquivos de entrada e captura arquivos gerados; o app controla estados, filas, tentativas, arquivos, Fallback e Consolidação.

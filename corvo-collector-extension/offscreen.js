@@ -77,78 +77,111 @@ async function convertToJpeg(blob, quality=0.92) {
 }
 
 async function collectorUploadBlob(jpeg) {
-  // Cópia exclusiva para análise: o ZIP do Forma mantém o JPEG original.
-  // Mantemos cada entrada pequena para que lotes grandes continuem anexáveis ao GPT Analista.
-  const maxBytes=450*1024;
-  for(const [quality,maxDimension] of [[0.78,1280],[0.72,1280],[0.66,1152],[0.60,1024],[0.54,960]]){
+  // No automático podem existir milhares de candidatas. Todas são preservadas,
+  // mas a cópia exclusiva de análise é compactada para manter o ZIP anexável.
+  const maxBytes=60*1024;
+  for(const [quality,maxDimension] of [[0.72,768],[0.62,720],[0.54,672],[0.46,640],[0.38,576],[0.32,544]]){
     const resized=await renderJpeg(jpeg,quality,maxDimension);
     if(resized.size<=maxBytes) return resized;
   }
-  const smaller=await renderJpeg(jpeg,0.48,896);
+  const smaller=await renderJpeg(jpeg,0.26,512);
   if(smaller.size>maxBytes) throw new Error('COLLECTOR_ANALYSIS_IMAGE_TOO_LARGE');
   return smaller;
 }
 
-async function uploadCollectorImage(pipelineUpload, name, jpeg) {
+async function uploadCollectorImage(pipelineUpload, item, jpeg) {
   if(!pipelineUpload?.jobId || !pipelineUpload?.uploadToken || !pipelineUpload?.appOrigin) return {ok:false,skipped:true};
   const uploadBlob=await collectorUploadBlob(jpeg);
   const form=new FormData();
   form.append('jobId',String(pipelineUpload.jobId));
+  form.append('id',String(item.id||''));
   form.append('tipo','COLLECTOR_IMAGE');
-  form.append('nomeArquivo',String(name));
-  form.append('arquivo',uploadBlob,String(name));
+  form.append('nomeArquivo',String(item.outputName));
+  form.append('arquivo',uploadBlob,String(item.outputName));
   const response=await fetch(`${String(pipelineUpload.appOrigin).replace(/\/$/,'')}/api/corvo/arquivo`,{
     method:'POST',
     headers:{'x-corvo-upload-token':String(pipelineUpload.uploadToken)},
     body:form
   });
   const result=await response.json().catch(()=>({}));
-  if(!response.ok || !result?.ok) throw new Error(result?.message || `COLLECTOR_UPLOAD_${response.status}`);
+  if(!response.ok || !result?.ok){
+    const error=new Error(result?.message || `COLLECTOR_UPLOAD_${response.status}`);
+    error.httpStatus=response.status;
+    throw error;
+  }
   return result;
 }
 
 async function buildPackage(payload) {
-  const { packageId, packageCode, fileName, selections, jpegQuality=0.92, includeManifest=true, pipelineUpload=null } = payload;
+  const { packageId, packageCode, fileName, selections, jpegQuality=0.92, includeManifest=true, pipelineUpload=null, pipelineOnly=false, packageMode='FORMA' } = payload;
   const zip=new JSZip();
-  const manifestLines=['CORVO FORMA PACKAGE','',`PACKAGE_CODE=${packageCode || ''}`,`PACKAGE_ID=${packageId}`,`TOTAL=${selections.length}`,''];
-  let success=0,failed=0,pipelineUploaded=0,pipelineUploadFailed=0;
-  const packageFiles=[];
+  const manifestHeader=['CORVO FORMA PACKAGE','',`PACKAGE_CODE=${packageCode || ''}`,`PACKAGE_ID=${packageId}`,`TOTAL=${selections.length}`,''];
+  const manifestRecords=new Array(selections.length);
+  let success=0,failed=0,pipelineUploaded=0,pipelineUploadFailed=0,completed=0;
+  const pipelineErrors=[];
+  let pipelineFatalError='';
+  const packageFiles=new Array(selections.length);
 
-  for(let i=0;i<selections.length;i++){
-    const item=selections[i];
-    await chrome.runtime.sendMessage({type:'PACKAGE_PROGRESS',packageId,current:i+1,total:selections.length,success,failed,currentName:item.outputName});
+  async function processItem(item,index){
     try{
       const best=await fetchBest(item.urls||[]);
       if(!best) throw new Error('Nenhuma URL utilizável.');
       const jpeg=await convertToJpeg(best.blob,jpegQuality);
-      zip.file(item.outputName,jpeg);
+      if(!pipelineOnly) zip.file(item.outputName,jpeg);
       let pipelineStatus='SKIPPED';
       if(pipelineUpload){
-        try{
-          await uploadCollectorImage(pipelineUpload,item.outputName,jpeg);
-          pipelineUploaded++;
-          pipelineStatus='UPLOADED';
-        }catch(error){
+        if(pipelineFatalError){
           pipelineUploadFailed++;
-          pipelineStatus=`FAILED:${String(error?.message||error)}`;
+          pipelineStatus=`SKIPPED:${pipelineFatalError}`;
+        }else{
+          try{
+            await uploadCollectorImage(pipelineUpload,item,jpeg);
+            pipelineUploaded++;
+            pipelineStatus='UPLOADED';
+          }catch(error){
+            pipelineUploadFailed++;
+            const message=String(error?.message||error);
+            if(!pipelineErrors.includes(message) && pipelineErrors.length<8) pipelineErrors.push(message);
+            if(Number(error?.httpStatus||0)===503 || /Vercel Blob não configurado/i.test(message)) pipelineFatalError=message;
+            pipelineStatus=`FAILED:${message}`;
+          }
         }
       }
-      manifestLines.push(`${item.outputName}|${item.id}|${item.query}|${best.width}x${best.height}|${best.url}`);
-      packageFiles.push({fileName:item.outputName,itemId:item.id,query:item.query,width:best.width,height:best.height,sourceUrl:best.url,status:'OK',pipelineStatus});
+      manifestRecords[index]=`${item.outputName}|${item.id}|${item.query}|${best.width}x${best.height}|${best.url}`;
+      packageFiles[index]={fileName:item.outputName,itemId:item.id,query:item.query,width:best.width,height:best.height,sourceUrl:best.url,status:'OK',pipelineStatus};
       success++;
     }catch(error){
       failed++;
-      manifestLines.push(`FALHOU|${item.id}|${item.query}|${String(error?.message||error)}`);
-      packageFiles.push({fileName:item.outputName,itemId:item.id,query:item.query,status:'FAILED',error:String(error?.message||error)});
+      manifestRecords[index]=`FALHOU|${item.id}|${item.query}|${String(error?.message||error)}`;
+      packageFiles[index]={fileName:item.outputName,itemId:item.id,query:item.query,status:'FAILED',error:String(error?.message||error)};
+    }finally{
+      completed++;
+      await chrome.runtime.sendMessage({type:'PACKAGE_PROGRESS',packageId,current:completed,total:selections.length,success,failed,currentName:item.outputName});
     }
   }
 
-  if(includeManifest){
-    zip.file('CORVO_FORMA_MANIFEST.txt',manifestLines.join('\n'));
-    zip.file('CORVO_PACKAGE.json',JSON.stringify({protocol:'corvo-package/1',packageCode:packageCode||'',packageId,fileName,generatedAt:new Date().toISOString(),total:selections.length,success,failed,pipelineUploaded,pipelineUploadFailed,files:packageFiles},null,2));
+  if(pipelineOnly){
+    // O modo automático pode conter centenas/milhares de candidatas. Quatro workers
+    // reduzem o tempo sem transformar a extensão em uma rajada agressiva de requisições.
+    let cursor=0;
+    const workerCount=Math.min(4,selections.length);
+    await Promise.all(Array.from({length:workerCount},async()=>{
+      while(true){
+        const index=cursor++;
+        if(index>=selections.length) return;
+        await processItem(selections[index],index);
+      }
+    }));
+  }else{
+    for(let i=0;i<selections.length;i++) await processItem(selections[i],i);
   }
-  zip.file('README.txt',[
-    'CORVO COLLECTOR V0.7.5 — PACOTE FORMA / PIPELINE',
+
+  if(includeManifest && !pipelineOnly){
+    zip.file('CORVO_FORMA_MANIFEST.txt',[...manifestHeader,...manifestRecords.filter(Boolean)].join('\n'));
+    zip.file('CORVO_PACKAGE.json',JSON.stringify({protocol:'corvo-package/1',packageMode,packageCode:packageCode||'',packageId,fileName,generatedAt:new Date().toISOString(),total:selections.length,success,failed,pipelineUploaded,pipelineUploadFailed,pipelineErrors,files:packageFiles.filter(Boolean)},null,2));
+  }
+  if(!pipelineOnly) zip.file('README.txt',[
+    'CORVO COLLECTOR V0.7.7 — PACOTE FORMA / PIPELINE',
     '',
     `Código do pacote: ${packageCode || ''}`,
     `ID técnico: ${packageId}`,
@@ -157,14 +190,19 @@ async function buildPackage(payload) {
     `Falhas: ${failed}`,
     `Enviadas ao app para análise: ${pipelineUploaded}`,
     `Falhas de envio ao app: ${pipelineUploadFailed}`,
+    ...(pipelineErrors.length ? [`Primeiro erro do pipeline: ${pipelineErrors[0]}`] : []),
     '',
     'As imagens foram convertidas para JPEG e nomeadas na ordem enviada pela interface.'
   ].join('\n'));
 
-  const zipBlob=await zip.generateAsync({type:'blob',compression:'DEFLATE',compressionOptions:{level:6}});
-  if(lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
-  lastBlobUrl=URL.createObjectURL(zipBlob);
-  await chrome.runtime.sendMessage({type:'PACKAGE_DONE',packageId,packageCode,total:selections.length,success,failed,pipelineUploaded,pipelineUploadFailed,blobUrl:lastBlobUrl,fileName});
+  let blobUrl='';
+  if(!pipelineOnly){
+    const zipBlob=await zip.generateAsync({type:'blob',compression:'DEFLATE',compressionOptions:{level:6}});
+    if(lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
+    lastBlobUrl=URL.createObjectURL(zipBlob);
+    blobUrl=lastBlobUrl;
+  }
+  await chrome.runtime.sendMessage({type:'PACKAGE_DONE',packageId,packageCode,total:selections.length,success,failed,pipelineUploaded,pipelineUploadFailed,pipelineErrors,blobUrl,fileName});
 }
 
 chrome.runtime.onMessage.addListener((message,sender,sendResponse)=>{

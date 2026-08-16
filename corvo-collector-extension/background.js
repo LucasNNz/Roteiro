@@ -127,6 +127,9 @@ async function startPackageBuild(payload = {}) {
     currentName: '',
     fileName,
     autoDownload: payload.autoDownload !== false,
+    pipelineUploaded: 0,
+    pipelineUploadFailed: 0,
+    pipelineErrors: [],
     error: ''
   };
   await savePackageStatus(status);
@@ -140,7 +143,9 @@ async function startPackageBuild(payload = {}) {
       selections,
       jpegQuality: Math.max(0.65, Math.min(1, Number(payload.jpegQuality || 0.92))),
       includeManifest: payload.includeManifest !== false,
-      pipelineUpload: payload.pipelineUpload && typeof payload.pipelineUpload === 'object' ? payload.pipelineUpload : null
+      pipelineUpload: payload.pipelineUpload && typeof payload.pipelineUpload === 'object' ? payload.pipelineUpload : null,
+      pipelineOnly: payload.pipelineOnly === true,
+      packageMode: String(payload.packageMode || 'FORMA')
     }
   }).catch(async error => {
     await savePackageStatus({ ...status, status:'ERROR', error:String(error?.message || error), finishedAt:nowIso() });
@@ -787,6 +792,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         failed:Number(message.failed||0),
         pipelineUploaded:Number(message.pipelineUploaded||0),
         pipelineUploadFailed:Number(message.pipelineUploadFailed||0),
+        pipelineErrors:Array.isArray(message.pipelineErrors)?message.pipelineErrors.slice(0,8):[],
         currentName:'',
         blobUrl:String(message.blobUrl||''),
         packageCode:String(message.packageCode||current.packageCode||''),

@@ -71,16 +71,30 @@ export type CorvoJobFile = {
   createdAt: string;
 };
 
+export type CorvoCollectorCandidate = {
+  id: string;
+  name: string;
+  url: string;
+  downloadUrl?: string;
+  contentType: string;
+  size: number;
+  createdAt: string;
+};
+
 const TTL_SECONDS = 60 * 60 * 24 * 7;
 const KEY_PREFIX = "corvoquiz:idea-job:";
+const COLLECTOR_KEY_PREFIX = "corvoquiz:collector-candidates:";
 let redisClient: Redis | null = null;
 
 declare global {
   var __corvoIdeaJobs: Map<string, CorvoJob> | undefined;
+  var __corvoCollectorCandidates: Map<string, Map<string, CorvoCollectorCandidate>> | undefined;
 }
 
 const memoryJobs = globalThis.__corvoIdeaJobs ?? new Map<string, CorvoJob>();
 globalThis.__corvoIdeaJobs = memoryJobs;
+const memoryCollectorCandidates = globalThis.__corvoCollectorCandidates ?? new Map<string, Map<string, CorvoCollectorCandidate>>();
+globalThis.__corvoCollectorCandidates = memoryCollectorCandidates;
 
 export class CorvoStorageError extends Error {
   constructor(message = "Armazenamento de trabalhos não configurado.") {
@@ -164,6 +178,58 @@ export async function attachCorvoFile(jobId: string, uploadToken: string, file: 
   };
   await writeJob(updated);
   return updated;
+}
+
+export async function attachCollectorCandidate(jobId: string, uploadToken: string, file: CorvoCollectorCandidate) {
+  const current = await getCorvoJob(jobId);
+  if (!current || !current.uploadToken || current.uploadToken !== uploadToken || current.request.specialist !== "ANALISTA") return null;
+  const redis = getRedis();
+  const key = `${COLLECTOR_KEY_PREFIX}${jobId}`;
+  if (redis) {
+    try {
+      await redis.hset(key, { [file.name]: JSON.stringify(file) });
+      await redis.expire(key, TTL_SECONDS);
+    } catch {
+      throw new CorvoStorageError("Não foi possível salvar as candidatas do Collector no Upstash Redis.");
+    }
+  } else {
+    if (process.env.NODE_ENV === "production") throw new CorvoStorageError();
+    const bucket = memoryCollectorCandidates.get(jobId) ?? new Map<string, CorvoCollectorCandidate>();
+    bucket.set(file.name, file);
+    memoryCollectorCandidates.set(jobId, bucket);
+  }
+  return file;
+}
+
+export async function listCollectorCandidates(jobId: string, uploadToken?: string) {
+  const current = await getCorvoJob(jobId);
+  if (!current || (uploadToken && current.uploadToken !== uploadToken) || current.request.specialist !== "ANALISTA") return null;
+  const redis = getRedis();
+  const key = `${COLLECTOR_KEY_PREFIX}${jobId}`;
+  if (redis) {
+    try {
+      const values = await redis.hgetall<Record<string, unknown>>(key);
+      return Object.values(values || {}).flatMap((value) => {
+        if (!value) return [];
+        if (typeof value === "string") {
+          try { return [JSON.parse(value) as CorvoCollectorCandidate]; } catch { return []; }
+        }
+        if (typeof value === "object") return [value as CorvoCollectorCandidate];
+        return [];
+      });
+    } catch {
+      throw new CorvoStorageError("Não foi possível ler as candidatas do Collector no Upstash Redis.");
+    }
+  }
+  if (process.env.NODE_ENV === "production") throw new CorvoStorageError();
+  return [...(memoryCollectorCandidates.get(jobId)?.values() || [])];
+}
+
+export async function getCollectorCandidatesByName(jobId: string, uploadToken: string, names: string[]) {
+  const candidates = await listCollectorCandidates(jobId, uploadToken);
+  if (!candidates) return null;
+  const wanted = new Set(names.map((name) => name.toLocaleLowerCase("pt-BR")));
+  return candidates.filter((candidate) => wanted.has(candidate.name.toLocaleLowerCase("pt-BR")));
 }
 
 export async function getCorvoJob(jobId: string) {

@@ -1,0 +1,592 @@
+CORVOQUIZ — ALTERAÇÃO DO MODO AUTOMÁTICO APÓS O COLLECTOR
+DOCUMENTO PARA O GPT / MODIFICADOR DO APP
+VERSION=1.0
+
+==================================================
+1. OBJETIVO DA MUDANÇA
+==================================================
+
+ALTERAR O COMPORTAMENTO ATUAL DO MODO AUTOMÁTICO DE SELEÇÃO DE IMAGENS.
+
+Hoje o app possui opção de seleção manual ou automática após o Corvo Collector.
+
+No modo automático, o APP NÃO deve mais tentar escolher sozinho uma imagem candidata para cada pergunta/ID.
+
+Motivo:
+
+O app não possui capacidade visual/semântica suficiente para decidir qual candidata representa melhor cada pergunta. Sem análise visual real, ele pode selecionar apenas a primeira imagem, uma imagem aleatória, uma duplicata ou uma candidata incorreta e enviar material ruim para a etapa seguinte.
+
+A nova regra é:
+
+MODO MANUAL
+→ continua permitindo seleção humana, se desejado.
+
+MODO AUTOMÁTICO
+→ NÃO SELECIONA IMAGENS.
+→ envia o ZIP COMPLETO do Collector para o CORVO ANALISTA DE IMAGENS.
+→ o Analista escolhe a melhor candidata de cada ID.
+
+==================================================
+2. NOVO FLUXO AUTOMÁTICO
+==================================================
+
+Fluxo anterior aproximado:
+
+COLLECTOR
+→ APP tenta escolher/separar uma candidata por ID
+→ ANALISTA
+→ REFINADOR / GERADOR
+
+Novo fluxo:
+
+COLLECTOR
+→ ZIP COMPLETO / BRUTO DE CANDIDATAS
+→ CORVO ANALISTA DE IMAGENS
+→ ANALISTA ESCOLHE A MELHOR CANDIDATA DE CADA ID
+→ ANALISTA CLASSIFICA
+→ MANIFESTO RETORNA AO APP
+→ APP EXECUTA O ROTEAMENTO
+
+O CORVO ANALISTA passa a exercer:
+
+SEPARAÇÃO
++
+SELEÇÃO
++
+AVALIAÇÃO
++
+ROTEAMENTO
+
+O app apenas executa as decisões.
+
+==================================================
+3. O QUE O APP DEVE ENVIAR AO ANALISTA
+==================================================
+
+No modo automático, enviar ao CORVO ANALISTA:
+
+1. ZIP COMPLETO produzido pelo Collector;
+2. roteiro completo;
+3. prompts/contexto de cada ID;
+4. IDs esperados;
+5. nomes/estrutura dos arquivos;
+6. JOB_ID;
+7. demais informações relevantes do projeto.
+
+IMPORTANTE:
+
+Não retirar previamente apenas uma candidata de cada ID.
+
+Não embaralhar os arquivos.
+
+Não substituir o ZIP bruto por uma seleção automática feita pelo app.
+
+O Analista precisa ter acesso a TODAS as candidatas disponíveis para comparar e escolher corretamente.
+
+==================================================
+4. PAPEL DO CORVO ANALISTA
+==================================================
+
+Para cada ID, o Analista deverá:
+
+1. localizar todas as candidatas daquele ID;
+2. analisar visualmente todas;
+3. eliminar imagens erradas;
+4. eliminar duplicatas inferiores;
+5. comparar as opções restantes;
+6. escolher UMA melhor candidata;
+7. classificar a escolhida;
+8. indicar o nome exato do arquivo escolhido;
+9. se nenhuma servir, gerar PROMPT_GERACAO.
+
+Classificações:
+
+PASSOU
+→ ARQUIVO escolhido
+→ REFINAMENTO=LEVE
+
+PASSOU_COM_RESSALVAS
+→ ARQUIVO escolhido
+→ REFINAMENTO=FORTE
+
+NAO_PASSOU
+→ ARQUIVO=
+→ PROMPT_GERACAO
+→ GERADOR
+
+==================================================
+5. MANIFESTO ESPERADO DO ANALISTA
+==================================================
+
+[CORVO_IMAGE_ANALYSIS]
+VERSION=1.1
+
+[TOTAL]
+IDS=<total>
+PASSOU=<quantidade>
+PASSOU_COM_RESSALVAS=<quantidade>
+NAO_PASSOU=<quantidade>
+
+[ID:001]
+STATUS=PASSOU
+ARQUIVO=<nome real da candidata escolhida>
+MOTIVO=<motivo curto>
+REFINAMENTO=LEVE
+
+[ID:002]
+STATUS=PASSOU_COM_RESSALVAS
+ARQUIVO=<nome real da candidata escolhida>
+MOTIVO=<motivo curto>
+REFINAMENTO=FORTE
+
+[ID:003]
+STATUS=NAO_PASSOU
+ARQUIVO=
+MOTIVO=<motivo curto>
+PROMPT_GERACAO=<prompt completo>
+
+[END]
+
+==================================================
+6. COMO O APP DEVE TRATAR OS ARQUIVOS ESCOLHIDOS
+==================================================
+
+PONTO IMPORTANTE:
+
+Para imagens que JÁ EXISTEM no ZIP do Collector, o Bridge não precisa baixar novamente a imagem selecionada do GPT.
+
+O app já possui o ZIP bruto.
+
+Portanto, após receber o manifesto do Analista:
+
+ARQUIVO=<nome escolhido>
+
+o APP deve localizar esse arquivo dentro do ZIP original e extraí-lo fisicamente.
+
+Fluxo preferencial:
+
+MANIFESTO DO ANALISTA
+→ APP lê ARQUIVO
+→ APP procura ARQUIVO no ZIP bruto
+→ APP extrai a imagem
+→ APP associa ao ID
+→ APP envia para o próximo ramo
+
+Isso é mais confiável do que tentar fazer o GPT devolver novamente uma imagem que já existe no app.
+
+==================================================
+7. PAPEL DO BRIDGE NESSA ETAPA
+==================================================
+
+O CORVO BRIDGE continua responsável por:
+
+- abrir o GPT personalizado correto;
+- enviar o CORVO_BRIDGE_JOB;
+- fornecer/encaminhar o ZIP e o contexto à conversa, conforme a integração existente;
+- aguardar o resultado;
+- garantir que a Action entregarResultadoCorvo seja concluída;
+- acompanhar o JOB_ID.
+
+O Analista devolve principalmente o MANIFESTO.
+
+A separação física das imagens escolhidas deve ser feita preferencialmente pelo APP usando o ZIP original.
+
+RESUMO:
+
+BRIDGE
+→ leva job/material ao Analista e acompanha a conversa.
+
+ANALISTA
+→ pensa e escolhe.
+
+APP
+→ extrai fisicamente os arquivos escolhidos e executa o roteamento.
+
+==================================================
+8. ROTEAMENTO APÓS A ANÁLISE
+==================================================
+
+Depois de receber o manifesto, o app deve criar automaticamente os ramos necessários.
+
+CASO 1 — somente imagens aprovadas:
+
+PASSOU / PASSOU_COM_RESSALVAS
+→ APP extrai arquivos selecionados
+→ envia ao CORVO REFINADOR
+
+CASO 2 — somente imagens reprovadas:
+
+NAO_PASSOU
+→ APP cria lote com IDs + PROMPT_GERACAO
+→ envia ao CORVO GERADOR DE IMAGENS
+
+CASO 3 — lote misto:
+
+Alguns IDs aprovados
++
+alguns IDs reprovados
+
+→ criar DOIS RAMOS EM PARALELO:
+
+RAMO A
+PASSOU + PASSOU_COM_RESSALVAS
+→ CORVO REFINADOR
+
+RAMO B
+NAO_PASSOU
+→ CORVO GERADOR DE IMAGENS
+
+Os dois podem trabalhar ao mesmo tempo.
+
+==================================================
+9. REFINADOR
+==================================================
+
+O Refinador recebe somente as imagens selecionadas pelo Analista que possuem:
+
+PASSOU
+ou
+PASSOU_COM_RESSALVAS
+
+Com:
+
+REFINAMENTO=LEVE
+ou
+REFINAMENTO=FORTE
+
+Saída:
+
+REFINADA
+→ imagem final
+
+FALHOU
+→ ERROR_CODE + MOTIVO
+→ pode seguir para FALLBACK
+
+A imagem refinada com sucesso é FINAL.
+
+==================================================
+10. GERADOR DE IMAGENS
+==================================================
+
+O Gerador recebe somente IDs:
+
+STATUS=NAO_PASSOU
+
+com:
+
+PROMPT_GERACAO
+
+Ele gera uma imagem nova para substituir a ausência de candidata adequada.
+
+Saída:
+
+GERADA
+→ imagem final
+
+FALHOU
+→ ERROR_CODE + MOTIVO
+→ pode seguir para FALLBACK
+
+A imagem gerada com sucesso é FINAL.
+
+Ela NÃO precisa passar pelo Refinador.
+
+==================================================
+11. RECEBIMENTO DE ARQUIVOS DO REFINADOR E GERADOR
+==================================================
+
+Diferente do Analista, Refinador e Gerador podem produzir NOVOS arquivos que ainda não existem no ZIP original do Collector.
+
+Esses arquivos precisam chegar fisicamente ao app.
+
+A implementação pode usar a infraestrutura já definida para arquivos do Bridge.
+
+Modelo:
+
+GPT produz arquivo
+→ Bridge detecta/captura o arquivo quando necessário
+→ Bridge envia para o app
+→ app associa ao JOB_ID + ID
+→ arquivo fica persistido para o merge final
+
+Sugestão de endpoint genérico:
+
+POST /api/corvo/arquivo
+
+Campos conceituais:
+
+jobId
+id
+tipo
+nomeArquivo
+arquivo
+
+Tipos possíveis:
+
+THUMBNAIL
+IMAGEM_REFINADA
+IMAGEM_GERADA
+
+IMPORTANTE:
+
+Se já existir outro mecanismo confiável para o app receber diretamente esses arquivos, ele pode ser usado.
+
+O requisito é:
+
+O APP precisa possuir o arquivo físico final, não apenas ARQUIVO=<nome> no manifesto.
+
+==================================================
+12. DOIS RAMOS TRABALHANDO JUNTOS
+==================================================
+
+Exemplo:
+
+TOTAL=60
+
+Analista decide:
+
+45 IDs → Refinador
+15 IDs → Gerador
+
+O app deve iniciar os dois ramos sem obrigar um a esperar o outro.
+
+Fluxo:
+
+                 ANALISTA
+                    |
+          +---------+---------+
+          |                   |
+          v                   v
+      REFINADOR            GERADOR
+       45 IDs               15 IDs
+          |                   |
+          v                   v
+   IMAGENS FINAIS       IMAGENS FINAIS
+          |                   |
+          +---------+---------+
+                    |
+                    v
+                  MERGE
+
+==================================================
+13. MERGE FINAL
+==================================================
+
+O app deve aguardar todos os IDs necessários.
+
+Exemplo:
+
+REFINADOR
+45/45 concluídos
+
+GERADOR
+15/15 concluídos
+
+TOTAL FINAL
+60/60
+
+Somente então:
+
+→ validar IDs;
+→ verificar ausentes;
+→ verificar duplicados;
+→ organizar nomes;
+→ criar ZIP FINAL;
+→ seguir para Forma.
+
+Se houver:
+
+REFINADOR=45/45
+GERADOR=13/15
+
+o Merge deve permanecer:
+
+AGUARDANDO
+
+e NÃO concluir com 58 imagens.
+
+==================================================
+14. FALLBACK
+==================================================
+
+Se Refinador ou Gerador retornar:
+
+STATUS=FALHOU
+ERROR_CODE=<codigo>
+MOTIVO=<motivo>
+
+o app pode abrir um job no CORVO FALLBACK.
+
+Fluxo:
+
+FALHA
+→ APP
+→ FALLBACK
+→ RETRY ou NAO_RECUPERAVEL
+
+RETRY:
+→ app envia PROMPT_RETRY novamente para o especialista indicado.
+
+NAO_RECUPERAVEL:
+→ app marca o ID para tratamento manual/falha final.
+
+Fallback não gera nem edita imagens.
+
+Ele apenas analisa a falha e prepara a recuperação.
+
+==================================================
+15. MODO MANUAL
+==================================================
+
+A mudança não exige necessariamente remover o modo manual.
+
+Sugestão:
+
+MODO MANUAL
+→ usuário continua escolhendo as imagens.
+
+MODO AUTOMÁTICO
+→ usuário NÃO escolhe;
+→ app NÃO escolhe;
+→ ZIP bruto vai para o Analista;
+→ Analista escolhe.
+
+Assim o app mantém flexibilidade sem usar seleção automática sem inteligência visual.
+
+==================================================
+16. ALTERAÇÃO PRINCIPAL NA INTERFACE
+==================================================
+
+Onde hoje existir algo como:
+
+SEPARAÇÃO AUTOMÁTICA
+
+o comportamento interno deve mudar.
+
+Antes:
+
+SEPARAÇÃO AUTOMÁTICA
+→ app seleciona candidato por lógica simples.
+
+Depois:
+
+SEPARAÇÃO AUTOMÁTICA
+→ enviar ZIP completo ao CORVO ANALISTA
+→ aguardar manifesto
+→ extrair candidatos escolhidos pelo nome informado.
+
+A interface pode continuar chamando:
+
+AUTOMÁTICO
+
+mas a inteligência da seleção passa a ser do GPT Analista.
+
+==================================================
+17. ESTADO DA ETAPA NO APP
+==================================================
+
+Sugestão de estados:
+
+COLLECTOR_CONCLUIDO
+ZIP_BRUTO_PRONTO
+ENVIANDO_ANALISTA
+ANALISTA_PROCESSANDO
+ANALISE_RECEBIDA
+SEPARANDO_ARQUIVOS
+ENVIANDO_REFINADOR
+ENVIANDO_GERADOR
+AGUARDANDO_RAMO_REFINADOR
+AGUARDANDO_RAMO_GERADOR
+AGUARDANDO_FALLBACK
+PRONTO_PARA_MERGE
+MERGE_CONCLUIDO
+
+Persistir os estados para permitir espera longa e recarregamento da página.
+
+==================================================
+18. REGRA DE RESPONSABILIDADE
+==================================================
+
+A arquitetura deve seguir esta regra:
+
+COLLECTOR
+→ coleta candidatos.
+
+ANALISTA
+→ escolhe, avalia e decide destino.
+
+APP
+→ extrai arquivos, cria lotes, controla jobs e roteia.
+
+REFINADOR
+→ melhora candidatas aprovadas.
+
+GERADOR
+→ cria imagens para IDs sem candidata adequada.
+
+FALLBACK
+→ recupera falhas.
+
+BRIDGE
+→ conecta app e GPTs, acompanha jobs e transporta arquivos produzidos quando necessário.
+
+MERGE
+→ reúne todos os arquivos finais.
+
+==================================================
+19. RESUMO PARA IMPLEMENTAÇÃO
+==================================================
+
+ALTERAÇÃO OBRIGATÓRIA:
+
+No MODO AUTOMÁTICO, remover a lógica em que o app escolhe sozinho uma imagem candidata por ID.
+
+NOVA LÓGICA:
+
+COLLECTOR
+→ ZIP COMPLETO
+→ ANALISTA
+
+ANALISTA
+→ escolhe ARQUIVO por ID
+→ classifica
+
+APP
+→ usa ARQUIVO para extrair imagem do ZIP original
+
+PASSOU / PASSOU_COM_RESSALVAS
+→ REFINADOR
+
+NAO_PASSOU
+→ GERADOR
+
+Se existirem os dois tipos:
+→ executar Refinador e Gerador em paralelo.
+
+Arquivos produzidos por Refinador/Gerador:
+→ devem retornar fisicamente ao app, via Bridge ou mecanismo equivalente.
+
+Depois:
+→ aguardar todos os IDs
+→ MERGE
+→ ZIP FINAL
+→ FORMA
+
+==================================================
+20. PRINCÍPIO FINAL
+==================================================
+
+O APP NÃO DEVE TENTAR TOMAR UMA DECISÃO VISUAL QUE ELE NÃO CONSEGUE AVALIAR.
+
+No automático:
+
+APP ORGANIZA.
+ANALISTA PENSA.
+APP EXECUTA.
+REFINADOR MELHORA.
+GERADOR COMPLETA.
+FALLBACK RECUPERA.
+MERGE CONSOLIDA.
+
+FIM DO DOCUMENTO

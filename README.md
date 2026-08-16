@@ -1,78 +1,84 @@
-# CorvoQuiz Produção — V0.6.9
+# CorvoQuiz Produção — V0.6.11
 
-Painel de produção do CorvoQuiz com orquestração multiespecialista via **Corvo Bridge**, retorno genérico por **GPT Action**, coleta de imagens pelo **Corvo Collector**, roteamento automático por ID, Fallback e ZIP final.
+Painel de produção do CorvoQuiz com orquestração multiespecialista via **Corvo Bridge**, coleta pelo **Corvo Collector**, seleção visual delegada ao **Corvo Analista**, roteamento por ID, Fallback e ZIP final.
+
+## V0.6.11 — modo automático delegado ao Analista
+
+No modo automático, o app **não escolhe mais uma candidata por ID**. O fluxo agora é:
+
+`COLLECTOR → TODAS AS CANDIDATAS → ZIP BRUTO → ANALISTA → ARQUIVO ESCOLHIDO POR ID → REFINADOR / GERADOR`
+
+O Collector V0.7.7 envia todas as candidatas disponíveis de cada ID ao armazenamento do trabalho do Analista. Cada candidata recebe nome único, por exemplo:
+
+- `video1_001_c001.jpg`
+- `video1_001_c002.jpg`
+- `video1_002_c001.jpg`
+
+O servidor mantém o mapeamento `ID → candidatas`, monta o ZIP persistente e inclui `CORVO_ANALISE_INPUT.json` + `CORVO_ANALISE_GUIA.txt`.
+
+O Corvo Analista usa agora `CORVO_IMAGE_ANALYSIS VERSION=1.1`. Para cada ID ele compara todas as candidatas e devolve:
+
+- `PASSOU` + `ARQUIVO=<nome exato>` + `REFINAMENTO=LEVE`;
+- `PASSOU_COM_RESSALVAS` + `ARQUIVO=<nome exato>` + `REFINAMENTO=FORTE`;
+- `NAO_PASSOU` + `ARQUIVO=` + `PROMPT_GERACAO`.
+
+Depois do manifesto, o app consulta o armazenamento original do Collector pelo nome indicado em `ARQUIVO`, associa fisicamente a candidata escolhida ao ID e a envia ao Refinador. O GPT não precisa devolver novamente uma imagem que já existia no Collector.
+
+O modo manual continua disponível: o usuário escolhe uma candidata por ID e o Analista ainda valida/classifica o conjunto.
+
+## Armazenamento de candidatas
+
+Para não transformar o objeto principal do job em uma lista com milhares de URLs, as candidatas do Collector ficam em um registro separado no Upstash Redis, com TTL de 7 dias, enquanto os bytes ficam no Vercel Blob. O ZIP do Analista é montado a partir desse registro.
+
+Novos/ajustados endpoints:
+
+- `POST /api/corvo/arquivo` — recebe cada candidata com `jobId`, `id`, `nomeArquivo` e arquivo;
+- `POST /api/corvo/pacote` — valida cobertura dos IDs e monta o ZIP completo de candidatas;
+- `POST /api/corvo/candidato` — resolve os nomes escolhidos pelo Analista para os arquivos físicos originais do Collector.
 
 ## Pipeline atual
 
-O fluxo implementado nesta versão é:
-
 `IDEIA → ROTEIRO → PROMPTS → COLLECTOR → ANALISTA → REFINADOR / GERADOR → FALLBACK quando necessário → CONSOLIDAÇÃO → ZIP FINAL`
 
-Em paralelo ao início do Collector, o app pode iniciar:
+Em paralelo ao Collector:
 
-- **Corvo Thumb** — gera a thumbnail e o Bridge captura o arquivo real;
-- **Corvo YouTube / Metadados** — opcional nas configurações; prepara o pacote editorial enquanto as imagens são processadas.
+- **Corvo Thumb** — gera thumbnail; o Bridge captura o arquivo real;
+- **Corvo YouTube / Metadados** — opcional; prepara dados editoriais.
 
-A imagem final do Gerador não passa novamente pelo Refinador. O Refinador e o Gerador entregam arquivos finais de seus próprios ramos.
-
-## Fase 3 — Analyst e roteamento real
-
-O Collector V0.7.5 continua criando o pacote original para o Forma, mas também envia ao app uma cópia JPEG leve de cada imagem escolhida. Essas cópias servem apenas ao Analista; o JPEG original do pacote do Collector não é reduzido por essa rotina.
-
-O servidor recebe as imagens individualmente, associa todas ao `JOB_ID` do Analista e cria `POST /api/corvo/pacote`, que monta um ZIP persistente no Vercel Blob. O Bridge V0.6.2 baixa esse ZIP e o anexa à conversa do Corvo Analista.
-
-Depois do manifesto `CORVO_IMAGE_ANALYSIS`, o app valida os IDs e cria uma fila por imagem:
+### Roteamento
 
 - `PASSOU` → Refinador leve;
 - `PASSOU_COM_RESSALVAS` → Refinador forte;
-- `NAO_PASSOU` → Gerador.
+- `NAO_PASSOU` → Gerador;
+- Refinador e Gerador podem trabalhar em paralelo;
+- Gerador mantém **um único worker por vez**;
+- imagem gerada com sucesso já é final e não volta ao Refinador.
 
-Para o Refinador, o Bridge anexa a imagem real de origem. Para Refinador e Gerador, um manifesto de sucesso deixa o job em `WAITING_FILE` até o Bridge capturar a imagem final da conversa e enviá-la ao Blob.
+### Fallback
 
-O Gerador possui fila global de **um único worker por vez**, inclusive para retries vindos do Fallback.
+Falhas estruturadas de Refinador/Gerador seguem para o Fallback. O app interpreta `RETRY` ou `NAO_RECUPERAVEL`, controla o limite e mantém histórico por ID. São permitidas a tentativa original + até duas novas tentativas.
 
-## Fase 4 — Fallback e tentativas
+### Consolidação / ZIP final
 
-Falhas estruturadas de Refinador/Gerador são interpretadas por ID usando `FALHOU`, `ERROR_CODE` e `MOTIVO`.
+A Consolidação só libera o ZIP quando todos os IDs possuem arquivo final real e não há IDs/nomes duplicados ou formatos inválidos. O pacote final inclui imagens, thumbnail quando disponível, metadados, manifesto do Analista e histórico do pipeline.
 
-O app envia a falha ao Corvo Fallback, que somente decide:
+## Hotfixes preservados
 
-- `RETRY` + `DESTINO` + `PROMPT_RETRY`; ou
-- `NAO_RECUPERAVEL`.
+### V0.6.10 / Collector V0.7.6 — diagnóstico de upload
 
-O app — e não o GPT — controla o limite. Esta versão aceita a tentativa original + até duas novas tentativas. Cada ID preserva histórico resumido de execução, erro, Fallback, destino e retry.
+Antes do empacotamento, o app verifica Redis + Vercel Blob. O Collector preserva o primeiro erro real de upload e interrompe repetição inútil quando detecta erro fatal de armazenamento.
 
-Se o Fallback declarar `NAO_RECUPERAVEL`, devolver retry inválido ou o limite for atingido, o ID fica em tratamento manual e a Consolidação não libera o ZIP final.
+### Bridge V0.6.3/V0.6.5 — captura e anexos grandes
 
-## Fase 5 — Consolidação / ZIP final
+Timeout real, busca mais robusta no DOM, fallback de captura, atualização automática do popup e repetição de captura presa. Na V0.6.5, anexos do Blob são buscados diretamente pela aba do ChatGPT antes do fallback legado, removendo o gargalo interno de 40 MB para o ZIP bruto do Analista.
 
-A nova área **Consolidação / ZIP Final** mostra o estado de cada ID e só habilita a geração quando:
+### Bridge V0.6.4 — Cleaner manual
 
-- todos os IDs possuem arquivo final real;
-- não existem IDs duplicados;
-- não existem nomes de arquivo duplicados;
-- os nomes finais possuem formato de imagem aceito.
-
-O ZIP final contém:
-
-- `imagens/` — imagens finais ordenadas por ID;
-- `thumbnail/` — thumbnail real quando disponível, ou um arquivo de status;
-- `youtube/METADADOS.txt` — dados editoriais quando disponíveis, ou status;
-- `analise/CORVO_IMAGE_ANALYSIS.txt`;
-- `CORVO_FINAL_MANIFEST.json` — associação ID → arquivo, origem, tentativa final e histórico;
-- `LEIA-ME.txt`.
+O popup mostra **Apagar X mapeadas agora**, usando somente conversas próprias, concluídas e já registradas pelo Cleaner. A limpeza automática das 22h continua separada.
 
 ## Jobs longos
 
-Os jobs continuam persistidos por 7 dias no Upstash Redis. O app não usa timeout curto para Gerador, Refinador ou Fallback e a Consolidação permanece aguardando até os arquivos finais existirem.
-
-Ainda existe uma melhoria pendente: após uma **recarga completa da página durante um job em andamento**, o registro do job continua no servidor, porém esta versão ainda não religa automaticamente todos os pollers do pipeline. Essa reidratação fica registrada no plano de implementação.
-
-## Thumbnail real
-
-Uma Thumb com `STATUS=GERADA` não é considerada concluída apenas pelo manifesto. O Bridge captura a imagem grande mais recente da conversa, envia os bytes para `/api/corvo/arquivo`, e o job só muda para `DONE` quando manifesto + arquivo estão presentes.
-
-A validação final dessa captura precisa ser feita no deploy de produção com **Vercel Blob conectado** e a URL real do GPT Thumb configurada no Bridge.
+Jobs persistem por 7 dias. Gerador, Refinador e Fallback não falham apenas por demora local. Ainda falta reidratar automaticamente todos os pollers após uma recarga completa da página; os registros permanecem no servidor.
 
 ## Armazenamento e Vercel
 
@@ -80,58 +86,27 @@ Configure no projeto:
 
 1. `CorvoAPI_KEY_IDEIA`;
 2. Upstash Redis (`UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`, ou o par `KV_*`);
-3. Vercel Blob (`BLOB_READ_WRITE_TOKEN`, ou credenciais disponibilizadas pela integração do Blob);
+3. Vercel Blob;
 4. novo deploy após conectar os recursos.
 
 `GET /api/corvo/diagnostico` informa se Redis e Blob estão configurados sem expor segredos.
 
-## Endpoints principais
-
-- `POST /api/corvo/job` — cria jobs dos especialistas;
-- `POST /api/corvo/resultado` — recebe manifesto/texto da Action;
-- `GET /api/corvo/resultado?jobId=...` — acompanha estado, manifesto e arquivos;
-- `POST /api/corvo/arquivo` — recebe thumbnails, imagens do Collector e imagens finais capturadas;
-- `POST /api/corvo/pacote` — monta o ZIP de entrada persistente do Analista.
-
-## Especialistas do Bridge
-
-O Corvo Bridge possui URLs independentes para:
-
-- Ideias / Scout;
-- Roteiro;
-- Prompts;
-- Analista;
-- Refinador;
-- Gerador;
-- Fallback;
-- Thumb;
-- YouTube / Metadados.
-
-As URLs ficam nas opções da extensão e não são hardcoded na lógica do app.
-
 ## Instalação
 
-### Corvo Bridge V0.6.2
+### Corvo Bridge V0.6.5
 
-1. Extraia `corvo-bridge-extension` ou use `public/downloads/CORVO_BRIDGE_V062_EXTENSION.zip`.
-2. Abra `chrome://extensions`, ative **Modo do desenvolvedor** e carregue a pasta sem compactação.
-3. Cadastre as URLs dos GPTs nas opções.
-4. Mantenha a origem do app configurada para o deploy do CorvoQuiz.
+Use `public/downloads/CORVO_BRIDGE_V065_EXTENSION.zip` ou carregue a pasta `corvo-bridge-extension` em `chrome://extensions`.
 
-### Corvo Collector V0.7.5
+### Corvo Collector V0.7.7
 
-1. Extraia `corvo-collector-extension` ou use `public/downloads/CORVO_COLLECTOR_V075_EXTENSION.zip`.
-2. Carregue a extensão sem compactação.
-3. No popup, autorize a origem exata do site.
+Use `public/downloads/CORVO_COLLECTOR_V077_EXTENSION.zip` ou carregue a pasta `corvo-collector-extension`. Autorize a origem exata do deploy no popup.
 
 ## Downloads dentro do app
 
-O menu de configurações aponta para:
-
-- Corvo Collector V0.7.5;
-- Corvo Bridge V0.6.2;
-- Kit completo CorvoQuiz V0.6.9.
+- Corvo Collector V0.7.7;
+- Corvo Bridge V0.6.5;
+- Kit completo CorvoQuiz V0.6.11.
 
 ## Fora do escopo atual
 
-A publicação automática no YouTube ainda não faz parte deste pacote. A evolução futura poderá receber o vídeo final do Forma e executar upload de vídeo, thumbnail, metadados, visibilidade e agendamento via YouTube API.
+Publicação automática no YouTube continua futura: upload do vídeo final, aplicação da thumbnail, metadados, visibilidade e agendamento via YouTube API.
