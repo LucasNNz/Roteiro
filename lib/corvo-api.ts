@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { CorvoIdea } from "./corvo-jobs";
+import { CorvoBlobReadError } from "./corvo-blob";
 
 export function readApiKey(request: NextRequest) {
   const headerKey = request.headers.get("x-api-key")?.trim();
@@ -67,5 +68,14 @@ export function ideasFromResult(resultado: string): CorvoIdea[] {
 
 export function storageFailure(error: unknown) {
   const message = error instanceof Error ? error.message : "Falha no armazenamento de trabalhos.";
-  return NextResponse.json({ ok: false, message }, { status: 503 });
+  const code = error instanceof CorvoBlobReadError ? error.code : (error instanceof Error ? error.message.split(":", 1)[0] : "STORAGE_FAILED");
+  const status = error instanceof CorvoBlobReadError && error.status && error.status >= 400 && error.status < 600 ? error.status : 503;
+  return NextResponse.json({
+    ok:false,
+    code,
+    message,
+    diagnostics:error instanceof CorvoBlobReadError ? error.diagnostics || [] : [],
+    attempts:error instanceof CorvoBlobReadError ? error.attempts || [] : [],
+    storageProvider:"R2",
+  }, { status });
 }

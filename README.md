@@ -1,4 +1,16 @@
-# CorvoQuiz Produção — V0.6.35
+# CorvoQuiz Produção — V0.6.36
+
+## V0.6.36 — SDK S3 oficial do R2 + diagnóstico por etapas
+
+- O armazenamento R2 deixou de usar assinatura AWS SigV4 implementada manualmente.
+- O app agora usa `@aws-sdk/client-s3` para PUT/GET/DELETE/HeadBucket e `@aws-sdk/s3-request-presigner` para URLs temporárias.
+- `R2_ENDPOINT` oficial: `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`.
+- O probe antes do Collector valida: endpoint, DNS, bucket, escrita, leitura e exclusão.
+- O probe grava apenas um TXT minúsculo em `corvoquiz/_health/` e o remove imediatamente.
+- `/api/corvo/diagnostico` agora retorna `storageDiagnostics` com códigos por etapa, sem expor Access Key ou Secret.
+- Erros diferenciados: `R2_ENDPOINT_INVALID`, `R2_DNS_FAILED`, `R2_BUCKET_NOT_FOUND`, `R2_ACCESS_KEY_INVALID`, `R2_SIGNATURE_FAILED`, `R2_ACCESS_DENIED`, `R2_WRITE_FAILED`, `R2_READ_FAILED` e `R2_DELETE_FAILED`.
+- Upload de thumbnail, lotes do Collector e ZIP do Analista usam o mesmo cliente S3 oficial.
+
 
 ## V0.6.35 — migração automática de checkpoints Vercel Blob → R2
 
@@ -312,7 +324,7 @@ Use `public/downloads/CORVO_COLLECTOR_V080_EXTENSION.zip` ou carregue a pasta `c
 
 - Corvo Collector V0.8.0;
 - Corvo Bridge V0.6.20;
-- Kit completo CorvoQuiz V0.6.35.
+- Kit completo CorvoQuiz V0.6.36.
 
 ## Fora do escopo atual
 

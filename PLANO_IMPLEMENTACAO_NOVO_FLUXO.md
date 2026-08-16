@@ -1,3 +1,12 @@
+## Alteração V0.6.36 — AWS SDK v3 oficial para Cloudflare R2
+
+- [x] Substituir assinatura S3 manual por `@aws-sdk/client-s3`.
+- [x] Usar `@aws-sdk/s3-request-presigner` para URLs GET temporárias.
+- [x] Probe real: ENDPOINT → DNS → HEAD_BUCKET → PUT → GET → DELETE.
+- [x] Diagnóstico granular e seguro, sem exibir credenciais.
+- [x] Uploads de Thumb/Collector/Analista passam pelo mesmo cliente S3 oficial.
+- [x] Manter `R2_BUCKET_NAME` + `R2_ENDPOINT` como configuração oficial.
+
 ## Alteração V0.6.35 — migração de checkpoint legado + probe real do R2
 
 - Checkpoints antigos do Vercel Blob são detectados e não entram em retry infinito.

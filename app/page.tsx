@@ -939,6 +939,7 @@ export default function Home() {
 
   function friendlyError(error:unknown) {
     const message = String(error instanceof Error ? error.message : error);
+    const r2Trail = message.includes("|") ? ` [${message.split("|").at(-1)?.trim() || ""}]` : "";
     if (message.includes("ORIGIN_NOT_AUTHORIZED")) return "Autorize este endereço uma única vez no Corvo Collector e tente novamente.";
     if (message.includes("COLLECTOR_NOT_AVAILABLE") || message.includes("Receiving end does not exist")) return "O Corvo Collector não foi encontrado. Instale ou atualize a extensão incluída no pacote.";
     if (message.includes("JOB_ALREADY_RUNNING_DIFFERENT")) return "O Collector está trabalhando em outra produção. Aguarde essa busca terminar ou cancele-a antes de iniciar esta.";
@@ -946,7 +947,16 @@ export default function Home() {
     if (message.includes("PACKAGE_ALREADY_RUNNING")) return "O Collector já está montando o pacote de outra produção. O pacote da produção atual será retomado automaticamente quando for o mesmo trabalho; se for outro projeto, aguarde a montagem atual terminar.";
     if (message.includes("R2_NOT_CONFIGURED") || message.toLowerCase().includes("cloudflare r2 não configurado")) return "O Cloudflare R2 ainda não está configurado no projeto. Configure R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME e R2_ENDPOINT na Vercel e tente novamente.";
     if (message.includes("LEGACY_VERCEL_BLOB_CHECKPOINT") || message.includes("Objeto R2 não permitido para este trabalho")) return "Este projeto ainda aponta para um checkpoint antigo do Vercel Blob. O CorvoQuiz vai descartar somente esse checkpoint de arquivos e reconstruí-lo no Cloudflare R2.";
-    if (message.includes("R2_PROBE_")) return `O teste real do Cloudflare R2 falhou antes do Collector: ${message}`;
+    if (message.includes("R2_ENDPOINT_INVALID")) return `O R2_ENDPOINT está inválido. Use https://<ACCOUNT_ID>.r2.cloudflarestorage.com, sem /bucket no final.${r2Trail}`;
+    if (message.includes("R2_DNS_FAILED")) return `O endpoint do Cloudflare R2 não resolveu por DNS. Confira R2_ENDPOINT e R2_ACCOUNT_ID.${r2Trail}`;
+    if (message.includes("R2_BUCKET_NOT_FOUND")) return `O endpoint respondeu, mas o bucket configurado não foi encontrado. Confira R2_BUCKET_NAME.${r2Trail}`;
+    if (message.includes("R2_ACCESS_KEY_INVALID")) return `O Cloudflare R2 recusou o R2_ACCESS_KEY_ID. Confira se você colocou o Access Key ID S3 do token R2.${r2Trail}`;
+    if (message.includes("R2_SIGNATURE_FAILED")) return `A assinatura S3 foi recusada. Confira R2_SECRET_ACCESS_KEY, R2_ACCESS_KEY_ID e R2_ENDPOINT; as duas chaves precisam pertencer ao mesmo token R2.${r2Trail}`;
+    if (message.includes("R2_ACCESS_DENIED")) return `O R2 respondeu, mas recusou a operação. O token precisa de Object Read & Write para o bucket configurado.${r2Trail}`;
+    if (message.includes("R2_WRITE_FAILED")) return `O R2 respondeu e o bucket existe, mas o teste de escrita falhou.${r2Trail}`;
+    if (message.includes("R2_READ_FAILED") || message.includes("R2_READ_MISMATCH")) return `O R2 gravou o probe, mas o teste de leitura falhou.${r2Trail}`;
+    if (message.includes("R2_DELETE_FAILED")) return `O R2 leu e gravou corretamente, mas a limpeza do objeto de teste falhou.${r2Trail}`;
+    if (message.includes("R2_PROBE_") || message.includes("R2_HEAD_BUCKET_FAILED") || message.includes("R2_CONNECTION_")) return `O teste real do Cloudflare R2 falhou antes do Collector: ${message}`;
     if (message.includes("TRATAMENTO_MANUAL_NECESSARIO")) return "Uma ou mais imagens chegaram ao limite de tentativas ou foram marcadas como não recuperáveis. O automático parou para tratamento manual.";
     return message || "Não foi possível concluir esta etapa.";
   }
@@ -957,7 +967,12 @@ export default function Home() {
     if (!response.ok) throw new Error(status?.message || "Não foi possível verificar o armazenamento do pipeline.");
     if (!status?.configured) throw new Error("O Upstash Redis não está configurado para os jobs do Corvo.");
     if (!status?.storageConfigured) throw new Error("R2_NOT_CONFIGURED");
-    if (status?.storageReachable === false) throw new Error(String(status?.storageCode || status?.storageMessage || "R2_PROBE_FAILED"));
+    if (status?.storageReachable === false) {
+      const diagnostics = Array.isArray(status?.storageDiagnostics)
+        ? status.storageDiagnostics.map((item:any) => `${String(item?.code || item?.step || "R2")}${item?.status ? `(${item.status})` : ""}`).join(" > ")
+        : "";
+      throw new Error([String(status?.storageCode || "R2_PROBE_FAILED"), String(status?.storageMessage || ""), diagnostics].filter(Boolean).join(" | "));
+    }
     return status;
   }
 
@@ -2290,7 +2305,7 @@ export default function Home() {
     </section>
 
     <section className="projects" id="projetos"><div className="section-heading"><div><span className="section-number">02</span><h2>PROJETOS RECENTES</h2></div><span className="project-count">{String(projects.length).padStart(2,"0")} PRODUÇÕES</span></div><div className="project-list">{projects.map((project) => <button className={`project-row ${project.id===activeId?"selected":""}`} key={project.id} onClick={() => setActiveId(project.id)}><span className="project-icon">{project.format==="REELS"?"▯":"▭"}</span><span className="project-name"><b>{project.title}</b><small>{project.id}</small></span><span className="project-format">{project.format}</span><span className="progress"><i style={{width:`${project.stage*20}%`}} /></span><span className="stage-label">ETAPA {project.stage}/5</span><span className="row-arrow">→</span></button>)}</div></section>
-    <footer><span>CORVOQUIZ PRODUÇÃO <i>V0.6.35</i></span><span>R2 PROBE + MIGRAÇÃO DE CHECKPOINT LEGADO · V0.6.35</span></footer>
+    <footer><span>CORVOQUIZ PRODUÇÃO <i>V0.6.36</i></span><span>R2 SDK OFICIAL + DIAGNÓSTICO POR ETAPAS · V0.6.36</span></footer>
     {notice && <div className="toast">{notice}</div>}
 
     {createOpen && <div className="modal-backdrop" onMouseDown={(event) => event.target===event.currentTarget&&closeCreationModal()}><section className="creation-modal idea-modal" role="dialog" aria-modal="true" aria-labelledby="new-production-title"><button className="modal-close" disabled={ideaLoading} onClick={closeCreationModal} aria-label="Fechar">×</button><div className="modal-symbol">✦</div><span className="modal-kicker">{ideaRevisionProjectId?"REFAZER IDEIA":"NOVA PRODUÇÃO"}</span><h2 id="new-production-title">{ideaRevisionProjectId?"ESCOLHA UMA NOVA DIREÇÃO":"O QUE VAMOS CRIAR?"}</h2><p>{ideaRevisionProjectId?"Ao confirmar, roteiro, prompts e imagens serão refeitos automaticamente.":"Comece sem tema e peça ideias ao Corvo, ou informe uma direção opcional."}</p>
@@ -2333,7 +2348,7 @@ export default function Home() {
         <div className="download-grid">
           <a className="download-card" href="/downloads/CORVO_COLLECTOR_V080_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.8.0</small></div><i>↓</i></a>
           <a className="download-card" href="/downloads/CORVO_BRIDGE_V0620_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.20 · R2 + RETOMADA DO ENVIO + DIAGNÓSTICO</small></div><i>↓</i></a>
-          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0635.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
+          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0636.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
         </div>
       </section>
       <details className="advanced-settings"><summary>CONFIGURAÇÕES AVANÇADAS</summary><div className="settings-grid"><label>CANDIDATAS COLETADAS/ID<input type="number" min="1" max="20" value={settings.maxCandidates} onChange={(event)=>setSettings({...settings,maxCandidates:Math.max(1,Math.min(20,Number(event.target.value)||20))})}/></label><label>CANDIDATAS/ID → ANALISTA<input type="number" min="1" max="30" value={settings.analystCandidatesPerId} onChange={(event)=>setSettings({...settings,analystCandidatesPerId:Math.max(1,Math.min(30,Number(event.target.value)||10))})}/></label><label>VARREDURA<input type="number" value={settings.scrollSteps} onChange={(event)=>setSettings({...settings,scrollSteps:Number(event.target.value)})}/></label><label>QUALIDADE JPEG<input type="number" step=".01" value={settings.jpegQuality} onChange={(event)=>setSettings({...settings,jpegQuality:Number(event.target.value)})}/></label><label>PREFIXO<input value={settings.prefix} onChange={(event)=>setSettings({...settings,prefix:event.target.value})}/></label></div><p>A busca coleta no máximo 20 candidatas únicas por ID. No modo Mesclado, a meta é dividida entre Google e Pinterest. Depois, o limite do Analista reduz apenas o transporte; o app não escolhe a vencedora.</p><label className="batch-label">COMANDOS EM LOTE — OPCIONAL<textarea value={settings.batchText} onChange={(event)=>setSettings({...settings,batchText:event.target.value})} placeholder={"01|primeira busca\n02|segunda busca"} /></label></details>
