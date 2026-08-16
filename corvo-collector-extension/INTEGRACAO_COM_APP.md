@@ -1,10 +1,10 @@
-# Integração com CorvoQuiz Produção — Collector V0.7.7
+# Integração com CorvoQuiz Produção — Collector V0.7.8
 
 O app usa o protocolo `corvo-collector/1` e os comandos existentes do Collector.
 
-## V0.7.7 — automático delegado ao Corvo Analista
+## V0.7.8 — shortlist técnica + batch upload
 
-No modo `AUTO`, o app não escolhe uma candidata por ID. Ele transforma cada candidata retornada pelo Collector em uma entrada física independente e envia todas ao armazenamento do trabalho do Analista.
+No modo `AUTO`, o app continua sem escolher uma candidata vencedora por ID. Antes do transporte, ele limita tecnicamente o conjunto para até 10 candidatas por ID por padrão (configurável de 1 a 30), usando o ranking técnico já calculado por resolução/fonte/relevância textual. A decisão visual final continua sendo do Corvo Analista.
 
 Nomes no automático seguem o padrão:
 
@@ -12,18 +12,28 @@ Nomes no automático seguem o padrão:
 - `video1_001_c002.jpg`
 - `video1_002_c001.jpg`
 
-Cada upload `COLLECTOR_IMAGE` envia também o campo `id`, permitindo manter a associação física `ID → candidatas` sem gravar milhares de URLs dentro do objeto principal do job.
+## Transporte em lotes
 
-`BUILD_FORMA_PACKAGE` aceita agora:
+Em vez de um `POST /api/corvo/arquivo` por candidata, o modo automático:
 
-- `pipelineOnly=true`: não mantém um segundo ZIP local em memória; envia as candidatas ao app para o ZIP persistente do Analista;
-- `packageMode=ANALYST_RAW`: identifica o pacote bruto de análise;
+1. prepara as cópias JPEG de análise com até 8 workers;
+2. agrupa até 36 candidatas por ZIP;
+3. envia o lote para `POST /api/corvo/candidatos-lote`;
+4. o servidor grava um Blob por lote e registra todas as entradas daquele lote no Redis em uma operação;
+5. `POST /api/corvo/pacote` baixa cada lote uma única vez e consolida o ZIP final entregue ao Analista.
+
+Cada ZIP fica, no pior caso normal de 36 × 60 KB, perto de 2,1 MB antes do overhead, abaixo do teto adotado no endpoint de lote.
+
+Os lotes usam até 3 tentativas em erros temporários de rede, HTTP 408/425/429 e 5xx.
+
+`BUILD_FORMA_PACKAGE` continua aceitando:
+
+- `pipelineOnly=true`: não mantém um segundo ZIP completo local; usa o transporte em lotes;
+- `packageMode=ANALYST_RAW`: identifica a entrada de análise;
 - `pipelineUpload`: `jobId`, `uploadToken` e `appOrigin`.
 
-As cópias destinadas ao Analista continuam sendo JPEGs reduzidos para transporte, mas nenhuma candidata é descartada ou escolhida pelo app. O conjunto é completo em relação às candidatas retornadas pelo Collector.
-
-No modo `MANUAL`, permanece o fluxo em que o usuário escolhe uma candidata por ID antes do envio.
+No modo `MANUAL`, permanece o fluxo anterior de uma candidata escolhida por ID. O endpoint individual `/api/corvo/arquivo` continua disponível para compatibilidade.
 
 ## Diagnóstico de armazenamento
 
-O app consulta `/api/corvo/diagnostico` antes do empacotamento. Redis e Vercel Blob precisam estar disponíveis. O Collector preserva `pipelineErrors[]` para mostrar a causa real quando um upload falhar.
+O app consulta `/api/corvo/diagnostico` antes do empacotamento. Redis e Vercel Blob precisam estar disponíveis. O Collector preserva `pipelineErrors[]` para mostrar a causa real quando um lote falhar.

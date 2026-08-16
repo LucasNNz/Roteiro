@@ -79,6 +79,11 @@ export type CorvoCollectorCandidate = {
   contentType: string;
   size: number;
   createdAt: string;
+  storageMode?: "FILE" | "BATCH_ZIP";
+  batchName?: string;
+  batchUrl?: string;
+  batchDownloadUrl?: string;
+  batchEntry?: string;
 };
 
 const TTL_SECONDS = 60 * 60 * 24 * 7;
@@ -180,14 +185,17 @@ export async function attachCorvoFile(jobId: string, uploadToken: string, file: 
   return updated;
 }
 
-export async function attachCollectorCandidate(jobId: string, uploadToken: string, file: CorvoCollectorCandidate) {
+export async function attachCollectorCandidatesBatch(jobId: string, uploadToken: string, files: CorvoCollectorCandidate[]) {
   const current = await getCorvoJob(jobId);
   if (!current || !current.uploadToken || current.uploadToken !== uploadToken || current.request.specialist !== "ANALISTA") return null;
+  const normalized = files.filter((file) => file?.name && file?.id);
+  if (!normalized.length) return [];
   const redis = getRedis();
   const key = `${COLLECTOR_KEY_PREFIX}${jobId}`;
   if (redis) {
     try {
-      await redis.hset(key, { [file.name]: JSON.stringify(file) });
+      const mapping = Object.fromEntries(normalized.map((file) => [file.name, JSON.stringify(file)]));
+      await redis.hset(key, mapping);
       await redis.expire(key, TTL_SECONDS);
     } catch {
       throw new CorvoStorageError("Não foi possível salvar as candidatas do Collector no Upstash Redis.");
@@ -195,10 +203,15 @@ export async function attachCollectorCandidate(jobId: string, uploadToken: strin
   } else {
     if (process.env.NODE_ENV === "production") throw new CorvoStorageError();
     const bucket = memoryCollectorCandidates.get(jobId) ?? new Map<string, CorvoCollectorCandidate>();
-    bucket.set(file.name, file);
+    for (const file of normalized) bucket.set(file.name, file);
     memoryCollectorCandidates.set(jobId, bucket);
   }
-  return file;
+  return normalized;
+}
+
+export async function attachCollectorCandidate(jobId: string, uploadToken: string, file: CorvoCollectorCandidate) {
+  const saved = await attachCollectorCandidatesBatch(jobId, uploadToken, [file]);
+  return saved?.[0] ?? null;
 }
 
 export async function listCollectorCandidates(jobId: string, uploadToken?: string) {

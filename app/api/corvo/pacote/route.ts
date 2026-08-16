@@ -53,20 +53,58 @@ export async function POST(request: NextRequest) {
     });
     const zip = new JSZip();
     const failures: string[] = [];
-    let cursor = 0;
-    const workerCount = Math.min(16, ordered.length);
-    await Promise.all(Array.from({ length: workerCount }, async () => {
+    const batchGroups = new Map<string, typeof ordered>();
+    const directCandidates = ordered.filter((candidate) => {
+      const batchUrl = String(candidate.batchUrl || "").trim();
+      if (!batchUrl) return true;
+      const bucket = batchGroups.get(batchUrl) || [];
+      bucket.push(candidate);
+      batchGroups.set(batchUrl, bucket);
+      return false;
+    });
+
+    // Compatibilidade com uploads antigos: candidatos individuais continuam funcionando.
+    let directCursor = 0;
+    const directWorkers = Math.min(8, directCandidates.length);
+    await Promise.all(Array.from({ length:directWorkers }, async () => {
       while (true) {
-        const index = cursor++;
-        if (index >= ordered.length) return;
-        const candidate = ordered[index];
+        const index = directCursor++;
+        if (index >= directCandidates.length) return;
+        const candidate = directCandidates[index];
         try {
-          const response = await fetch(candidate.url, { cache: "no-store" });
+          const response = await fetch(candidate.url, { cache:"no-store" });
           if (!response.ok) throw new Error(`HTTP_${response.status}`);
-          const bytes = await response.arrayBuffer();
-          zip.file(candidate.name, bytes);
+          zip.file(candidate.name, await response.arrayBuffer());
         } catch (error) {
           failures.push(`${candidate.id}|${candidate.name}|${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    }));
+
+    // Novo modo em lotes: cada ZIP do Collector é baixado UMA vez e pode conter
+    // dezenas de candidatas, evitando centenas de round-trips ao Blob.
+    const batchEntries = [...batchGroups.entries()];
+    let batchCursor = 0;
+    const batchWorkers = Math.min(4, batchEntries.length);
+    await Promise.all(Array.from({ length:batchWorkers }, async () => {
+      while (true) {
+        const index = batchCursor++;
+        if (index >= batchEntries.length) return;
+        const [batchUrl, batchCandidates] = batchEntries[index];
+        try {
+          const response = await fetch(batchUrl, { cache:"no-store" });
+          if (!response.ok) throw new Error(`HTTP_${response.status}`);
+          const batchZip = await JSZip.loadAsync(await response.arrayBuffer());
+          const byName = new Map(Object.values(batchZip.files).filter((entry) => !entry.dir).map((entry) => [entry.name.toLocaleLowerCase("pt-BR"), entry]));
+          for (const candidate of batchCandidates) {
+            const entryName = String(candidate.batchEntry || candidate.name).toLocaleLowerCase("pt-BR");
+            const entry = byName.get(entryName);
+            if (!entry) { failures.push(`${candidate.id}|${candidate.name}|BATCH_ENTRY_MISSING`); continue; }
+            zip.file(candidate.name, await entry.async("nodebuffer"));
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          for (const candidate of batchCandidates) failures.push(`${candidate.id}|${candidate.name}|${message}`);
         }
       }
     }));
@@ -88,7 +126,7 @@ export async function POST(request: NextRequest) {
       totalIds: expectedIds.length,
       totalCandidates: ordered.length,
       candidatesById: filesById,
-      files: ordered.map((candidate) => ({ id:candidate.id, name:candidate.name, contentType:candidate.contentType, size:candidate.size })),
+      files: ordered.map((candidate) => ({ id:candidate.id, name:candidate.name, contentType:candidate.contentType, size:candidate.size, storageMode:candidate.storageMode || "FILE", batchName:candidate.batchName || "" })),
     }, null, 2));
     zip.file("CORVO_ANALISE_GUIA.txt", [
       "CORVO ANALISTA — PACOTE DE CANDIDATAS",

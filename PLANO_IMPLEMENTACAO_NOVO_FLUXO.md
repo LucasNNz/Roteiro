@@ -27,10 +27,25 @@ Bases: `CORVOQUIZ_ESPECIFICACAO_NOVO_FLUXO_APP_BRIDGE` e `CORVOQUIZ_MUDANCA_MODO
 - [x] Arquivos finais de Refinador/Gerador capturados e persistidos.
 - [x] Gerador com um worker global.
 
+
+## Alteração V0.6.12 — Automático Total
+
+- [x] Botão separado `INICIAR AUTOMÁTICO` na produção.
+- [x] Validação de Redis + Blob + Collector antes do início.
+- [x] Encadeamento Roteiro → Prompts sem aprovação intermediária.
+- [x] Collector forçado para fluxo automático bruto do Analista.
+- [x] Analista → Refinador/Gerador → Fallback sem cliques intermediários.
+- [x] Thumbnail iniciada em paralelo e obrigatoriamente aguardada antes do ZIP automático.
+- [x] Metadados aguardados quando o ramo YouTube estiver ativado.
+- [x] Consolidação e download do ZIP final disparados automaticamente.
+- [x] Reaproveitamento de roteiro, prompts e imagens finais já concluídos.
+- [x] Estado visual persistido por projeto; reload muda RUNNING para RETOMAR em vez de travar.
+- [x] Botão PARAR para interrupção explícita.
+
 ## Alteração V0.6.11 — automático delegado ao Analista
 
 - [x] Remover seleção visual automática do app.
-- [x] No modo `AUTO`, incluir todas as candidatas retornadas pelo Collector.
+- [x] No modo `AUTO`, criar shortlist técnica configurável (padrão 10/ID) sem escolher a vencedora; o Analista decide visualmente.
 - [x] Nomear candidatas de forma única por `ID + índice`.
 - [x] Transportar `id` junto de cada `COLLECTOR_IMAGE`.
 - [x] Separar o registro das candidatas do objeto principal do job para suportar lotes grandes.
@@ -60,3 +75,14 @@ Bases: `CORVOQUIZ_ESPECIFICACAO_NOVO_FLUXO_APP_BRIDGE` e `CORVOQUIZ_MUDANCA_MODO
 
 - Upload/publicação automática no YouTube.
 - Métricas pós-publicação.
+
+## OTIMIZAÇÃO V0.6.13 — SHORTLIST + BATCH UPLOAD
+
+- [x] Limitar o automático a até 10 candidatas por ID por padrão, configurável de 1 a 30.
+- [x] Preservar o Analista como único decisor visual da imagem vencedora.
+- [x] Agrupar cópias de análise em ZIPs de até 36 candidatas.
+- [x] Preparar lotes com 8 workers.
+- [x] Enviar cada lote com retry automático.
+- [x] Registrar dezenas de candidatas no Redis com um único HSET por lote.
+- [x] Montar o ZIP final do Analista baixando cada lote apenas uma vez.
+- [x] Preservar compatibilidade com candidatas individuais das versões anteriores.

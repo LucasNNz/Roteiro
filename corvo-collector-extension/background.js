@@ -776,6 +776,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         total:Number(message.total||current.total||0),
         success:Number(message.success||0),
         failed:Number(message.failed||0),
+        pipelineUploaded:Number(message.pipelineUploaded||current.pipelineUploaded||0),
+        pipelineUploadFailed:Number(message.pipelineUploadFailed||current.pipelineUploadFailed||0),
+        batchesUploaded:Number(message.batchesUploaded||current.batchesUploaded||0),
+        batchTotal:Number(message.batchTotal||current.batchTotal||0),
         currentName:String(message.currentName||'')
       });
       return {ok:true};
@@ -793,6 +797,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         pipelineUploaded:Number(message.pipelineUploaded||0),
         pipelineUploadFailed:Number(message.pipelineUploadFailed||0),
         pipelineErrors:Array.isArray(message.pipelineErrors)?message.pipelineErrors.slice(0,8):[],
+        batchesUploaded:Number(message.batchesUploaded||current.batchesUploaded||0),
+        batchTotal:Number(message.batchTotal||current.batchTotal||0),
         currentName:'',
         blobUrl:String(message.blobUrl||''),
         packageCode:String(message.packageCode||current.packageCode||''),

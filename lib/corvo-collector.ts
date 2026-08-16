@@ -143,11 +143,18 @@ export function allCandidateUrls(group: RankedGroup) {
 }
 
 
-export function buildAnalystRawSelections(groups: RankedGroup[], prefix = "video1_") {
+export function buildAnalystRawSelections(groups: RankedGroup[], prefix = "video1_", limitPerId = 10) {
   const selections: Array<{ id:string; query:string; outputName:string; urls:string[]; candidateIndex:number }> = [];
+  const limit = Math.max(1, Math.min(30, Math.round(Number(limitPerId || 10))));
   for (const group of groups) {
     const safeId = String(group.id || "").trim().replace(/[^a-zA-Z0-9_-]+/g, "_") || "ID";
-    (group.candidates || []).forEach((candidate, candidateIndex) => {
+    // O app NÃO escolhe a vencedora. Ele apenas cria uma shortlist técnica,
+    // priorizando as candidatas já ranqueadas por resolução/fonte/relevância textual,
+    // para que o Analista faça a decisão visual final entre várias opções reais.
+    const ranked = group.ranked?.length
+      ? group.ranked.slice(0, limit).map((item) => ({ candidate:item.candidate, originalIndex:item.index }))
+      : (group.candidates || []).slice(0, limit).map((candidate, originalIndex) => ({ candidate, originalIndex }));
+    ranked.forEach(({ candidate, originalIndex }, shortlistIndex) => {
       const urls = [
         ...(candidate.urlCandidates || []),
         candidate.bestUrl,
@@ -159,9 +166,9 @@ export function buildAnalystRawSelections(groups: RankedGroup[], prefix = "video
       selections.push({
         id: String(group.id),
         query: group.query,
-        outputName: `${prefix}${safeId}_c${String(candidateIndex + 1).padStart(3, "0")}.jpg`,
+        outputName: `${prefix}${safeId}_c${String(shortlistIndex + 1).padStart(3, "0")}.jpg`,
         urls: uniqueUrls,
-        candidateIndex: candidateIndex + 1,
+        candidateIndex: originalIndex + 1,
       });
     });
   }

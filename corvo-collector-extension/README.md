@@ -1,6 +1,6 @@
-# Corvo Collector Bridge V0.7.7
+# Corvo Collector Bridge V0.7.8
 
-Mantém o modo manual e, no automático, envia todas as candidatas ao Corvo Analista sem escolher uma vencedora no app.
+Mantém o modo manual e, no automático, envia até 10 candidatas técnicas por ID (configurável no app) ao Corvo Analista sem escolher uma vencedora no app.
 
 ## ID fixo desta extensão
 `eaekknadnghlpncgbhnmldofajelmlbo`
@@ -71,10 +71,13 @@ Corrige `provider is not defined` durante a varredura Google Imagens/Pinterest.
 O seletor Vercel V0.7.3 continua compatível; basta atualizar a extensão.
 
 
-## V0.7.7 — todas as candidatas no automático
+## V0.7.8 — shortlist técnica + envio em lotes no automático
 
-- `AUTO`: nenhuma candidata é escolhida pelo app; todas as opções retornadas por ID são transportadas ao job do Analista.
+- `AUTO`: o app não escolhe uma vencedora; ele envia por padrão até 10 candidatas técnicas por ID para o Analista;
+- o limite por ID é configurável no app entre 1 e 30;
 - cada candidata recebe nome único por ID e índice;
-- uploads carregam o campo `id`;
-- até 4 candidatas são processadas em paralelo no transporte automático;
-- o ZIP persistente é montado no app/Vercel para evitar manter um segundo ZIP enorme na memória da extensão.
+- as cópias de análise são preparadas com até 8 workers;
+- até 36 candidatas são agrupadas em cada ZIP de transporte;
+- cada lote usa retry automático para falhas temporárias, 429 e 5xx;
+- o servidor grava um Blob por lote e registra as entradas do lote em uma única operação no Redis;
+- o ZIP persistente do Analista é consolidado no app, que baixa cada lote apenas uma vez.

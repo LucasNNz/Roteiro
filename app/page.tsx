@@ -26,6 +26,8 @@ type ImagePhase = "connecting" | "searching" | "review" | "packaging" | "done" |
 type CorvoIdea = { tema:string; titulo:string };
 type WorkflowKind = "ROTEIRO" | "PROMPTS";
 type ProjectArtifact = "IDEIA" | "ROTEIRO" | "PROMPTS";
+type AutoRunStatus = "RUNNING" | "DONE" | "ERROR" | "CANCELLED";
+type AutoRunStep = "VALIDANDO" | "ROTEIRO" | "PROMPTS" | "COLLECTOR" | "ANALISTA" | "IMAGENS" | "THUMB" | "METADADOS" | "CONSOLIDANDO" | "CONCLUIDO" | "ERRO";
 type IdeaRequestOptions = { format:Format; quantity:Quantity; mode:Mode; topic?:string; revisionProjectId?:string };
 type PipelineHistoryEvent = {
   at:string; attempt:number; specialist:"REFINADOR"|"GERADOR"|"FALLBACK"; status:string; jobId?:string;
@@ -43,9 +45,11 @@ type Project = {
   analysisJobId?:string; analysisStatus?:string; analysisZipUrl?:string; analysisManifest?:string; pipelineStatus?:string; pipelineItems?:PipelineItem[];
   youtubeJobId?:string; youtubeStatus?:string; youtubeMetadata?:string; youtubeError?:string;
   finalZipStatus?:string; finalZipError?:string; finalZipGeneratedAt?:string;
+  autoRunStatus?:AutoRunStatus; autoRunStep?:AutoRunStep; autoRunMessage?:string; autoRunError?:string; autoRunStartedAt?:string; autoRunCompletedAt?:string;
+  autoWorkflowJobId?:string; autoWorkflowKind?:WorkflowKind;
 };
 type CollectorSettings = {
-  selectionMode:SelectionMode; sourceMode:SourceMode; maxCandidates:number; scrollSteps:number;
+  selectionMode:SelectionMode; sourceMode:SourceMode; maxCandidates:number; analystCandidatesPerId:number; scrollSteps:number;
   extensionId:string; prefix:string; jpegQuality:number; batchText:string; youtubeParallel:boolean;
 };
 
@@ -53,7 +57,7 @@ const initialProjects:Project[] = [
   { id:"DESERTO_SOBREVIVENCIA_01", title:"VOCÊ SOBREVIVERIA NO DESERTO?", topic:"sobrevivência no deserto", format:"REELS", quantity:"1 VÍDEO", mode:"RÁPIDO", stage:4, createdAt:"HOJE, 10:42", ideaText:"TÍTULO: VOCÊ SOBREVIVERIA NO DESERTO?\nTEMA: SOBREVIVÊNCIA NO DESERTO", scriptText:"ROTEIRO DE EXEMPLO JÁ REVISADO", promptText:"01|deserto amplo com sol forte e composição para quiz sem texto\n02|mochila de sobrevivência isolada em fundo simples" },
   { id:"ANIMAIS_IMPOSSIVEIS_02", title:"QUAL ANIMAL FARIA ISSO?", topic:"animais curiosos", format:"REELS", quantity:"LOTE", mode:"PESQUISAR ANTES", stage:2, createdAt:"ONTEM, 18:15" },
 ];
-const defaultSettings:CollectorSettings = { selectionMode:"MANUAL", sourceMode:"MIXED", maxCandidates:120, scrollSteps:20, extensionId:CORVO_COLLECTOR_EXTENSION_ID, prefix:"video1_", jpegQuality:.92, batchText:"", youtubeParallel:false };
+const defaultSettings:CollectorSettings = { selectionMode:"MANUAL", sourceMode:"MIXED", maxCandidates:120, analystCandidatesPerId:10, scrollSteps:20, extensionId:CORVO_COLLECTOR_EXTENSION_ID, prefix:"video1_", jpegQuality:.92, batchText:"", youtubeParallel:false };
 const collectorEngines:Record<SourceMode,{label:string;shortLabel:string;description:string;icon:string}> = {
   GOOGLE:{ label:"GOOGLE IMAGENS", shortLabel:"GOOGLE", description:"BUSCA SOMENTE NO GOOGLE IMAGENS", icon:"G" },
   PINTEREST:{ label:"PINTEREST", shortLabel:"PINTEREST", description:"BUSCA SOMENTE NO PINTEREST", icon:"P" },
@@ -90,7 +94,8 @@ function safeLoad<T>(key:string, fallback:T):T {
 function loadCollectorSettings():CollectorSettings {
   const saved = safeLoad<Partial<CollectorSettings>>("corvo-collector-settings-v02", {});
   const sourceMode = saved.sourceMode && ["GOOGLE","PINTEREST","MIXED"].includes(saved.sourceMode) ? saved.sourceMode : defaultSettings.sourceMode;
-  return { ...defaultSettings, ...saved, sourceMode };
+  const analystCandidatesPerId = Math.max(1, Math.min(30, Math.round(Number(saved.analystCandidatesPerId || defaultSettings.analystCandidatesPerId))));
+  return { ...defaultSettings, ...saved, sourceMode, analystCandidatesPerId };
 }
 function slugify(value:string) {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 36);
@@ -102,6 +107,19 @@ function defaultQueries(project:Project) {
     { id:"02", query:`${subject} situação visual fundo simples` },
     { id:"03", query:`${subject} composição para quiz sem texto` },
     { id:"04", query:`${subject} imagem clara alta qualidade` },
+  ];
+}
+
+function autoRunChecklist(project:Project, youtubeEnabled:boolean) {
+  return [
+    { key:"ROTEIRO", label:"ROTEIRO", done:Boolean(project.scriptText) },
+    { key:"PROMPTS", label:"PROMPTS", done:Boolean(project.promptText) },
+    { key:"COLLECTOR", label:"COLLECTOR", done:Boolean(project.packageCode || project.analysisJobId) },
+    { key:"ANALISTA", label:"ANALISTA", done:project.analysisStatus === "CONCLUÍDA" },
+    { key:"IMAGENS", label:"IMAGENS", done:project.pipelineStatus === "IMAGENS FINAIS PRONTAS" },
+    { key:"THUMB", label:"THUMB", done:Boolean(project.thumbUrl) },
+    { key:"METADADOS", label:"METADADOS", done:!youtubeEnabled || Boolean(project.youtubeMetadata) },
+    { key:"CONSOLIDANDO", label:"ZIP FINAL", done:project.finalZipStatus === "CONCLUIDO" },
   ];
 }
 
@@ -187,15 +205,40 @@ export default function Home() {
   const thumbRuns = useRef(new Set<string>());
   const generatorQueue = useRef<Promise<void>>(Promise.resolve());
   const packageRetryRef = useRef<RankedGroup[] | null>(null);
+  const autoRunLocks = useRef(new Set<string>());
+  const projectsRef = useRef<Project[]>(projects);
 
-  useEffect(() => { localStorage.setItem("corvoquiz-projects-v02", JSON.stringify(projects)); }, [projects]);
+  useEffect(() => { projectsRef.current = projects; localStorage.setItem("corvoquiz-projects-v02", JSON.stringify(projects)); }, [projects]);
   useEffect(() => { localStorage.setItem("corvo-collector-settings-v02", JSON.stringify(settings)); }, [settings]);
+  useEffect(() => {
+    const interrupted = projectsRef.current.filter((project) => project.autoRunStatus === "RUNNING");
+    for (const project of interrupted) patchProject(project.id, { autoRunStatus:"ERROR", autoRunStep:"ERRO", autoRunMessage:"A página foi recarregada durante o automático.", autoRunError:"Clique em RETOMAR AUTOMÁTICO para continuar aproveitando as etapas já concluídas." });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const active = useMemo(() => projects.find((project) => project.id === activeId) || projects[0], [projects, activeId]);
   const currentGroup = groups[groupIndex];
   const currentRank = currentGroup?.ranked[candidatePos];
   const workflowOutput = active ? (workflowKind === "ROTEIRO" ? active.scriptText : active.promptText) || "" : "";
   const artifactContent = active ? artifactKind === "IDEIA" ? active.ideaText || "" : artifactKind === "ROTEIRO" ? active.scriptText || "" : active.promptText || "" : "";
   const artifactRedoMessage = artifactKind === "IDEIA" ? "REFAZ ROTEIRO, PROMPTS E IMAGENS" : artifactKind === "ROTEIRO" ? "REFAZ PROMPTS E IMAGENS" : "DESCARTA AS IMAGENS ATUAIS";
+
+  function latestProject(projectId:string) {
+    return projectsRef.current.find((project) => project.id === projectId);
+  }
+
+  function patchProject(projectId:string, patch:Partial<Project>) {
+    setProjects((current) => {
+      const next = current.map((project) => project.id === projectId ? { ...project, ...patch } : project);
+      projectsRef.current = next;
+      return next;
+    });
+  }
+
+  function updateAutoRun(projectId:string, step:AutoRunStep, message:string, patch:Partial<Project> = {}) {
+    const current = latestProject(projectId);
+    if (current?.autoRunStatus !== "RUNNING" && !patch.autoRunStatus) return;
+    patchProject(projectId, { autoRunStep:step, autoRunMessage:message, ...patch });
+  }
 
   function resetCreationFields() {
     setTopic(""); setIdeas([]); setIdeaResultText(""); setSelectedIdea(null); setNotice("");
@@ -408,6 +451,137 @@ export default function Home() {
     }
   }
 
+  async function runAutomaticSpecialist(kind:WorkflowKind, project:Project) {
+    if (kind === "PROMPTS" && !project.scriptText?.trim()) throw new Error("O roteiro precisa estar pronto antes dos prompts.");
+    let jobId = project.autoWorkflowKind === kind ? project.autoWorkflowJobId : undefined;
+    if (!jobId) {
+      const response = await fetch("/api/corvo/job", {
+        method:"POST",
+        headers:{ "content-type":"application/json" },
+        body:JSON.stringify({
+          specialist:kind, projetoId:project.id, titulo:project.title, tema:project.topic,
+          format:project.format, quantity:project.quantity, mode:project.mode,
+          roteiro:kind === "PROMPTS" ? project.scriptText : undefined,
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result?.jobId || !result?.prompt) throw new Error(result?.message || `Não foi possível criar ${kind}.`);
+      await dispatchCorvoBridge({
+        jobId:result.jobId, prompt:result.prompt, specialist:kind,
+        meta:{ projectId:project.id, automaticTotal:true },
+      });
+      jobId = result.jobId;
+      patchProject(project.id, { autoWorkflowJobId:jobId, autoWorkflowKind:kind });
+    }
+
+    while (autoRunLocks.current.has(project.id)) {
+      await wait(2200);
+      const response = await fetch(`/api/corvo/resultado?jobId=${encodeURIComponent(jobId)}`, { cache:"no-store" });
+      const status = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(status?.message || `Não foi possível acompanhar ${kind}.`);
+      if (status.status === "DONE") {
+        await completeCorvoBridgeJob(jobId).catch(() => {});
+        const output = String(status.resultado || "").trim();
+        if (!output) throw new Error(`${kind} concluiu sem devolver conteúdo.`);
+        const current = latestProject(project.id) || project;
+        const updated:Project = kind === "ROTEIRO"
+          ? { ...current, stage:3, scriptText:output, promptText:undefined, packageCode:undefined, imageCount:undefined, autoWorkflowJobId:undefined, autoWorkflowKind:undefined }
+          : { ...current, stage:4, promptText:output, packageCode:undefined, imageCount:undefined, autoWorkflowJobId:undefined, autoWorkflowKind:undefined };
+        patchProject(project.id, updated);
+        return updated;
+      }
+      if (status.status === "ERROR") throw new Error(status?.error || status?.manifest?.reason || `${kind} informou uma falha.`);
+    }
+    throw new Error("AUTOMATIC_CANCELLED");
+  }
+
+  async function waitForAutomaticParallelAssets(projectId:string) {
+    while (autoRunLocks.current.has(projectId)) {
+      const project = latestProject(projectId);
+      if (!project) throw new Error("Projeto automático não encontrado.");
+      if (project.thumbStatus === "FALHOU") throw new Error(project.thumbError || "A thumbnail falhou.");
+      if (settings.youtubeParallel && project.youtubeStatus === "FALHOU") throw new Error(project.youtubeError || "Os metadados falharam.");
+      const thumbReady = Boolean(project.thumbUrl);
+      const youtubeReady = !settings.youtubeParallel || Boolean(project.youtubeMetadata);
+      if (thumbReady && youtubeReady) return project;
+      const waiting = [!thumbReady ? "THUMB" : "", !youtubeReady ? "METADADOS" : ""].filter(Boolean).join(" + ");
+      updateAutoRun(projectId, !thumbReady ? "THUMB" : "METADADOS", `Aguardando ${waiting}...`);
+      await wait(2200);
+    }
+    throw new Error("AUTOMATIC_CANCELLED");
+  }
+
+  async function runAutomaticProduction(projectId:string) {
+    if (autoRunLocks.current.has(projectId)) return;
+    const initial = latestProject(projectId);
+    if (!initial) return;
+    autoRunLocks.current.add(projectId);
+    const startedAt = initial.autoRunStatus === "RUNNING" && initial.autoRunStartedAt ? initial.autoRunStartedAt : new Date().toISOString();
+    patchProject(projectId, { autoRunStatus:"RUNNING", autoRunStep:"VALIDANDO", autoRunMessage:"Validando Bridge, Collector e armazenamento...", autoRunError:undefined, autoRunStartedAt:startedAt, autoRunCompletedAt:undefined });
+    setNotice("MODO AUTOMÁTICO TOTAL INICIADO.");
+    setTimeout(() => setNotice(""), 2400);
+    try {
+      await ensurePipelineStorageReady();
+      const ping = await sendCollectorMessage<{ok?:boolean;authorized?:boolean;error?:string}>("PING", undefined, settings.extensionId);
+      if (!ping?.ok) throw new Error(ping?.error || "COLLECTOR_CONNECTION_ERROR");
+      if (ping.authorized === false) throw new Error("ORIGIN_NOT_AUTHORIZED");
+
+      let project = latestProject(projectId) || initial;
+      if (!project.scriptText?.trim()) {
+        updateAutoRun(projectId, "ROTEIRO", "Criando o roteiro automaticamente...");
+        project = await runAutomaticSpecialist("ROTEIRO", project);
+      }
+      if (!project.promptText?.trim()) {
+        updateAutoRun(projectId, "PROMPTS", "Transformando o roteiro em buscas de imagem...");
+        project = await runAutomaticSpecialist("PROMPTS", project);
+      }
+
+      project = latestProject(projectId) || project;
+      updateAutoRun(projectId, "COLLECTOR", "Collector trabalhando. Todas as candidatas seguirão ao Analista...");
+      if (!project.thumbUrl) void startThumbBranch(project);
+      if (settings.youtubeParallel && !project.youtubeMetadata) void startYoutubeBranch(project);
+      const imagesAlreadyReady = project.pipelineStatus === "IMAGENS FINAIS PRONTAS" && consolidationState(project).ready;
+      const imageOk = imagesAlreadyReady ? true : await startImageFlow(project, { automaticRun:true, skipParallelBranches:true, selectionMode:"AUTO" });
+      if (!imageOk) throw new Error("O pipeline de imagens não chegou a um resultado final completo.");
+
+      updateAutoRun(projectId, "THUMB", "Imagens finais prontas. Aguardando thumbnail e ramos paralelos...");
+      project = await waitForAutomaticParallelAssets(projectId);
+
+      const summary = consolidationState(project);
+      if (!summary.ready) throw new Error(summary.missingIds.length ? `Ainda faltam imagens finais nos IDs: ${summary.missingIds.join(", ")}.` : "A consolidação encontrou arquivos ausentes, duplicados ou inválidos.");
+      updateAutoRun(projectId, "CONSOLIDANDO", `Consolidando ${summary.items.length} imagens e preparando o ZIP final...`);
+      const zipOk = await buildFinalZip(project, { automaticRun:true });
+      if (!zipOk) throw new Error(latestProject(projectId)?.finalZipError || "Não foi possível gerar o ZIP final.");
+
+      patchProject(projectId, {
+        autoRunStatus:"DONE", autoRunStep:"CONCLUIDO", autoRunMessage:"Produção automática concluída. O ZIP final foi entregue.",
+        autoRunError:undefined, autoRunCompletedAt:new Date().toISOString(), stage:5,
+      });
+      setImageOpen(false);
+      setNotice("AUTOMÁTICO CONCLUÍDO · ZIP FINAL ENTREGUE.");
+      setTimeout(() => setNotice(""), 5000);
+    } catch (error) {
+      const message = friendlyError(error);
+      if (String(error instanceof Error ? error.message : error).includes("AUTOMATIC_CANCELLED")) {
+        patchProject(projectId, { autoRunStatus:"CANCELLED", autoRunStep:"ERRO", autoRunMessage:"Automático interrompido.", autoRunError:undefined });
+      } else {
+        patchProject(projectId, { autoRunStatus:"ERROR", autoRunStep:"ERRO", autoRunMessage:"O automático parou porque precisa de atenção.", autoRunError:message });
+        setNotice(`AUTOMÁTICO PAROU: ${message}`);
+        setTimeout(() => setNotice(""), 6500);
+      }
+    } finally {
+      autoRunLocks.current.delete(projectId);
+    }
+  }
+
+  async function cancelAutomaticProduction(projectId:string) {
+    autoRunLocks.current.delete(projectId);
+    runToken.current += 1;
+    await sendCollectorMessage("CANCEL_JOB", undefined, settings.extensionId).catch(() => {});
+    setCollectorRunning(false);
+    patchProject(projectId, { autoRunStatus:"CANCELLED", autoRunStep:"ERRO", autoRunMessage:"Automático interrompido pelo usuário.", autoRunError:undefined });
+  }
+
   async function downloadProject(project:Project) {
     const zip = new JSZip();
     zip.file("projeto.json", JSON.stringify(project, null, 2));
@@ -467,6 +641,7 @@ export default function Home() {
     if (message.includes("JOB_ALREADY_RUNNING_DIFFERENT")) return "O Collector está trabalhando em outra produção. Aguarde essa busca terminar ou cancele-a antes de iniciar esta.";
     if (message.includes("JOB_ALREADY_RUNNING")) return "Já existe uma busca em andamento. Abra novamente esta etapa para acompanhar o trabalho atual.";
     if (message.includes("VERCEL_BLOB_NOT_CONFIGURED") || message.toLowerCase().includes("vercel blob não configurado")) return "O Vercel Blob ainda não está conectado ao projeto. As imagens foram salvas pelo Collector, mas o app não tem onde armazená-las. Conecte um Blob Store ao projeto roteiro na Vercel e tente novamente.";
+    if (message.includes("TRATAMENTO_MANUAL_NECESSARIO")) return "Uma ou mais imagens chegaram ao limite de tentativas ou foram marcadas como não recuperáveis. O automático parou para tratamento manual.";
     return message || "Não foi possível concluir esta etapa.";
   }
 
@@ -480,7 +655,7 @@ export default function Home() {
   }
 
   function updateThumb(projectId:string, patch:Partial<Project>) {
-    setProjects((current) => current.map((project) => project.id === projectId ? { ...project, ...patch } : project));
+    patchProject(projectId, patch);
   }
 
   async function monitorThumbJob(project:Project, jobId:string) {
@@ -519,11 +694,12 @@ export default function Home() {
     if (project.thumbUrl || thumbRuns.current.has(project.id)) return;
     thumbRuns.current.add(project.id);
     try {
-      if (project.thumbJobId) {
+      if (project.thumbJobId && project.thumbStatus !== "FALHOU") {
         updateThumb(project.id, { thumbStatus:"RETOMANDO THUMBNAIL", thumbError:undefined });
         await monitorThumbJob(project, project.thumbJobId);
         return;
       }
+      if (project.thumbStatus === "FALHOU") updateThumb(project.id, { thumbJobId:undefined, thumbStatus:"NOVA TENTATIVA", thumbError:undefined });
       const fileName = `thumb_${project.id.toLowerCase()}.png`;
       updateThumb(project.id, { thumbStatus:"PREPARANDO THUMBNAIL", thumbFileName:fileName, thumbError:undefined });
       const response = await fetch("/api/corvo/job", {
@@ -571,7 +747,7 @@ export default function Home() {
   async function startYoutubeBranch(project:Project) {
     if (!settings.youtubeParallel || project.youtubeMetadata || project.youtubeStatus === "PROCESSANDO" || project.youtubeStatus === "ENVIANDO") return;
     try {
-      setProjects((current) => current.map((entry) => entry.id === project.id ? { ...entry, youtubeStatus:"PREPARANDO", youtubeError:undefined } : entry));
+      patchProject(project.id, { youtubeStatus:"PREPARANDO", youtubeError:undefined });
       const entrada = [
         `IDEIA=${project.ideaText || project.topic}`,
         `TITULO_BASE=${project.title}`,
@@ -585,31 +761,32 @@ export default function Home() {
         "ENTREGAR: TITULO_FINAL, TITULO_ALTERNATIVO_1, TITULO_ALTERNATIVO_2, DESCRICAO, TAGS, HASHTAGS, CATEGORIA, PUBLICO, DATA_RECOMENDADA, HORARIO_RECOMENDADO e ESTRATEGIA_DE_PUBLICACAO.",
       ].join("\n");
       const job = await createPipelineJob("YOUTUBE", project, entrada);
-      setProjects((current) => current.map((entry) => entry.id === project.id ? { ...entry, youtubeJobId:job.jobId, youtubeStatus:"ENVIANDO" } : entry));
+      patchProject(project.id, { youtubeJobId:job.jobId, youtubeStatus:"ENVIANDO" });
       await dispatchCorvoBridge({ jobId:job.jobId, prompt:job.prompt, specialist:"YOUTUBE", meta:{ projectId:project.id } });
-      setProjects((current) => current.map((entry) => entry.id === project.id ? { ...entry, youtubeStatus:"PROCESSANDO" } : entry));
+      patchProject(project.id, { youtubeStatus:"PROCESSANDO" });
       const status = await pollPipelineJob(job.jobId, project.id);
-      setProjects((current) => current.map((entry) => entry.id === project.id ? { ...entry, youtubeStatus:"CONCLUÍDO", youtubeMetadata:String(status.resultado || ""), youtubeError:undefined } : entry));
+      patchProject(project.id, { youtubeStatus:"CONCLUÍDO", youtubeMetadata:String(status.resultado || ""), youtubeError:undefined });
     } catch (error) {
-      setProjects((current) => current.map((entry) => entry.id === project.id ? { ...entry, youtubeStatus:"FALHOU", youtubeError:bridgeErrorMessage(error) } : entry));
+      patchProject(project.id, { youtubeStatus:"FALHOU", youtubeError:bridgeErrorMessage(error) });
     }
   }
 
-  async function startImageFlow() {
-    if (!active) return;
+  async function startImageFlow(projectArg?:Project, options:{automaticRun?:boolean;skipParallelBranches?:boolean;selectionMode?:SelectionMode} = {}) {
+    const project = projectArg || active;
+    if (!project) return false;
     const token = ++runToken.current;
+    const selectionMode = options.selectionMode || settings.selectionMode;
     setImageOpen(true); setImagePhase("connecting"); setImageProgress(4); setImageMessage("Conectando ao coletor..."); setImageStatusLine(""); setGroups([]); setPackageCode("");
     try {
       const ping = await sendCollectorMessage<{ok?:boolean;authorized?:boolean;error?:string}>("PING", undefined, settings.extensionId);
       if (!ping?.ok) throw new Error(ping?.error || "COLLECTOR_CONNECTION_ERROR");
       if (ping.authorized === false) throw new Error("ORIGIN_NOT_AUTHORIZED");
       await ensurePipelineStorageReady();
-      if (token !== runToken.current) return;
-      void startThumbBranch(active);
-      void startYoutubeBranch(active);
+      if (token !== runToken.current) return false;
+      if (!options.skipParallelBranches) { void startThumbBranch(project); void startYoutubeBranch(project); }
       const items = settings.batchText.trim()
         ? parseGuideText(settings.batchText)
-        : active.promptText?.trim() ? parseGuideText(active.promptText) : defaultQueries(active);
+        : project.promptText?.trim() ? parseGuideText(project.promptText) : defaultQueries(project);
       if (!items.length) throw new Error("Os prompts retornados não contêm buscas utilizáveis.");
       let finalJob:any = null;
       const currentResponse = await sendCollectorMessage<any>("GET_STATUS", undefined, settings.extensionId);
@@ -628,7 +805,7 @@ export default function Home() {
         setImagePhase("searching"); setImageProgress(8); setImageMessage(`Buscando ${items.length} cenas com ${collectorEngines[settings.sourceMode].label}...`);
         setImageStatusLine(`0/${items.length} CONCLUÍDAS · TEMPO 0S`);
         const started = await sendCollectorMessage<{ok?:boolean;error?:string}>("START_JOB", {
-          items, productionId:active.id, maxCandidates:settings.maxCandidates, scrollSteps:settings.scrollSteps, sourceMode:settings.sourceMode,
+          items, productionId:project.id, maxCandidates:settings.maxCandidates, scrollSteps:settings.scrollSteps, sourceMode:settings.sourceMode,
           backgroundTab:true, closeTabOnFinish:true,
         }, settings.extensionId);
         if (!started?.ok) throw new Error(started?.error || "Falha ao iniciar a busca.");
@@ -667,31 +844,42 @@ export default function Home() {
         }
         if (["ERROR", "CANCELLED"].includes(job?.status)) throw new Error(job?.error || "A busca foi interrompida.");
       }
-      if (token !== runToken.current) return;
+      if (token !== runToken.current) return false;
       if (!finalJob?.results) throw new Error("Não foi possível recuperar o resultado da busca.");
       setCollectorRunning(false);
       const ranked = rankGroups(finalJob.results);
       if (!ranked.length || ranked.some((group) => !group.ranked.length)) throw new Error("Uma ou mais cenas não retornaram imagens utilizáveis.");
       setGroups(ranked); setGroupIndex(0); setCandidatePos(0);
-      if (settings.selectionMode === "MANUAL") { setImagePhase("review"); setImageProgress(84); setImageMessage("Escolha rapidamente uma imagem por cena."); setImageStatusLine(""); }
-      else await buildPackage(ranked, token);
+      if (selectionMode === "MANUAL" && !options.automaticRun) { setImagePhase("review"); setImageProgress(84); setImageMessage("Escolha rapidamente uma imagem por cena."); setImageStatusLine(""); return true; }
+      const packaged = await buildPackage(ranked, token, project, selectionMode, options.automaticRun === true);
+      return packaged !== false;
     } catch (error) {
-      if (token !== runToken.current) return;
+      if (token !== runToken.current) return false;
       setCollectorRunning(false);
       setImagePhase("error"); setImageMessage(friendlyError(error)); setImageProgress(0);
+      if (options.automaticRun) throw error;
+      return false;
     }
   }
 
   function updatePipelineItem(projectId:string, itemId:string, patch:Partial<PipelineItem>) {
-    setProjects((current) => current.map((project) => project.id === projectId
-      ? { ...project, pipelineItems:(project.pipelineItems || []).map((item) => item.id === itemId ? { ...item, ...patch } : item) }
-      : project));
+    setProjects((current) => {
+      const next = current.map((project) => project.id === projectId
+        ? { ...project, pipelineItems:(project.pipelineItems || []).map((item) => item.id === itemId ? { ...item, ...patch } : item) }
+        : project);
+      projectsRef.current = next;
+      return next;
+    });
   }
 
   function appendPipelineHistory(projectId:string, itemId:string, event:PipelineHistoryEvent) {
-    setProjects((current) => current.map((project) => project.id === projectId
-      ? { ...project, pipelineItems:(project.pipelineItems || []).map((item) => item.id === itemId ? { ...item, history:[...(item.history || []), event] } : item) }
-      : project));
+    setProjects((current) => {
+      const next = current.map((project) => project.id === projectId
+        ? { ...project, pipelineItems:(project.pipelineItems || []).map((item) => item.id === itemId ? { ...item, history:[...(item.history || []), event] } : item) }
+        : project);
+      projectsRef.current = next;
+      return next;
+    });
   }
 
   async function runGeneratorSerialized<T>(task:()=>Promise<T>):Promise<T> {
@@ -932,6 +1120,7 @@ export default function Home() {
     const refiners = items.filter((item) => item.route === "REFINADOR");
     const generators = items.filter((item) => item.route === "GERADOR");
     const failures:{id:string;error:string}[] = [];
+    const finalItems = new Map(items.map((item) => [String(item.id), item]));
     let completed = 0;
     const total = items.length;
     const setProgress = (label:string) => {
@@ -939,8 +1128,9 @@ export default function Home() {
       setImageProgress(Math.max(90, Math.min(99, 90 + (completed / Math.max(1,total)) * 9)));
       setImageMessage(label);
       setImageStatusLine(`${completed}/${total} IMAGENS FINAIS · FALLBACK AUTOMÁTICO · GERADOR 1 POR VEZ`);
+      updateAutoRun(project.id, "IMAGENS", `${label} · ${completed}/${total}`);
     };
-    setProjects((current) => current.map((entry) => entry.id === project.id ? { ...entry, pipelineStatus:"ROTEANDO IMAGENS", pipelineItems:items } : entry));
+    patchProject(project.id, { pipelineStatus:"ROTEANDO IMAGENS", pipelineItems:items });
     setProgress("O Analista terminou. Distribuindo imagens entre Refinador e Gerador...");
 
     let refinerIndex = 0;
@@ -948,6 +1138,7 @@ export default function Home() {
       while (refinerIndex < refiners.length) {
         const item = refiners[refinerIndex++];
         const result = await runRoutedWithFallback(project, item);
+        finalItems.set(String(item.id), result.item);
         if (!result.ok) failures.push({ id:item.id, error:result.error });
         completed += 1;
         setProgress(`Refinando e recuperando imagens... ${completed}/${total}`);
@@ -958,6 +1149,7 @@ export default function Home() {
     const generatorWorker = (async () => {
       for (const item of generators) {
         const result = await runRoutedWithFallback(project, item);
+        finalItems.set(String(item.id), result.item);
         if (!result.ok) failures.push({ id:item.id, error:result.error });
         completed += 1;
         setProgress(`Gerador/Fallback trabalhando em fila única... ${completed}/${total}`);
@@ -965,24 +1157,30 @@ export default function Home() {
     })();
 
     await Promise.all([...refinerWorkers, generatorWorker]);
+    await wait(50);
+    const liveItems = latestProject(project.id)?.pipelineItems || [];
+    const liveById = new Map(liveItems.map((item) => [String(item.id), item]));
+    const consolidatedItems = items.map((original) => ({ ...original, ...(finalItems.get(String(original.id)) || {}), ...(liveById.get(String(original.id)) || {}) }));
     if (failures.length) {
-      setProjects((current) => current.map((entry) => entry.id === project.id ? { ...entry, pipelineStatus:"TRATAMENTO MANUAL NECESSÁRIO" } : entry));
+      patchProject(project.id, { pipelineStatus:"TRATAMENTO MANUAL NECESSÁRIO", pipelineItems:consolidatedItems });
       setImagePhase("error");
       setImageProgress(100);
       setImageMessage(`${failures.length} imagem(ns) chegaram ao limite ou foram marcadas como não recuperáveis.`);
       setImageStatusLine(`${total-failures.length}/${total} FINAIS · ${failures.length} MANUAIS`);
-      return;
+      return false;
     }
-    setProjects((current) => current.map((entry) => entry.id === project.id ? { ...entry, pipelineStatus:"IMAGENS FINAIS PRONTAS", imageCount:items.length } : entry));
+    patchProject(project.id, { pipelineStatus:"IMAGENS FINAIS PRONTAS", imageCount:items.length, pipelineItems:consolidatedItems });
     setImagePhase("done");
     setImageProgress(100);
     setImageMessage("Refinador, Gerador e Fallback concluíram todas as imagens finais. A Consolidação já pode gerar o ZIP final.");
     setImageStatusLine(`${items.length}/${items.length} IMAGENS FINAIS`);
+    return true;
   }
 
   async function dispatchAnalysis(project:Project, analysisJob:{jobId:string;prompt:string;uploadToken:string}, zipFile:any, expectedIds:string[]) {
-    setProjects((current) => current.map((entry) => entry.id === project.id ? { ...entry, analysisJobId:analysisJob.jobId, analysisStatus:"ENVIANDO AO ANALISTA", analysisZipUrl:zipFile.url, pipelineStatus:"ANALISANDO IMAGENS" } : entry));
-    setImagePhase("searching"); setImageProgress(90); setImageMessage("Enviando todas as candidatas ao Corvo Analista..."); setImageStatusLine("ZIP BRUTO SALVO · ANALISTA ESCOLHENDO POR ID");
+    patchProject(project.id, { analysisJobId:analysisJob.jobId, analysisStatus:"ENVIANDO AO ANALISTA", analysisZipUrl:zipFile.url, pipelineStatus:"ANALISANDO IMAGENS" });
+    updateAutoRun(project.id, "ANALISTA", `Corvo Analista comparando a shortlist de candidatas de ${expectedIds.length} IDs...`);
+    setImagePhase("searching"); setImageProgress(90); setImageMessage("Enviando as candidatas selecionadas tecnicamente ao Corvo Analista..."); setImageStatusLine("ZIP DE CANDIDATAS SALVO · ANALISTA ESCOLHENDO POR ID");
     await dispatchCorvoBridge({
       jobId:analysisJob.jobId,
       prompt:[
@@ -1056,21 +1254,21 @@ export default function Home() {
     });
     if (pipelineItems.length !== expectedIds.length) throw new Error(`O Analista devolveu ${pipelineItems.length}/${expectedIds.length} IDs roteáveis.`);
     if (pipelineItems.some((item) => item.route === "REFINADOR" && !item.sourceUrl)) throw new Error("Uma candidata aprovada pelo Analista não foi localizada no pacote bruto do Collector.");
-    setProjects((current) => current.map((entry) => entry.id === project.id ? { ...entry, analysisStatus:"CONCLUÍDA", analysisManifest:String(status.resultado || ""), pipelineItems } : entry));
-    await runRoutedPipeline(project, pipelineItems);
+    patchProject(project.id, { analysisStatus:"CONCLUÍDA", analysisManifest:String(status.resultado || ""), pipelineItems });
+    return await runRoutedPipeline(project, pipelineItems);
   }
 
-  async function buildPackage(selectedGroups:RankedGroup[], token = runToken.current) {
-    if (!active) return;
-    const project = active;
+  async function buildPackage(selectedGroups:RankedGroup[], token = runToken.current, projectArg?:Project, selectionModeOverride?:SelectionMode, throwOnError = false) {
+    const project = projectArg || active;
+    if (!project) return false;
     packageRetryRef.current = selectedGroups;
-    const automatic = settings.selectionMode === "AUTO";
+    const automatic = (selectionModeOverride || settings.selectionMode) === "AUTO";
     setImagePhase("packaging"); setImageProgress(84);
-    setImageMessage(automatic ? "Preparando todas as candidatas para o Analista..." : "Preparando as imagens escolhidas e a entrada do Analista...");
+    setImageMessage(automatic ? `Preparando até ${settings.analystCandidatesPerId} candidatas por ID para o Analista...` : "Preparando as imagens escolhidas e a entrada do Analista...");
     try {
       await ensurePipelineStorageReady();
       const expectedIds = selectedGroups.map((group) => String(group.id));
-      const selections = automatic ? buildAnalystRawSelections(selectedGroups, settings.prefix) : buildFormaSelections(selectedGroups, settings.prefix);
+      const selections = automatic ? buildAnalystRawSelections(selectedGroups, settings.prefix, settings.analystCandidatesPerId) : buildFormaSelections(selectedGroups, settings.prefix);
       if (!selections.length) throw new Error("O Collector não possui candidatas utilizáveis para enviar ao Analista.");
       const idsWithCandidates = new Set(selections.map((selection:any) => String(selection.id)));
       const missingCandidateIds = expectedIds.filter((id) => !idsWithCandidates.has(id));
@@ -1085,7 +1283,7 @@ export default function Home() {
           `TOTAL_CANDIDATAS=${selections.length}`,
           `IDS_ESPERADOS=${expectedIds.join(",")}`,
           automatic
-            ? "O app NÃO selecionou candidatas. O ZIP anexado conterá TODAS as candidatas disponíveis do Collector para cada ID."
+            ? `O app NÃO escolheu a imagem vencedora. Para desempenho, o Collector criou uma shortlist técnica de ATÉ ${settings.analystCandidatesPerId} candidatas por ID; compare visualmente TODAS as candidatas presentes no ZIP e escolha a melhor.`
             : "O usuário escolheu uma candidata por ID no modo manual; ainda assim valide visualmente cada imagem antes de classificar.",
           "Para PASSOU ou PASSOU_COM_RESSALVAS, informe ARQUIVO com o nome EXATO do arquivo escolhido no ZIP.",
           "Para NAO_PASSOU, ARQUIVO= e PROMPT_GERACAO completo.",
@@ -1098,7 +1296,7 @@ export default function Home() {
         ].join("\n"),
         expectedIds,
       );
-      setProjects((currentProjects) => currentProjects.map((entry) => entry.id === project.id ? { ...entry, analysisJobId:analysisJob.jobId, analysisStatus:automatic?"RECEBENDO CANDIDATAS":"RECEBENDO IMAGENS", pipelineStatus:"PREPARANDO ANÁLISE" } : entry));
+      patchProject(project.id, { analysisJobId:analysisJob.jobId, analysisStatus:automatic?"RECEBENDO CANDIDATAS":"RECEBENDO IMAGENS", pipelineStatus:"PREPARANDO ANÁLISE" });
       const response = await sendCollectorMessage<any>("BUILD_FORMA_PACKAGE", {
         selections, productionId:project.id, prefix:settings.prefix, jpegQuality:settings.jpegQuality,
         fileName:automatic ? `${project.id}_CANDIDATAS_BRUTAS.zip` : `${project.id}_COLLECTOR.zip`,
@@ -1115,19 +1313,23 @@ export default function Home() {
         const total = Number(status?.total || selections.length); const current = Number(status?.current || 0);
         setImageProgress(Math.max(84, Math.min(89, 84 + (current / Math.max(1, total)) * 5)));
         setImageMessage(status?.currentName
-          ? automatic ? `Enviando candidata ${current}/${total}: ${status.currentName}` : `Salvando ${status.currentName} no app...`
+          ? automatic ? `Preparando candidata ${current}/${total}: ${status.currentName}` : `Salvando ${status.currentName} no app...`
           : automatic ? "Finalizando envio das candidatas brutas..." : "Finalizando o pacote do Collector...");
-        setImageStatusLine(`${Number(status?.pipelineUploaded || 0)}/${total} CANDIDATAS NO APP · ${expectedIds.length} IDS`);
+        const batches = Number(status?.batchTotal || 0);
+        const batchProgress = batches ? ` · ${Number(status?.batchesUploaded || 0)}/${batches} LOTES` : "";
+        setImageStatusLine(`${Number(status?.pipelineUploaded || 0)}/${total} CANDIDATAS NO APP · ${expectedIds.length} IDS${batchProgress}`);
         if (status?.status === "DONE") {
-          if (Number(status.failed || 0) > 0) throw new Error(`O Collector não conseguiu preparar ${status.failed} candidata(s).`);
-          if (Number(status.pipelineUploadFailed || 0) > 0 || Number(status.pipelineUploaded || 0) !== selections.length) {
+          if (Number(status.pipelineUploadFailed || 0) > 0) {
             const detail = Array.isArray(status.pipelineErrors) && status.pipelineErrors.length ? ` Motivo: ${status.pipelineErrors[0]}` : "";
-            throw new Error(`O app recebeu ${Number(status.pipelineUploaded || 0)}/${selections.length} candidatas.${detail}`);
+            throw new Error(`Falhou o envio de ${Number(status.pipelineUploadFailed || 0)} candidata(s) em lote.${detail}`);
+          }
+          if (Number(status.pipelineUploaded || 0) < expectedIds.length) {
+            throw new Error(`O app recebeu apenas ${Number(status.pipelineUploaded || 0)} candidatas para ${expectedIds.length} IDs.`);
           }
           const finalCode = status.packageCode || code;
           setPackageCode(finalCode);
-          setProjects((currentProjects) => currentProjects.map((entry) => entry.id === project.id ? { ...entry, packageCode:finalCode, imageCount:expectedIds.length, analysisStatus:"MONTANDO ZIP BRUTO DE ANÁLISE" } : entry));
-          setImageProgress(89); setImageMessage(`Montando ZIP com ${selections.length} candidatas para o Analista...`);
+          patchProject(project.id, { packageCode:finalCode, imageCount:expectedIds.length, analysisStatus:"MONTANDO ZIP BRUTO DE ANÁLISE" });
+          setImageProgress(89); setImageMessage(`Consolidando ${Number(status.pipelineUploaded || selections.length)} candidatas em um ZIP para o Analista...`);
           const packageResponse = await fetch("/api/corvo/pacote", {
             method:"POST",
             headers:{ "content-type":"application/json", "x-corvo-upload-token":analysisJob.uploadToken },
@@ -1135,17 +1337,20 @@ export default function Home() {
           });
           const packageResult = await packageResponse.json().catch(() => ({}));
           if (!packageResponse.ok || !packageResult?.file?.url) throw new Error(packageResult?.message || "Não foi possível consolidar o ZIP bruto do Analista.");
-          await dispatchAnalysis(project, analysisJob, packageResult.file, expectedIds);
+          const routedOk = await dispatchAnalysis(project, analysisJob, packageResult.file, expectedIds);
+          if (!routedOk) throw new Error("TRATAMENTO_MANUAL_NECESSARIO");
           packageRetryRef.current = null;
-          return;
+          return true;
         }
         if (status?.status === "ERROR") throw new Error(status.error || "Falha no pacote.");
       }
-      return;
+      return false;
     } catch (error) {
-      if (token !== runToken.current) return;
+      if (token !== runToken.current) return false;
       setImagePhase("error"); setImageMessage(friendlyError(error)); setImageProgress(0);
-      setProjects((current) => current.map((entry) => entry.id === project.id ? { ...entry, pipelineStatus:"ERRO NO PIPELINE", analysisStatus:entry.analysisStatus || "FALHOU" } : entry));
+      patchProject(project.id, { pipelineStatus:"ERRO NO PIPELINE", analysisStatus:latestProject(project.id)?.analysisStatus || "FALHOU" });
+      if (throwOnError) throw error;
+      return false;
     }
   }
 
@@ -1166,15 +1371,16 @@ export default function Home() {
     await startImageFlow();
   }
 
-  async function buildFinalZip(project:Project) {
-    const summary = consolidationState(project);
+  async function buildFinalZip(project:Project, options:{automaticRun?:boolean} = {}) {
+    const liveProject = latestProject(project.id) || project;
+    const summary = consolidationState(liveProject);
     if (!summary.ready || consolidationBusy) {
       setConsolidationMessage(summary.missingIds.length ? `Ainda faltam os IDs: ${summary.missingIds.join(", ")}.` : "A consolidação ainda possui pendências de IDs ou nomes.");
-      return;
+      return false;
     }
     setConsolidationBusy(true);
     setConsolidationMessage("Baixando as imagens finais e validando o pacote...");
-    setProjects((current) => current.map((entry) => entry.id === project.id ? { ...entry, finalZipStatus:"GERANDO", finalZipError:undefined } : entry));
+    patchProject(project.id, { finalZipStatus:"GERANDO", finalZipError:undefined });
     try {
       const zip = new JSZip();
       const imagesFolder = zip.folder("imagens");
@@ -1202,7 +1408,7 @@ export default function Home() {
       zip.folder("analise")?.file("CORVO_IMAGE_ANALYSIS.txt", project.analysisManifest || "STATUS=NAO_DISPONIVEL");
       zip.file("CORVO_FINAL_MANIFEST.json", JSON.stringify({
         protocol:"corvo-final/1", projectId:project.id, generatedAt:new Date().toISOString(), total:summary.items.length,
-        thumbnail:project.thumbFileName || null, youtubeMetadata:Boolean(project.youtubeMetadata), images:manifestItems,
+        thumbnail:liveProject.thumbFileName || null, youtubeMetadata:Boolean(liveProject.youtubeMetadata), automaticTotal:options.automaticRun === true, images:manifestItems,
       }, null, 2));
       zip.file("LEIA-ME.txt", [
         "CORVOQUIZ — PACOTE FINAL", `PROJETO=${project.id}`, `TOTAL_IMAGENS=${summary.items.length}`,
@@ -1214,12 +1420,14 @@ export default function Home() {
       link.href = url; link.download = `${project.id}_CORVO_FINAL.zip`; link.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 2000);
       const generatedAt = new Date().toISOString();
-      setProjects((current) => current.map((entry) => entry.id === project.id ? { ...entry, finalZipStatus:"CONCLUIDO", finalZipGeneratedAt:generatedAt, finalZipError:undefined } : entry));
+      patchProject(project.id, { finalZipStatus:"CONCLUIDO", finalZipGeneratedAt:generatedAt, finalZipError:undefined });
       setConsolidationMessage(`ZIP final criado com ${summary.items.length} imagens. Thumbnail e metadados foram incluídos quando disponíveis.`);
+      return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error || "Falha ao gerar ZIP final.");
-      setProjects((current) => current.map((entry) => entry.id === project.id ? { ...entry, finalZipStatus:"FALHOU", finalZipError:message } : entry));
+      patchProject(project.id, { finalZipStatus:"FALHOU", finalZipError:message });
       setConsolidationMessage(message);
+      return false;
     } finally { setConsolidationBusy(false); }
   }
 
@@ -1277,9 +1485,11 @@ export default function Home() {
           <h3>{active.title}</h3><p>{active.id}</p>
           <div className="stepper">{steps.map((step,index) => { const complete=index+1<active.stage; const current=index+1===active.stage; return <div className={`step ${complete?"complete":""} ${current?"current":""}`} key={step}><span>{complete?"✓":String(index+1).padStart(2,"0")}</span><small>{step}</small></div>; })}</div>
           <div className="card-actions">
+            <button className="auto-action" disabled={active.autoRunStatus==="RUNNING"} onClick={()=>active.autoRunStatus==="DONE"?void buildFinalZip(active,{automaticRun:true}):void runAutomaticProduction(active.id)}><span>⚡</span><div><b>{active.autoRunStatus==="RUNNING"?"AUTOMÁTICO EM ANDAMENTO":active.autoRunStatus==="ERROR"||active.autoRunStatus==="CANCELLED"?"RETOMAR AUTOMÁTICO":active.autoRunStatus==="DONE"?"BAIXAR ZIP FINAL":"INICIAR AUTOMÁTICO"}</b><small>{active.autoRunStatus==="DONE"?"PACOTE FINAL JÁ CONCLUÍDO":"1 CLIQUE · SEGUE SOZINHO ATÉ O ZIP"}</small></div><i>{active.autoRunStatus==="RUNNING"?"…":"→"}</i></button>
             <button className="primary-action" onClick={continueProduction}>{active.stage<=2?(active.scriptText?"REVISAR ROTEIRO":"CRIAR ROTEIRO"):active.stage===3?(active.promptText?"REVISAR PROMPTS":"CRIAR PROMPTS"):active.stage===4?"BUSCAR IMAGENS":"BAIXAR PRODUÇÃO"} <span>→</span></button>
             <button className="secondary-action" onClick={() => downloadProject(active)}>↓ BAIXAR PROJETO</button>
           </div>
+          {active.autoRunStatus&&<div className={`auto-run-panel ${active.autoRunStatus.toLowerCase()}`}><div className="auto-run-head"><div><span>AUTOMÁTICO TOTAL</span><b>{active.autoRunMessage||"Acompanhando a produção automática."}</b>{active.autoRunError&&<small>{active.autoRunError}</small>}</div>{active.autoRunStatus==="RUNNING"?<button onClick={()=>void cancelAutomaticProduction(active.id)}>PARAR</button>:<em>{active.autoRunStatus==="DONE"?"CONCLUÍDO":active.autoRunStatus==="ERROR"?"PRECISA DE ATENÇÃO":"INTERROMPIDO"}</em>}</div><div className="auto-run-steps">{autoRunChecklist(active,settings.youtubeParallel).map((item)=><span className={item.done?"done":active.autoRunStep===item.key?"current":""} key={item.key}><i>{item.done?"✓":active.autoRunStep===item.key?"•":"○"}</i>{item.label}</span>)}</div></div>}
         </div>
         <aside className="card-side" id="arquivos">
           <div className="mini-title"><span>MEMÓRIA DA PRODUÇÃO</span><b>{[active.ideaText,active.scriptText,active.promptText].filter(Boolean).length}/3</b></div>
@@ -1290,13 +1500,13 @@ export default function Home() {
           <button className={`file-row action ${active.analysisStatus==="CONCLUÍDA"?"done":active.analysisStatus?"pending":""}`} disabled={!active.analysisManifest} onClick={()=>{if(active.analysisManifest){setNotice("MANIFESTO DO ANALISTA SALVO NO PROJETO.");setTimeout(()=>setNotice(""),2800);}}}><span>◫</span><div><b>ANÁLISE DE IMAGENS</b><small>{active.analysisStatus||"COMEÇA APÓS O PACOTE DO COLLECTOR"}</small></div><i>{active.analysisStatus==="CONCLUÍDA"?"✓":"○"}</i></button>
           <button className={`file-row action ${active.youtubeMetadata?"done":active.youtubeStatus==="FALHOU"?"pending":""}`} disabled={!active.youtubeMetadata} onClick={()=>{if(active.youtubeMetadata)downloadTextFile(`${active.id}_YOUTUBE.txt`,active.youtubeMetadata);}}><span>▶</span><div><b>YOUTUBE / METADADOS</b><small>{active.youtubeMetadata?"BAIXAR DADOS EDITORIAIS":active.youtubeError||active.youtubeStatus||(settings.youtubeParallel?"INICIA EM PARALELO":"DESATIVADO NAS CONFIGURAÇÕES")}</small></div><i>{active.youtubeMetadata?"↓":"○"}</i></button>
           <button className={`file-row action ${consolidationState(active).ready?"done":active.pipelineItems?.length?"pending":""}`} disabled={!active.pipelineItems?.length} onClick={()=>{setConsolidationMessage("");setConsolidationOpen(true);}}><span>▦</span><div><b>CONSOLIDAÇÃO / ZIP FINAL</b><small>{active.pipelineItems?.length ? `${consolidationState(active).completed}/${consolidationState(active).items.length} FINAIS · ${consolidationState(active).ready ? "PRONTO PARA GERAR" : active.pipelineStatus || "AGUARDANDO"}` : "AGUARDANDO O ANALISTA"}</small></div><i>{active.finalZipStatus==="CONCLUIDO"?"✓":consolidationState(active).ready?"→":"○"}</i></button>
-          {active.packageCode ? <button className="package-ready" onClick={() => active.pipelineStatus==="ERRO NO PIPELINE" ? void startImageFlow() : setImageOpen(true)}><span>{active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?"✓":"⌁"}</span><div><b>{active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?"IMAGENS FINAIS PRONTAS":"PIPELINE DE IMAGENS"}</b><small>{active.pipelineStatus||`${active.imageCount || 0} ARQUIVOS · ${active.packageCode}`}</small></div></button> : <button className="collector-box" disabled={!active.promptText || active.stage<4} onClick={startImageFlow}><span>⌁</span><b>{collectorRunning?"ACOMPANHAR BUSCA":active.promptText&&active.stage>=4?"BUSCAR COM O CORVO":"AGUARDANDO PROMPTS"}</b><small>{collectorRunning?"O COLLECTOR CONTINUA TRABALHANDO":active.promptText&&active.stage>=4?`MOTOR: ${collectorEngines[settings.sourceMode].label} · SEGUNDO PLANO`:"A PRÓXIMA ETAPA SERÁ LIBERADA"}</small></button>}
+          {active.packageCode ? <button className="package-ready" onClick={() => active.pipelineStatus==="ERRO NO PIPELINE" ? void startImageFlow() : setImageOpen(true)}><span>{active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?"✓":"⌁"}</span><div><b>{active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?"IMAGENS FINAIS PRONTAS":"PIPELINE DE IMAGENS"}</b><small>{active.pipelineStatus||`${active.imageCount || 0} ARQUIVOS · ${active.packageCode}`}</small></div></button> : <button className="collector-box" disabled={!active.promptText || active.stage<4} onClick={()=>void startImageFlow()}><span>⌁</span><b>{collectorRunning?"ACOMPANHAR BUSCA":active.promptText&&active.stage>=4?"BUSCAR COM O CORVO":"AGUARDANDO PROMPTS"}</b><small>{collectorRunning?"O COLLECTOR CONTINUA TRABALHANDO":active.promptText&&active.stage>=4?`MOTOR: ${collectorEngines[settings.sourceMode].label} · SEGUNDO PLANO`:"A PRÓXIMA ETAPA SERÁ LIBERADA"}</small></button>}
         </aside>
       </article>}
     </section>
 
     <section className="projects" id="projetos"><div className="section-heading"><div><span className="section-number">02</span><h2>PROJETOS RECENTES</h2></div><span className="project-count">{String(projects.length).padStart(2,"0")} PRODUÇÕES</span></div><div className="project-list">{projects.map((project) => <button className={`project-row ${project.id===activeId?"selected":""}`} key={project.id} onClick={() => setActiveId(project.id)}><span className="project-icon">{project.format==="REELS"?"▯":"▭"}</span><span className="project-name"><b>{project.title}</b><small>{project.id}</small></span><span className="project-format">{project.format}</span><span className="progress"><i style={{width:`${project.stage*20}%`}} /></span><span className="stage-label">ETAPA {project.stage}/5</span><span className="row-arrow">→</span></button>)}</div></section>
-    <footer><span>CORVOQUIZ PRODUÇÃO <i>V0.6.11</i></span><span>ANALISTA ESCOLHE · ROTEAMENTO · ZIP FINAL · V0.6.11</span></footer>
+    <footer><span>CORVOQUIZ PRODUÇÃO <i>V0.6.13</i></span><span>AUTOMÁTICO TOTAL · SHORTLIST 10/ID · BATCH UPLOAD · V0.6.13</span></footer>
     {notice && <div className="toast">{notice}</div>}
 
     {createOpen && <div className="modal-backdrop" onMouseDown={(event) => event.target===event.currentTarget&&closeCreationModal()}><section className="creation-modal idea-modal" role="dialog" aria-modal="true" aria-labelledby="new-production-title"><button className="modal-close" disabled={ideaLoading} onClick={closeCreationModal} aria-label="Fechar">×</button><div className="modal-symbol">✦</div><span className="modal-kicker">{ideaRevisionProjectId?"REFAZER IDEIA":"NOVA PRODUÇÃO"}</span><h2 id="new-production-title">{ideaRevisionProjectId?"ESCOLHA UMA NOVA DIREÇÃO":"O QUE VAMOS CRIAR?"}</h2><p>{ideaRevisionProjectId?"Ao confirmar, roteiro, prompts e imagens serão refeitos automaticamente.":"Comece sem tema e peça ideias ao Corvo, ou informe uma direção opcional."}</p>
@@ -1324,7 +1534,7 @@ export default function Home() {
     {settingsOpen && <div className="modal-backdrop" onMouseDown={(event)=>event.target===event.currentTarget&&setSettingsOpen(false)}><section className="settings-modal">
       <button className="modal-close" onClick={()=>setSettingsOpen(false)} aria-label="Fechar configurações">×</button>
       <span className="modal-kicker">COMPORTAMENTO DAS IMAGENS</span><h2>COMO O CORVO DEVE ESCOLHER?</h2><p>Estas opções ficam salvas e não aparecem durante a produção.</p>
-      <div className="choice-cards"><button className={settings.selectionMode==="AUTO"?"selected":""} onClick={()=>setSettings({...settings,selectionMode:"AUTO"})}><b>⚡ AUTOMÁTICO</b><small>ENVIA TODAS AS CANDIDATAS AO ANALISTA</small></button><button className={settings.selectionMode==="MANUAL"?"selected":""} onClick={()=>setSettings({...settings,selectionMode:"MANUAL"})}><b>◉ REVISÃO RÁPIDA</b><small>VOCÊ ESCOLHE UMA CANDIDATA POR ID</small></button></div>
+      <div className="choice-cards"><button className={settings.selectionMode==="AUTO"?"selected":""} onClick={()=>setSettings({...settings,selectionMode:"AUTO"})}><b>⚡ AUTOMÁTICO</b><small>ENVIA ATÉ {settings.analystCandidatesPerId} CANDIDATAS/ID AO ANALISTA</small></button><button className={settings.selectionMode==="MANUAL"?"selected":""} onClick={()=>setSettings({...settings,selectionMode:"MANUAL"})}><b>◉ REVISÃO RÁPIDA</b><small>VOCÊ ESCOLHE UMA CANDIDATA POR ID</small></button></div>
       <div className="choice-cards"><button className={settings.youtubeParallel?"selected":""} onClick={()=>setSettings({...settings,youtubeParallel:true})}><b>▶ METADADOS EM PARALELO</b><small>CHAMA O CORVO YOUTUBE JUNTO AO COLLECTOR</small></button><button className={!settings.youtubeParallel?"selected":""} onClick={()=>setSettings({...settings,youtubeParallel:false})}><b>○ METADADOS DESATIVADOS</b><small>PODE SER ATIVADO QUANDO O GPT YOUTUBE ESTIVER PRONTO</small></button></div>
       <section className="collector-engine-settings" aria-labelledby="collector-engine-title">
         <div className="engine-heading"><div><span>MOTOR DO COLETOR</span><h3 id="collector-engine-title">ONDE BUSCAR AS IMAGENS?</h3></div><small>ATIVO: {collectorEngines[settings.sourceMode].label}</small></div>
@@ -1337,12 +1547,12 @@ export default function Home() {
       <section className="downloads-section" aria-labelledby="downloads-title">
         <div className="downloads-head"><div><span>INSTALAÇÃO E SUPORTE</span><h3 id="downloads-title">ARQUIVOS PARA BAIXAR</h3></div><small>SE PRECISAR REINSTALAR</small></div>
         <div className="download-grid">
-          <a className="download-card" href="/downloads/CORVO_COLLECTOR_V077_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.7.7</small></div><i>↓</i></a>
+          <a className="download-card" href="/downloads/CORVO_COLLECTOR_V078_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.7.8</small></div><i>↓</i></a>
           <a className="download-card" href="/downloads/CORVO_BRIDGE_V065_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.5 · ZIP GRANDE + CAPTURA + LIMPEZA</small></div><i>↓</i></a>
-          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0611.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
+          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0613.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
         </div>
       </section>
-      <details className="advanced-settings"><summary>CONFIGURAÇÕES AVANÇADAS</summary><div className="settings-grid"><label>CANDIDATAS<input type="number" value={settings.maxCandidates} onChange={(event)=>setSettings({...settings,maxCandidates:Number(event.target.value)})}/></label><label>VARREDURA<input type="number" value={settings.scrollSteps} onChange={(event)=>setSettings({...settings,scrollSteps:Number(event.target.value)})}/></label><label>QUALIDADE JPEG<input type="number" step=".01" value={settings.jpegQuality} onChange={(event)=>setSettings({...settings,jpegQuality:Number(event.target.value)})}/></label><label>PREFIXO<input value={settings.prefix} onChange={(event)=>setSettings({...settings,prefix:event.target.value})}/></label></div><label className="batch-label">COMANDOS EM LOTE — OPCIONAL<textarea value={settings.batchText} onChange={(event)=>setSettings({...settings,batchText:event.target.value})} placeholder={"01|primeira busca\n02|segunda busca"} /></label></details>
+      <details className="advanced-settings"><summary>CONFIGURAÇÕES AVANÇADAS</summary><div className="settings-grid"><label>CANDIDATAS COLETADAS<input type="number" min="10" max="250" value={settings.maxCandidates} onChange={(event)=>setSettings({...settings,maxCandidates:Number(event.target.value)})}/></label><label>CANDIDATAS/ID → ANALISTA<input type="number" min="1" max="30" value={settings.analystCandidatesPerId} onChange={(event)=>setSettings({...settings,analystCandidatesPerId:Math.max(1,Math.min(30,Number(event.target.value)||10))})}/></label><label>VARREDURA<input type="number" value={settings.scrollSteps} onChange={(event)=>setSettings({...settings,scrollSteps:Number(event.target.value)})}/></label><label>QUALIDADE JPEG<input type="number" step=".01" value={settings.jpegQuality} onChange={(event)=>setSettings({...settings,jpegQuality:Number(event.target.value)})}/></label><label>PREFIXO<input value={settings.prefix} onChange={(event)=>setSettings({...settings,prefix:event.target.value})}/></label></div><p>O limite do Analista reduz apenas o transporte. O app não escolhe a vencedora; o GPT Analista continua comparando as candidatas enviadas e decide qual arquivo usar.</p><label className="batch-label">COMANDOS EM LOTE — OPCIONAL<textarea value={settings.batchText} onChange={(event)=>setSettings({...settings,batchText:event.target.value})} placeholder={"01|primeira busca\n02|segunda busca"} /></label></details>
       <button className="modal-submit" onClick={()=>setSettingsOpen(false)}>SALVAR E FECHAR <span>✓</span></button>
     </section></div>}
 
