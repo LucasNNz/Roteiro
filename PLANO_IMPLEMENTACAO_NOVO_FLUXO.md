@@ -1,4 +1,12 @@
-## Alteração V0.6.36 — AWS SDK v3 oficial para Cloudflare R2
+## Alteração V0.6.37 — saneamento de configuração R2 e recuperação de checkpoint
+
+- [x] Normalizar variáveis R2 para uma única linha.
+- [x] Remover `/bucket` do `R2_ENDPOINT` automaticamente.
+- [x] Recuperar URLs assinadas R2 antigas como fallback antes de obrigar novo Collector.
+- [x] Expor warnings de configuração no diagnóstico.
+- [x] Mostrar erro real/retomada no modal ORGANIZANDO.
+
+## Alteração V0.6.37 — AWS SDK v3 oficial para Cloudflare R2
 
 - [x] Substituir assinatura S3 manual por `@aws-sdk/client-s3`.
 - [x] Usar `@aws-sdk/s3-request-presigner` para URLs GET temporárias.

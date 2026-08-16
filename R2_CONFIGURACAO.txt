@@ -1,6 +1,6 @@
 CORVOQUIZ — CONFIGURAÇÃO CLOUDFLARE R2
 VERSION=1.1
-APP=V0.6.36
+APP=V0.6.37
 
 VARIÁVEIS NA VERCEL
 ====================
@@ -14,6 +14,14 @@ R2_BUCKET_NAME=<nome do bucket, por exemplo corvoquiz>
 R2_ENDPOINT=<endpoint S3 fornecido pela Cloudflare, por exemplo https://ACCOUNT_ID.r2.cloudflarestorage.com>
 
 Nenhuma variável adicional é obrigatória.
+
+CONFIGURAÇÃO DESTE PROJETO
+==========================
+R2_BUCKET_NAME=corvoquiz-prod
+R2_ENDPOINT=https://34da8bbc6302e3c68edf3a36f1569668.r2.cloudflarestorage.com
+
+ATENÇÃO: cada valor deve ocupar UMA única linha. Não repita corvoquiz-prod dentro da mesma Environment Variable.
+
 O CorvoQuiz usa 7 dias como TTL padrão das URLs assinadas.
 Se quiser alterar:
 R2_SIGNED_URL_TTL_SECONDS=<60 até 604800>
@@ -22,9 +30,9 @@ IMPORTANTE
 ==========
 - Não use NEXT_PUBLIC_ nas credenciais.
 - O token R2 deve ter Object Read & Write no bucket.
-- R2_BUCKET_NAME é o nome oficial usado pelo kit V0.6.36.
+- R2_BUCKET_NAME é o nome oficial usado pelo kit V0.6.37.
 - R2_BUCKET antigo continua aceito apenas para compatibilidade.
-- R2_ENDPOINT é usado diretamente pelo assinador S3; o app não precisa reconstruir o endpoint.
+- R2_ENDPOINT deve ser o endpoint S3 BASE, sem /bucket no final. A V0.6.37 remove /bucket automaticamente como proteção.
 
 CORS RECOMENDADO DO BUCKET
 ==========================
@@ -52,7 +60,7 @@ APÓS CONFIGURAR
 Faça um novo deploy da Vercel para as variáveis entrarem em Production.
 
 
-DIAGNÓSTICO V0.6.36
+DIAGNÓSTICO V0.6.37
 --------------------
 O app usa AWS SDK v3 oficial para S3/R2.
 Antes do Collector, /api/corvo/diagnostico executa:

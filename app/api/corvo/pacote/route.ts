@@ -112,7 +112,7 @@ export async function POST(request: NextRequest) {
       }
     }));
     if (failures.length) {
-      return NextResponse.json({ ok: false, message: `Não foi possível recuperar ${failures.length} candidata(s) do armazenamento.`, failures: failures.slice(0, 30) }, { status: 502 });
+      return NextResponse.json({ ok:false, code:"R2_CANDIDATE_RECOVERY_FAILED", message:`Não foi possível recuperar ${failures.length} candidata(s) do armazenamento.`, failures:failures.slice(0, 30) }, { status:502 });
     }
 
     const filesById = expectedIds.map((id) => ({

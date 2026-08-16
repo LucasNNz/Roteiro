@@ -1,6 +1,6 @@
-# CorvoQuiz Produção — V0.6.36
+# CorvoQuiz Produção — V0.6.37
 
-## V0.6.36 — SDK S3 oficial do R2 + diagnóstico por etapas
+## V0.6.37 — SDK S3 oficial do R2 + diagnóstico por etapas
 
 - O armazenamento R2 deixou de usar assinatura AWS SigV4 implementada manualmente.
 - O app agora usa `@aws-sdk/client-s3` para PUT/GET/DELETE/HeadBucket e `@aws-sdk/s3-request-presigner` para URLs temporárias.
@@ -324,7 +324,7 @@ Use `public/downloads/CORVO_COLLECTOR_V080_EXTENSION.zip` ou carregue a pasta `c
 
 - Corvo Collector V0.8.0;
 - Corvo Bridge V0.6.20;
-- Kit completo CorvoQuiz V0.6.36.
+- Kit completo CorvoQuiz V0.6.37.
 
 ## Fora do escopo atual
 
@@ -338,3 +338,10 @@ Publicação automática no YouTube continua futura: upload do vídeo final, apl
 - Novo endpoint `POST /api/corvo/candidatos-lote` grava um ZIP por lote no Blob e registra todas as entradas em uma única operação no Redis.
 - A consolidação do pacote do Analista baixa cada lote uma única vez, mantendo compatibilidade com candidatas antigas armazenadas individualmente.
 - Lotes usam retry automático em falhas temporárias de rede, 429 e 5xx.
+## V0.6.37 — saneamento R2 + recuperação de checkpoint malformado
+- `R2_BUCKET_NAME` e demais variáveis são normalizadas para uma única linha; valores colados repetidamente não contaminam mais o SDK.
+- `R2_ENDPOINT` em `*.r2.cloudflarestorage.com` é sempre reduzido ao origin base; `/bucket` é removido automaticamente.
+- Diagnóstico expõe `storageWarnings` sem segredos (`R2_BUCKET_MULTILINE_SANITIZED`, `R2_ENDPOINT_BUCKET_PATH_REMOVED`).
+- URLs R2 assinadas geradas antes da correção podem ser lidas diretamente como fallback, permitindo reconstruir o ZIP do Analista sem repetir o Collector enquanto a assinatura estiver válida.
+- `/api/corvo/pacote` retorna `R2_CANDIDATE_RECOVERY_FAILED` com amostra das falhas.
+- Modal ORGANIZANDO mostra o estado/erro real do checkpoint e botão RETOMAR AGORA; não aparenta mais travamento silencioso.

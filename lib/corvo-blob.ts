@@ -33,21 +33,32 @@ export class CorvoBlobReadError extends Error {
   }
 }
 
+function firstEnvLine(raw:string | undefined) {
+  return String(raw || "").split(/\r?\n/).map((part) => part.trim()).find(Boolean) || "";
+}
+
+function envLineCount(raw:string | undefined) {
+  return String(raw || "").split(/\r?\n/).map((part) => part.trim()).filter(Boolean).length;
+}
+
 function normalizeR2Endpoint(raw:string, accountId:string, bucket:string) {
   const fallback = accountId ? `https://${accountId}.r2.cloudflarestorage.com` : "";
-  const value = String(raw || fallback).trim();
+  const value = firstEnvLine(raw) || fallback;
   if (!value) return "";
   const withProtocol = /^https?:\/\//i.test(value) ? value : `https://${value}`;
   try {
     const url = new URL(withProtocol);
-    // Cloudflare documenta o endpoint S3 base no formato
-    // https://<ACCOUNT_ID>.r2.cloudflarestorage.com . Se o usuário colar
-    // /<bucket> no final, removemos apenas esse sufixo conhecido.
-    const parts = url.pathname.split("/").filter(Boolean);
-    if (bucket && parts.at(-1)?.toLowerCase() === bucket.toLowerCase()) parts.pop();
-    url.pathname = parts.length ? `/${parts.join("/")}` : "/";
     url.search = "";
     url.hash = "";
+    // O endpoint S3 do R2 é sempre a raiz do host. O painel da Cloudflare às
+    // vezes exibe uma URL com /<bucket>; o SDK já recebe Bucket separadamente.
+    if (/\.r2\.cloudflarestorage\.com$/i.test(url.hostname)) {
+      url.pathname = "/";
+    } else {
+      const parts = url.pathname.split("/").filter(Boolean);
+      if (bucket && parts.at(-1)?.toLowerCase() === bucket.toLowerCase()) parts.pop();
+      url.pathname = parts.length ? `/${parts.join("/")}` : "/";
+    }
     return url.toString().replace(/\/+$/, "");
   } catch {
     return withProtocol.replace(/\/+$/, "");
@@ -55,15 +66,32 @@ function normalizeR2Endpoint(raw:string, accountId:string, bucket:string) {
 }
 
 function r2Config() {
-  const accountId = process.env.R2_ACCOUNT_ID?.trim() || "";
-  const bucket = process.env.R2_BUCKET_NAME?.trim() || process.env.R2_BUCKET?.trim() || "";
+  const accountId = firstEnvLine(process.env.R2_ACCOUNT_ID);
+  const bucket = firstEnvLine(process.env.R2_BUCKET_NAME) || firstEnvLine(process.env.R2_BUCKET);
   return {
     accountId,
-    accessKeyId:process.env.R2_ACCESS_KEY_ID?.trim() || "",
-    secretAccessKey:process.env.R2_SECRET_ACCESS_KEY?.trim() || "",
+    accessKeyId:firstEnvLine(process.env.R2_ACCESS_KEY_ID),
+    secretAccessKey:firstEnvLine(process.env.R2_SECRET_ACCESS_KEY),
     bucket,
-    endpoint:normalizeR2Endpoint(process.env.R2_ENDPOINT?.trim() || "", accountId, bucket),
+    endpoint:normalizeR2Endpoint(firstEnvLine(process.env.R2_ENDPOINT), accountId, bucket),
   };
+}
+
+export function corvoR2ConfigWarnings() {
+  const warnings:string[] = [];
+  const endpointRaw = firstEnvLine(process.env.R2_ENDPOINT);
+  const bucketRaw = process.env.R2_BUCKET_NAME || process.env.R2_BUCKET || "";
+  if (envLineCount(bucketRaw) > 1) warnings.push("R2_BUCKET_MULTILINE_SANITIZED");
+  if (envLineCount(process.env.R2_ENDPOINT) > 1) warnings.push("R2_ENDPOINT_MULTILINE_SANITIZED");
+  try {
+    if (endpointRaw) {
+      const url = new URL(/^https?:\/\//i.test(endpointRaw) ? endpointRaw : `https://${endpointRaw}`);
+      if (/\.r2\.cloudflarestorage\.com$/i.test(url.hostname) && url.pathname !== "/" && url.pathname !== "") {
+        warnings.push("R2_ENDPOINT_BUCKET_PATH_REMOVED");
+      }
+    }
+  } catch {}
+  return warnings;
 }
 
 export function isCorvoObjectStorageConfigured() {
@@ -216,10 +244,58 @@ function sdkBodyToWebStream(body:GetObjectCommandOutput["Body"]):ReadableStream<
   return new Response(body as BodyInit).body as ReadableStream<Uint8Array>;
 }
 
+function isSignedR2Url(raw:string) {
+  try {
+    const url = new URL(String(raw || ""));
+    return /\.r2\.cloudflarestorage\.com$/i.test(url.hostname)
+      && (url.searchParams.has("X-Amz-Signature") || url.searchParams.has("X-Amz-Credential"));
+  } catch { return false; }
+}
+
+async function fetchLegacySignedR2Buffer(raw:string) {
+  if (!isSignedR2Url(raw)) return null;
+  const response = await fetch(raw, { cache:"no-store", redirect:"follow" });
+  if (!response.ok) throw new CorvoBlobReadError(
+    response.status === 403 ? "R2_LEGACY_SIGNED_URL_EXPIRED" : "R2_LEGACY_SIGNED_FETCH_FAILED",
+    response.status === 403
+      ? "A URL assinada antiga do R2 expirou; será necessário reempacotar essas candidatas."
+      : `A URL assinada antiga do R2 respondeu HTTP ${response.status}.`,
+    [`legacy-signed-fetch:${response.status}`],
+    response.status,
+  );
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (!bytes.byteLength) throw new CorvoBlobReadError("R2_CONTENT_EMPTY", "O objeto recuperado do R2 está vazio.");
+  return {
+    buffer:Buffer.from(bytes),
+    contentType:response.headers.get("content-type") || "application/octet-stream",
+    size:bytes.byteLength,
+    pathname:"",
+    source:"cloudflare-r2-signed-legacy",
+    etag:String(response.headers.get("etag") || "").replaceAll('"', ""),
+  };
+}
+
 export async function openCorvoBlob(raw:string) {
   const config = requireConfig();
-  const key = normalizeKey(corvoBlobPathname(raw));
   const attempts:string[] = [];
+  let key = "";
+  try { key = normalizeKey(corvoBlobPathname(raw)); }
+  catch (parseError) {
+    try {
+      const legacy = await fetchLegacySignedR2Buffer(raw);
+      if (legacy) {
+        return {
+          statusCode:200,
+          stream:new Response(legacy.buffer).body as ReadableStream<Uint8Array>,
+          pathname:legacy.pathname,
+          access:"private" as const,
+          source:legacy.source,
+          blob:{ pathname:legacy.pathname, url:raw, downloadUrl:raw, contentType:legacy.contentType, contentDisposition:"", cacheControl:"private, max-age=0, no-store", etag:legacy.etag, size:legacy.size, uploadedAt:new Date() },
+        };
+      }
+    } catch (legacyError) { if (legacyError instanceof CorvoBlobReadError) throw legacyError; }
+    throw parseError;
+  }
   try {
     const result = await clientFor(config).send(new GetObjectCommand({ Bucket:config.bucket, Key:key }));
     const stream = sdkBodyToWebStream(result.Body);
@@ -242,15 +318,40 @@ export async function openCorvoBlob(raw:string) {
       },
     };
   } catch (error) {
-    const classified = classifyAwsError(error, "R2_CONTENT_READ_FAILED");
     attempts.push(`get:${awsName(error)}:${awsMessage(error)}`);
+    try {
+      const legacy = await fetchLegacySignedR2Buffer(raw);
+      if (legacy) {
+        attempts.push("legacy-signed-fetch:ok");
+        return {
+          statusCode:200,
+          stream:new Response(legacy.buffer).body as ReadableStream<Uint8Array>,
+          pathname:legacy.pathname,
+          access:"private" as const,
+          source:legacy.source,
+          blob:{ pathname:legacy.pathname, url:raw, downloadUrl:raw, contentType:legacy.contentType, contentDisposition:"", cacheControl:"private, max-age=0, no-store", etag:legacy.etag, size:legacy.size, uploadedAt:new Date() },
+        };
+      }
+    } catch (legacyError) {
+      if (legacyError instanceof CorvoBlobReadError) {
+        legacyError.attempts.unshift(...attempts);
+        throw legacyError;
+      }
+    }
+    const classified = classifyAwsError(error, "R2_CONTENT_READ_FAILED");
     throw new CorvoBlobReadError(classified.code, classified.message, attempts, classified.status);
   }
 }
 
 export async function readCorvoBlobBuffer(raw:string) {
   const config = requireConfig();
-  const key = normalizeKey(corvoBlobPathname(raw));
+  let key = "";
+  try { key = normalizeKey(corvoBlobPathname(raw)); }
+  catch (parseError) {
+    const legacy = await fetchLegacySignedR2Buffer(raw);
+    if (legacy) return legacy;
+    throw parseError;
+  }
   try {
     const result = await clientFor(config).send(new GetObjectCommand({ Bucket:config.bucket, Key:key }));
     if (!result.Body) throw new CorvoBlobReadError("R2_CONTENT_EMPTY", "O objeto recuperado do R2 está vazio.");
@@ -265,6 +366,11 @@ export async function readCorvoBlobBuffer(raw:string) {
       etag:String(result.ETag || "").replaceAll('"', ""),
     };
   } catch (error) {
+    if (error instanceof CorvoBlobReadError && error.code === "R2_CONTENT_EMPTY") throw error;
+    try {
+      const legacy = await fetchLegacySignedR2Buffer(raw);
+      if (legacy) return legacy;
+    } catch (legacyError) { if (legacyError instanceof CorvoBlobReadError) throw legacyError; }
     if (error instanceof CorvoBlobReadError) throw error;
     const classified = classifyAwsError(error, "R2_CONTENT_READ_FAILED");
     throw new CorvoBlobReadError(classified.code, classified.message, [`get-buffer:${awsName(error)}:${awsMessage(error)}`], classified.status);

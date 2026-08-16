@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { isRedisConfigured } from "../../../../lib/corvo-jobs";
-import { CorvoBlobReadError, isCorvoObjectStorageConfigured, probeCorvoObjectStorage, type CorvoR2DiagnosticStep } from "../../../../lib/corvo-blob";
+import { CorvoBlobReadError, corvoR2ConfigWarnings, isCorvoObjectStorageConfigured, probeCorvoObjectStorage, type CorvoR2DiagnosticStep } from "../../../../lib/corvo-blob";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -48,6 +48,7 @@ export async function GET() {
       storageEndpoint,
       storageBucket,
       storageDiagnostics,
+      storageWarnings:corvoR2ConfigWarnings(),
       // alias legado para versões antigas da UI
       blobConfigured:storageConfigured,
     },
