@@ -1,6 +1,21 @@
-# CORVO BRIDGE V0.6.20 — CHECKPOINT DO ENVIO AO ANALISTA
+# CORVO BRIDGE V0.6.24 — BATCHING + CLEANER RESILIENTE
 
-## V0.6.20 — retomada por progresso + diagnóstico de storage/R2
+- Suporta jobs com até 10 anexos/imagens no mesmo lote.
+- `forceNewConversation=true` cria exatamente uma conversa nova por lote; retries técnicos do mesmo job usam a mesma aba/conversa quando possível.
+- Retry semântico do mesmo especialista recebe `preferredConversationUrl` e continua a conversa original do lote.
+- Detecta modal de excesso de solicitações e retorna `CHATGPT_RATE_LIMITED` para o app pausar o lote em vez de disparar Fallback.
+- Captura em lote mantém associação `arquivo esperado -> imagem física`, evitando reutilizar a mesma imagem para vários IDs. Imagens anexadas pelo usuário são excluídas dos candidatos de captura; somente respostas do assistant podem virar saída física.
+- Cleaner continua após qualquer falha individual, deduplica conversationId e preserva falhas para nova tentativa. Uma falha reseta a aba de manutenção antes de seguir para o próximo histórico.
+
+# CORVO BRIDGE V0.6.23 — SEGUNDO PLANO TOTAL + CENTRAL AO VIVO
+
+- Expõe ao CorvoQuiz os jobs/conversas ainda ativos.
+- Permite focar a aba exata de um job pelo painel do app.
+- Mantém a trava contra reenvio duplicado do Analista.
+
+# CORVO BRIDGE V0.6.23 — CHECKPOINT DO ENVIO AO ANALISTA
+
+## V0.6.23 — retries sem roubar foco + segundo plano total
 
 - Reutiliza rascunho do mesmo JOB_ID em vez de preencher novamente o composer.
 - Se o ZIP já estiver anexado, retoma diretamente do envio.

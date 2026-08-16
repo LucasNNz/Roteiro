@@ -5,7 +5,7 @@ export type CorvoBridgePayload = {
   meta?: Record<string, unknown>;
 };
 
-type BridgeAck = { ok?: boolean; jobId?: string; error?: string };
+type BridgeAck = { ok?: boolean; jobId?: string; error?: string; conversationUrl?: string; closed?: boolean };
 
 export function dispatchCorvoBridge(payload: CorvoBridgePayload, timeoutMs?: number) {
   const hasAttachments = Array.isArray(payload.meta?.attachments) && payload.meta.attachments.length > 0;
@@ -96,5 +96,60 @@ export function captureCorvoBridgeFile(jobId: string, name: string, type = "THUM
 
     window.addEventListener("message", onMessage);
     window.postMessage({ source: "CORVOQUIZ", type: "CORVO_BRIDGE_CAPTURE_FILE", payload: { jobId, name, type } }, "*");
+  });
+}
+
+export type CorvoBridgeJobActivity = {
+  jobId:string;
+  projectId?:string;
+  specialist?:string;
+  state?:string;
+  message?:string;
+  updatedAt?:number;
+  tabId?:number|null;
+  tabStatus?:string;
+  active?:boolean;
+  conversationUrl?:string;
+  bridgeOwned?:boolean;
+  batchId?:string;
+  batchSize?:number;
+};
+
+export function getCorvoBridgeJobActivity(timeoutMs = 3500) {
+  return new Promise<{ok?:boolean;jobs?:CorvoBridgeJobActivity[];error?:string}>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      window.removeEventListener("message", onMessage);
+      reject(new Error("CORVO_BRIDGE_JOB_ACTIVITY_TIMEOUT"));
+    }, timeoutMs);
+    function onMessage(event:MessageEvent) {
+      if (event.source !== window || event.data?.source !== "CORVO_BRIDGE" || event.data?.type !== "CORVO_BRIDGE_JOB_ACTIVITY_ACK") return;
+      window.clearTimeout(timer);
+      window.removeEventListener("message", onMessage);
+      const payload = event.data.payload || {};
+      if (payload.ok) resolve(payload);
+      else reject(new Error(payload.error || "CORVO_BRIDGE_JOB_ACTIVITY_ERROR"));
+    }
+    window.addEventListener("message", onMessage);
+    window.postMessage({ source:"CORVOQUIZ", type:"CORVO_BRIDGE_GET_JOB_ACTIVITY" }, "*");
+  });
+}
+
+export function focusCorvoBridgeJob(jobId:string, timeoutMs = 3500) {
+  return new Promise<{ok?:boolean;jobId?:string;conversationUrl?:string;error?:string}>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      window.removeEventListener("message", onMessage);
+      reject(new Error("CORVO_BRIDGE_FOCUS_JOB_TIMEOUT"));
+    }, timeoutMs);
+    function onMessage(event:MessageEvent) {
+      if (event.source !== window || event.data?.source !== "CORVO_BRIDGE" || event.data?.type !== "CORVO_BRIDGE_FOCUS_JOB_ACK") return;
+      const payload = event.data.payload || {};
+      if (payload.jobId && payload.jobId !== jobId) return;
+      window.clearTimeout(timer);
+      window.removeEventListener("message", onMessage);
+      if (payload.ok) resolve(payload);
+      else reject(new Error(payload.error || "CORVO_BRIDGE_FOCUS_JOB_ERROR"));
+    }
+    window.addEventListener("message", onMessage);
+    window.postMessage({ source:"CORVOQUIZ", type:"CORVO_BRIDGE_FOCUS_JOB", payload:{ jobId } }, "*");
   });
 }

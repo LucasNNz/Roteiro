@@ -1,12 +1,19 @@
-## Alteração V0.6.37 — saneamento de configuração R2 e recuperação de checkpoint
+## V0.6.41 — Scheduler de imagens por lote
 
-- [x] Normalizar variáveis R2 para uma única linha.
-- [x] Remover `/bucket` do `R2_ENDPOINT` automaticamente.
-- [x] Recuperar URLs assinadas R2 antigas como fallback antes de obrigar novo Collector.
-- [x] Expor warnings de configuração no diagnóstico.
-- [x] Mostrar erro real/retomada no modal ORGANIZANDO.
+Regra operacional:
+- BATCH_SIZE=10 para REFINADOR, GERADOR e FALLBACK.
+- MAX_PARALLEL_REFINER_BATCHES=2.
+- MAX_PARALLEL_GENERATOR_BATCHES=1.
+- MAX_PARALLEL_FALLBACK_BATCHES=1.
+- Falha técnica não passa pelo Fallback; usa retry técnico do mesmo JOB/conversa.
+- Falha semântica/da ferramenta pode ir ao Fallback em lote.
+- selectedFile é imutável desde o manifesto do Analista.
+- Cleaner nunca aborta toda a fila por falha de uma conversa.
+- Reload/reabertura retoma pipelineItems e jobs ativos sem voltar ao Collector.
+- Fallback reutiliza conversationUrl quando o mesmo grupo lógico volta a falhar.
+- Captura de saída em lote ignora anexos de entrada e reserva uma imagem física por ARQUIVO esperado.
 
-## Alteração V0.6.37 — AWS SDK v3 oficial para Cloudflare R2
+## Alteração V0.6.36 — AWS SDK v3 oficial para Cloudflare R2
 
 - [x] Substituir assinatura S3 manual por `@aws-sdk/client-s3`.
 - [x] Usar `@aws-sdk/s3-request-presigner` para URLs GET temporárias.
@@ -202,3 +209,18 @@ Bases: `CORVOQUIZ_ESPECIFICACAO_NOVO_FLUXO_APP_BRIDGE` e `CORVOQUIZ_MUDANCA_MODO
 - GOOGLE/PINTEREST: teto 20. MIXED: 10 + 10.
 - A rolagem para assim que a cota é atingida.
 - Shortlist para Analista continua padrão 10/ID.
+
+
+## V0.6.39 — trava de espera do Analista
+- Depois de USER_MESSAGE_COMMITTED/MESSAGE_CONFIRMED/WAITING_ACTION, o app nunca reenvia automaticamente o job do Analista por timeout.
+- ZIPs grandes podem levar horas; o app apenas consulta a Action até DONE/ERROR.
+- Recarga da página retoma somente o polling quando a mensagem já foi enviada.
+- O Bridge V0.6.21 bloqueia um novo job ANALISTA enquanto a conversa do Analista ainda está respondendo.
+- O retry por tempo continua existindo apenas antes da confirmação real do envio (composer/anexo/botão).
+
+
+## V0.6.39 — CENTRAL AO VIVO
+- Etapas do Automático Total são clicáveis.
+- Modal mostra status persistido da etapa + jobs ativos do Bridge.
+- Botão ABRIR CONVERSA foca a aba do GPT correspondente sem reenviar prompt.
+- Bridge V0.6.22 mantém estado por job (specialist/state/message/conversationUrl).

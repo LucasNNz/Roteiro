@@ -1,6 +1,6 @@
 CORVOQUIZ — CONFIGURAÇÃO CLOUDFLARE R2
 VERSION=1.1
-APP=V0.6.37
+APP=V0.6.38
 
 VARIÁVEIS NA VERCEL
 ====================
@@ -30,9 +30,9 @@ IMPORTANTE
 ==========
 - Não use NEXT_PUBLIC_ nas credenciais.
 - O token R2 deve ter Object Read & Write no bucket.
-- R2_BUCKET_NAME é o nome oficial usado pelo kit V0.6.37.
+- R2_BUCKET_NAME é o nome oficial usado pelo kit V0.6.38.
 - R2_BUCKET antigo continua aceito apenas para compatibilidade.
-- R2_ENDPOINT deve ser o endpoint S3 BASE, sem /bucket no final. A V0.6.37 remove /bucket automaticamente como proteção.
+- R2_ENDPOINT deve ser o endpoint S3 BASE, sem /bucket no final. A V0.6.38 remove /bucket automaticamente como proteção.
 
 CORS RECOMENDADO DO BUCKET
 ==========================
@@ -60,7 +60,7 @@ APÓS CONFIGURAR
 Faça um novo deploy da Vercel para as variáveis entrarem em Production.
 
 
-DIAGNÓSTICO V0.6.37
+DIAGNÓSTICO V0.6.38
 --------------------
 O app usa AWS SDK v3 oficial para S3/R2.
 Antes do Collector, /api/corvo/diagnostico executa:

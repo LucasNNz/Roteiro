@@ -91,7 +91,7 @@ async function getDiagnostic(jobId) {
   const start = events[0]?.at || job.createdAt || Date.now();
   const lines = [
     "CORVO BRIDGE DIAGNÓSTICO V1",
-    `Bridge: V0.6.20`,
+    `Bridge: V0.6.24`,
     `JOB_ID: ${id}`,
     `Eventos: ${events.length}`,
     `Status atual: ${data.corvoBridgeStatus?.state || ""} | ${data.corvoBridgeStatus?.message || ""}`,
@@ -273,7 +273,39 @@ async function runCleaner({ manual = false, forceDelete = false } = {}) {
     const config = await getConfig();
     if (!manual && !config.cleanerEnabled) return { ok: true, skipped: true };
     const records = await repairCleanerRecords();
-    const candidates = records.filter((r) => r.eligible === true && r.done && !r.deleted && r.conversationUrl && r.conversationId);
+    const jobData = await chrome.storage.local.get(JOB_TABS_KEY);
+    const openJobs = jobData[JOB_TABS_KEY] || {};
+    const nowTs = Date.now();
+    const staleErrorMs = 15 * 60 * 1000;
+    const activeConversationIds = new Set(records.filter((r) => {
+      if (!(r.eligible === true && !r.done && !r.deleted && r.conversationId)) return false;
+      const live = openJobs[r.jobId] || {};
+      const bridgeState = String(r.lastBridgeState || live.lastState || "").toUpperCase();
+      if (!bridgeState) return false;
+      return !["ERROR", "COMPLETED"].includes(bridgeState);
+    }).map((r) => r.conversationId));
+    const rawCandidates = records.filter((r) => {
+      if (!(r.eligible === true && !r.deleted && r.conversationUrl && r.conversationId)) return false;
+      if (activeConversationIds.has(r.conversationId)) return false;
+      if (r.done) return true;
+      const live = openJobs[r.jobId] || {};
+      const errorState = String(r.lastBridgeState || live.lastState || r.cleanerState || "").toUpperCase() === "ERROR";
+      const errorAt = Number(r.lastBridgeErrorAt || live.lastUpdatedAt || r.updatedAt || 0);
+      return errorState && errorAt > 0 && nowTs - errorAt >= staleErrorMs;
+    });
+    // Uma mesma conversa pode ter sido associada a mais de um JOB em versões antigas.
+    // O Cleaner trabalha por CONVERSA, não por registro, para não tentar excluir a
+    // mesma URL várias vezes e não contaminar a fila com falhas duplicadas.
+    const groupedCandidates = new Map();
+    for (const record of rawCandidates) {
+      const key = record.conversationId || record.conversationUrl;
+      const current = groupedCandidates.get(key);
+      if (current) {
+        current.jobIds.push(record.jobId);
+        if ((record.updatedAt || 0) > (current.updatedAt || 0)) Object.assign(current, { ...record, jobIds:current.jobIds });
+      } else groupedCandidates.set(key, { ...record, jobIds:[record.jobId] });
+    }
+    const candidates = [...groupedCandidates.values()];
     const dryRun = forceDelete ? false : config.cleanerDryRun !== false;
     let deleted = 0, failed = 0;
     const errors = [];
@@ -298,31 +330,65 @@ async function runCleaner({ manual = false, forceDelete = false } = {}) {
         currentJobId: record.jobId, currentConversationId: record.conversationId
       }});
       try {
-        const result = dryRun
-          ? { ok: true, dryRun: true }
-          : await deleteConversationInTab(cleanerTabId, record, false);
-        await upsertCleanerRecord(record.jobId, {
-          deleted: !result.dryRun,
-          lastCleanerAt: Date.now(),
-          lastCleanerResult: result.dryRun ? "DRY_RUN" : "DELETED",
-          cleanerError: ""
-        });
-        await appendCleanerLog({ jobId: record.jobId, conversationId: record.conversationId, result: result.dryRun ? "DRY_RUN" : "DELETED" });
+        let result;
+        if (dryRun) result = { ok:true, dryRun:true };
+        else {
+          let lastDeleteError = null;
+          for (let deleteAttempt = 0; deleteAttempt < 2; deleteAttempt++) {
+            try {
+              result = await deleteConversationInTab(cleanerTabId, record, false);
+              lastDeleteError = null;
+              break;
+            } catch (error) {
+              lastDeleteError = error;
+              // Uma conversa com menu/modal quebrado não pode contaminar a próxima.
+              // Na primeira falha, reseta a aba de manutenção e tenta ESTE alvo mais
+              // uma vez. Se continuar falhando, registra e segue a fila normalmente.
+              if (deleteAttempt < 1 && cleanerTabId) {
+                await chrome.tabs.update(cleanerTabId, { url:"https://chatgpt.com/", active:false }).catch(() => {});
+                await waitTabReady(cleanerTabId, 15000).catch(() => {});
+                await new Promise((resolve) => setTimeout(resolve, 900));
+              }
+            }
+          }
+          if (!result) throw lastDeleteError || new Error("DELETE_FAILED");
+        }
+        const jobIds = Array.isArray(record.jobIds) && record.jobIds.length ? record.jobIds : [record.jobId];
+        for (const mappedJobId of jobIds) {
+          await upsertCleanerRecord(mappedJobId, {
+            deleted: !result.dryRun,
+            ...(result.dryRun ? {} : { done:true }),
+            lastCleanerAt: Date.now(),
+            lastCleanerResult: result.dryRun ? "DRY_RUN" : "DELETED",
+            cleanerError: "",
+            cleanerState: result.dryRun ? "DRY_RUN" : "DELETED"
+          });
+        }
+        await appendCleanerLog({ jobId: record.jobId, jobIds, conversationId: record.conversationId, result: result.dryRun ? "DRY_RUN" : "DELETED" });
         if (!result.dryRun) deleted++;
       } catch (error) {
         failed++;
         const errorCode = String(error?.message || "DELETE_FAILED");
-        await upsertCleanerRecord(record.jobId, { lastCleanerAt: Date.now(), lastCleanerResult: "ERROR", cleanerError: errorCode });
-        await appendCleanerLog({ jobId: record.jobId, conversationId: record.conversationId, result: "ERROR", error: errorCode });
-        errors.push({ jobId: record.jobId, conversationId: record.conversationId, error: errorCode });
-        // Na limpeza manual destrutiva, uma falha pode indicar mudança na UI.
-        // Parar no primeiro erro evita repetir cinco tentativas cegas ou clicar
-        // em elementos ambíguos nas conversas seguintes.
-        if (manual && forceDelete) break;
+        const jobIds = Array.isArray(record.jobIds) && record.jobIds.length ? record.jobIds : [record.jobId];
+        for (const mappedJobId of jobIds) {
+          await upsertCleanerRecord(mappedJobId, {
+            lastCleanerAt: Date.now(), lastCleanerResult: "ERROR", cleanerError: errorCode,
+            cleanerState:"FAILED", cleanerAttempts:Number(record.cleanerAttempts || 0) + 1
+          });
+        }
+        await appendCleanerLog({ jobId: record.jobId, jobIds, conversationId: record.conversationId, result: "ERROR", error: errorCode });
+        errors.push({ jobId: record.jobId, jobIds, conversationId: record.conversationId, error: errorCode });
+        if (!dryRun && cleanerTabId) {
+          await chrome.tabs.update(cleanerTabId, { url:"https://chatgpt.com/", active:false }).catch(() => {});
+          await waitTabReady(cleanerTabId, 15000).catch(() => {});
+        }
+        // Falha de uma conversa NÃO encerra a fila. A próxima conversa é
+        // independente e deve ser tentada normalmente. As falhas permanecem
+        // mapeadas para um retry posterior do Cleaner.
       }
-      // Curto intervalo apenas para a interface do ChatGPT estabilizar antes
-      // de navegar a mesma aba para a próxima conversa.
-      if (index < candidates.length - 1) await new Promise((r) => setTimeout(r, 350));
+      // Dá tempo para o histórico estabilizar, especialmente após uma falha,
+      // mas nunca bloqueia todas as conversas restantes.
+      if (index < candidates.length - 1) await new Promise((r) => setTimeout(r, failed ? 700 : 350));
     }
 
     const finalStatus = {
@@ -357,11 +423,16 @@ async function rememberJobTab(jobId, tabId, openedByBridge, meta = {}) {
   if (openedByBridge) owned.add(tabId);
   const bridgeOwned = openedByBridge || owned.has(tabId);
   jobs[jobId] = {
+    ...(jobs[jobId] || {}),
     tabId,
     closeOnComplete: bridgeOwned,
     bridgeOwned,
-    uploadToken: String(meta.uploadToken || ""),
-    projectId: String(meta.projectId || ""),
+    uploadToken: String(meta.uploadToken || jobs[jobId]?.uploadToken || ""),
+    projectId: String(meta.projectId || jobs[jobId]?.projectId || ""),
+    specialist: String(meta.specialist || jobs[jobId]?.specialist || ""),
+    batchId: String(meta.batchId || jobs[jobId]?.batchId || ""),
+    batchSize: Number(meta.batchSize || jobs[jobId]?.batchSize || 0),
+    logicalBatch: meta.logicalBatch === true || jobs[jobId]?.logicalBatch === true,
     savedAt: Date.now()
   };
   await chrome.storage.local.set({ [JOB_TABS_KEY]: jobs, [OWNED_TABS_KEY]: [...owned] });
@@ -550,15 +621,17 @@ async function completeJobTab(jobId) {
   const data = await chrome.storage.local.get([JOB_TABS_KEY, OWNED_TABS_KEY]);
   const jobs = data[JOB_TABS_KEY] || {};
   const record = jobs[jobId];
-  if (!record) return { ok: true, closed: false };
+  if (!record) return { ok: true, closed: false, conversationUrl:"" };
 
-  // Captura a URL FINAL antes de fechar a aba. Em GPTs personalizados a rota
-  // costuma ser /g/<gpt>/c/<conversationId>, então esse é o momento mais
-  // confiável para garantir que o Cleaner conheça a conversa real.
+  // Captura a URL FINAL antes de fechar a aba. Ela também volta ao app para que
+  // um RETRY SEMÂNTICO do mesmo lote possa continuar NA MESMA CONVERSA, em vez
+  // de poluir o histórico com uma conversa nova.
+  let finalConversationUrl = String(record.conversationUrl || "");
   try {
     const tab = await chrome.tabs.get(record.tabId);
     const conversationUrl = String(tab?.url || "");
     if (conversationKey(conversationUrl)) {
+      finalConversationUrl = conversationUrl;
       await patchEligibleCleanerRecord(jobId, { conversationUrl, completedAt: Date.now() });
     }
   } catch {}
@@ -567,9 +640,9 @@ async function completeJobTab(jobId) {
   const owned = new Set(Array.isArray(data[OWNED_TABS_KEY]) ? data[OWNED_TABS_KEY] : []);
   if (record.closeOnComplete) owned.delete(record.tabId);
   await chrome.storage.local.set({ [JOB_TABS_KEY]: jobs, [OWNED_TABS_KEY]: [...owned] });
-  if (!record.closeOnComplete) return { ok: true, closed: false };
+  if (!record.closeOnComplete) return { ok: true, closed: false, conversationUrl:finalConversationUrl };
   await chrome.tabs.remove(record.tabId).catch(() => {});
-  return { ok: true, closed: true };
+  return { ok: true, closed: true, conversationUrl:finalConversationUrl };
 }
 
 async function forgetTab(tabId) {
@@ -598,7 +671,23 @@ function specialistConfig(job) {
 
 async function setStatus(state, jobId, message, extra = {}) {
   lastStatus = { state, jobId: jobId || null, message, updatedAt: Date.now(), ...extra };
-  await chrome.storage.local.set({ corvoBridgeStatus: lastStatus });
+  const storagePatch = { corvoBridgeStatus: lastStatus };
+  if (jobId) {
+    const data = await chrome.storage.local.get(JOB_TABS_KEY);
+    const jobs = data[JOB_TABS_KEY] || {};
+    if (jobs[jobId]) {
+      jobs[jobId] = { ...jobs[jobId], lastState:state, lastMessage:message, lastUpdatedAt:Date.now(), specialist:String(extra.specialist || jobs[jobId]?.specialist || "") };
+      storagePatch[JOB_TABS_KEY] = jobs;
+    }
+  }
+  await chrome.storage.local.set(storagePatch);
+  if (jobId) {
+    patchEligibleCleanerRecord(jobId, {
+      lastBridgeState:String(state || ""),
+      lastBridgeStateAt:Date.now(),
+      ...(state === "ERROR" ? { lastBridgeError:String(message || ""), lastBridgeErrorAt:Date.now() } : {})
+    }).catch(() => {});
+  }
   await appendDiagnostic(jobId, `STATUS:${state}`, { message, ...extra }, "background").catch(() => {});
   const config = await getConfig();
   try {
@@ -763,10 +852,25 @@ async function pingTabUntilReady(tabId) {
   }
 }
 
+async function findExistingJobTab(jobId) {
+  if (!jobId) return null;
+  const data = await chrome.storage.local.get(JOB_TABS_KEY);
+  const record = (data[JOB_TABS_KEY] || {})[jobId];
+  if (!record?.tabId) return null;
+  return await chrome.tabs.get(record.tabId).catch(() => null);
+}
+
 async function findReusableGptTab(gptUrl) {
   const target = normalizeUrl(gptUrl);
+  const data = await chrome.storage.local.get(JOB_TABS_KEY);
+  const jobs = data[JOB_TABS_KEY] || {};
+  const busyTabIds = new Set(Object.values(jobs)
+    .filter((record) => /WAITING_ACTION|USER_MESSAGE_COMMITTED|PROCESS|SENDING|WAITING_FILE|CAPTURING/i.test(String(record?.lastState || "")))
+    .map((record) => record?.tabId)
+    .filter(Boolean));
   const tabs = await chrome.tabs.query({ url: "https://chatgpt.com/*" });
   for (const tab of tabs) {
+    if (busyTabIds.has(tab.id) || pendingByTab.has(tab.id) || sendingTabs.has(tab.id)) continue;
     const current = normalizeUrl(tab.url || "");
     if (target && current.startsWith(target)) return tab;
   }
@@ -797,11 +901,22 @@ async function dispatchToGpt(job, sourceTabId) {
   }, "background").catch(() => {});
   await setStatus("OPENING_GPT", payload.jobId, `Abrindo ${target.label} no ChatGPT...`, { specialist: target.key });
   let tab = null;
-  if (config.openMode === "reuse") tab = await findReusableGptTab(gptUrl);
+  const forceNewConversation = payload.meta?.forceNewConversation === true;
+  const preferredConversationUrl = /^https:\/\/chatgpt\.com\//i.test(String(payload.meta?.preferredConversationUrl || ""))
+    ? String(payload.meta.preferredConversationUrl)
+    : "";
+  // Retry técnico do MESMO JOB volta primeiro para a aba que já pertence a ele.
+  // Isso impede um retry de LOTE A de cair na conversa ocupada do LOTE B.
+  if (!forceNewConversation) tab = await findExistingJobTab(payload.jobId);
+  if (!tab && preferredConversationUrl) {
+    const openTabs = await chrome.tabs.query({ url:"https://chatgpt.com/*" });
+    tab = openTabs.find((candidate) => normalizeUrl(candidate.url || "") === normalizeUrl(preferredConversationUrl)) || null;
+  }
+  if (!tab && config.openMode === "reuse" && !forceNewConversation && !preferredConversationUrl) tab = await findReusableGptTab(gptUrl);
 
   if (tab?.id) {
     await appendDiagnostic(payload.jobId, "TAB_REUSED", { tabId:tab.id, url:diagnosticUrl(tab.url || ""), status:tab.status, active:tab.active }, "background").catch(() => {});
-    const ownership = await rememberJobTab(payload.jobId, tab.id, false, payload.meta);
+    const ownership = await rememberJobTab(payload.jobId, tab.id, false, { ...payload.meta, specialist:target.key });
     if (ownership.bridgeOwned) {
       await upsertCleanerRecord(payload.jobId, { eligible: true, tabId: tab.id, specialist: target.key, createdAt: payload.createdAt, day: localDay(payload.createdAt), done: false, deleted: false });
     }
@@ -811,10 +926,11 @@ async function dispatchToGpt(job, sourceTabId) {
     return await delivery;
   }
 
-  tab = await chrome.tabs.create({ url: gptUrl, active: false });
+  const launchUrl = preferredConversationUrl || gptUrl;
+  tab = await chrome.tabs.create({ url: launchUrl, active: false });
   if (!tab.id) throw new Error("TAB_CREATE_FAILED");
-  await appendDiagnostic(payload.jobId, "TAB_CREATED", { tabId:tab.id, url:diagnosticUrl(gptUrl), status:tab.status, active:tab.active }, "background").catch(() => {});
-  await rememberJobTab(payload.jobId, tab.id, true, payload.meta);
+  await appendDiagnostic(payload.jobId, "TAB_CREATED", { tabId:tab.id, url:diagnosticUrl(launchUrl), preferredConversation:Boolean(preferredConversationUrl), status:tab.status, active:tab.active }, "background").catch(() => {});
+  await rememberJobTab(payload.jobId, tab.id, true, { ...payload.meta, specialist:target.key });
   await upsertCleanerRecord(payload.jobId, { eligible: true, tabId: tab.id, specialist: target.key, createdAt: payload.createdAt, day: localDay(payload.createdAt), done: false, deleted: false });
   pendingByTab.set(tab.id, payload);
   const delivery = waitForDelivery(payload, tab.id, false, sourceTabId);
@@ -822,52 +938,49 @@ async function dispatchToGpt(job, sourceTabId) {
   return await delivery;
 }
 
-function shouldFocusedRetry(errorCode = "") {
+function shouldBackgroundRetry(errorCode = "") {
   const code = String(errorCode || "").toUpperCase();
   return /GPT_SEND|COMPOSER_|ATTACHMENT_(INPUT|NOT_CONFIRMED)|READY_TO_SEND|SEND_BUTTON|BRIDGE_BUSY/.test(code);
 }
 
-async function sendWithFocusedRetry(tabId, pending) {
+async function sendWithBackgroundRetry(tabId, pending) {
   await appendDiagnostic(pending.jobId, "SEND_TO_CONTENT_START", { tabId, attempt:"background" }, "background").catch(() => {});
-  let firstResult;
-  try { firstResult = await chrome.tabs.sendMessage(tabId, { type: "CORVO_SEND_PROMPT", payload: pending }); }
+  let result;
+  try { result = await chrome.tabs.sendMessage(tabId, { type: "CORVO_SEND_PROMPT", payload: pending }); }
   catch (error) {
     await appendDiagnostic(pending.jobId, "SEND_TO_CONTENT_EXCEPTION", { tabId, error:String(error?.message || error || "") }, "background").catch(() => {});
     throw error;
   }
-  await appendDiagnostic(pending.jobId, "SEND_TO_CONTENT_RESULT", { tabId, result:firstResult }, "background").catch(() => {});
-  if (firstResult?.ok) return firstResult;
+  await appendDiagnostic(pending.jobId, "SEND_TO_CONTENT_RESULT", { tabId, result }, "background").catch(() => {});
+  if (result?.ok) return result;
 
-  const firstError = firstResult?.error || "GPT_SEND_FAILED";
-  if (!shouldFocusedRetry(firstError)) throw new Error(firstError);
+  let lastError = result?.error || "GPT_SEND_FAILED";
+  if (!shouldBackgroundRetry(lastError)) throw new Error(lastError);
 
-  const delivery = deliveryByJob.get(pending.jobId);
-  const sourceTabId = delivery?.sourceTabId;
-  const gptTab = await chrome.tabs.get(tabId);
-  let activatedForRetry = false;
-
-  await setStatus("FOCUSED_RETRY", pending.jobId, `O envio em segundo plano não confirmou (${firstError}). Ativando a aba do GPT e tentando novamente...`, { firstError });
-  try {
-    if (!gptTab.active) {
-      await chrome.tabs.update(tabId, { active: true });
-      activatedForRetry = true;
-      await new Promise((resolve) => setTimeout(resolve, 1800));
-    }
-
-    await appendDiagnostic(pending.jobId, "FOCUSED_RETRY_START", { tabId, firstError }, "background").catch(() => {});
-    const retryResult = await chrome.tabs.sendMessage(tabId, {
-      type: "CORVO_SEND_PROMPT",
-      payload: { ...pending, bridgeAttempt: "focused-retry" }
-    });
-    await appendDiagnostic(pending.jobId, "FOCUSED_RETRY_RESULT", { tabId, result:retryResult }, "background").catch(() => {});
-    if (!retryResult?.ok) throw new Error(retryResult?.error || "GPT_SEND_FAILED");
-    return retryResult;
-  } finally {
-    if (activatedForRetry && sourceTabId && sourceTabId !== tabId) {
-      await new Promise((resolve) => setTimeout(resolve, 700));
-      await chrome.tabs.update(sourceTabId, { active: true }).catch(() => {});
+  // Nunca rouba o foco do usuário. As tentativas adicionais continuam na mesma
+  // aba oculta; o usuário só traz uma conversa ao primeiro plano quando clica
+  // explicitamente em ABRIR CONVERSA na Central ao Vivo.
+  const retryDelays = [1800, 3500];
+  for (let index = 0; index < retryDelays.length; index++) {
+    await setStatus("BACKGROUND_RETRY", pending.jobId, `O envio ainda não confirmou (${lastError}). Tentando novamente em segundo plano...`, { firstError:lastError, retry:index + 1 });
+    await new Promise((resolve) => setTimeout(resolve, retryDelays[index]));
+    await appendDiagnostic(pending.jobId, "BACKGROUND_RETRY_START", { tabId, retry:index + 1, previousError:lastError }, "background").catch(() => {});
+    try {
+      const retryResult = await chrome.tabs.sendMessage(tabId, {
+        type: "CORVO_SEND_PROMPT",
+        payload: { ...pending, bridgeAttempt: `background-retry-${index + 1}` }
+      });
+      await appendDiagnostic(pending.jobId, "BACKGROUND_RETRY_RESULT", { tabId, retry:index + 1, result:retryResult }, "background").catch(() => {});
+      if (retryResult?.ok) return retryResult;
+      lastError = retryResult?.error || "GPT_SEND_FAILED";
+      if (!shouldBackgroundRetry(lastError)) break;
+    } catch (error) {
+      lastError = String(error?.message || error || "GPT_SEND_FAILED");
+      await appendDiagnostic(pending.jobId, "BACKGROUND_RETRY_EXCEPTION", { tabId, retry:index + 1, error:lastError }, "background").catch(() => {});
+      if (!shouldBackgroundRetry(lastError)) break;
     }
   }
+  throw new Error(lastError);
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -894,7 +1007,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     sendingTabs.add(tabId);
     setStatus("SENDING_TO_GPT", pending.jobId, "GPT carregado. Enviando solicitação...").catch(() => {});
-    sendWithFocusedRetry(tabId, pending)
+    sendWithBackgroundRetry(tabId, pending)
       .then((result) => {
         sendResponse({ ok: true, pending: true, confirmed: result.confirmed === true });
       })
@@ -929,7 +1042,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const tabId = sender.tab?.id;
     const jobId = message.payload?.jobId || null;
     const conversationUrl = message.payload?.conversationUrl || sender.tab?.url || "";
-    if (jobId) patchEligibleCleanerRecord(jobId, { conversationUrl, sentAt: Date.now() }).catch(() => {});
+    if (jobId) {
+      patchEligibleCleanerRecord(jobId, { conversationUrl, sentAt: Date.now() }).catch(() => {});
+      chrome.storage.local.get(JOB_TABS_KEY).then(async (data) => {
+        const jobs = data[JOB_TABS_KEY] || {};
+        if (!jobs[jobId]) return;
+        jobs[jobId] = { ...jobs[jobId], conversationUrl, sentAt:Date.now(), lastState:"WAITING_ACTION", lastMessage:"Solicitação enviada. Aguardando retorno pela Action.", lastUpdatedAt:Date.now() };
+        await chrome.storage.local.set({ [JOB_TABS_KEY]:jobs });
+      }).catch(() => {});
+    }
     if (tabId) { pendingByTab.delete(tabId); sendingTabs.delete(tabId); }
     setStatus("WAITING_ACTION", jobId, "Solicitação enviada. Aguardando o GPT concluir e devolver pela Action.").catch(() => {});
     resolveDelivery(jobId, { ok: true, tabId, jobId, confirmed: true });
@@ -946,6 +1067,50 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     setStatus("ERROR", jobId, errorMessage).catch(() => {});
     sendResponse({ ok: true });
     return;
+  }
+
+  if (message.type === "CORVO_GET_JOB_ACTIVITY") {
+    Promise.all([chrome.storage.local.get([JOB_TABS_KEY, CLEANER_RECORDS_KEY]), chrome.tabs.query({ url:"https://chatgpt.com/*" })])
+      .then(([data, tabs]) => {
+        const jobs = data[JOB_TABS_KEY] || {};
+        const cleaner = Array.isArray(data[CLEANER_RECORDS_KEY]) ? data[CLEANER_RECORDS_KEY] : [];
+        const tabMap = new Map((tabs || []).filter((tab) => tab?.id).map((tab) => [tab.id, tab]));
+        const items = Object.entries(jobs).map(([id, record]) => {
+          const tab = tabMap.get(record?.tabId);
+          const clean = cleaner.find((item) => item?.jobId === id) || {};
+          return {
+            jobId:id, projectId:String(record?.projectId || ""), specialist:String(record?.specialist || clean?.specialist || ""),
+            state:String(record?.lastState || "OPEN"), message:String(record?.lastMessage || "Conversa aberta no ChatGPT."),
+            updatedAt:Number(record?.lastUpdatedAt || record?.savedAt || Date.now()), tabId:record?.tabId || null,
+            tabStatus:String(tab?.status || ""), active:Boolean(tab?.active),
+            conversationUrl:String(record?.conversationUrl || clean?.conversationUrl || tab?.url || ""),
+            bridgeOwned:Boolean(record?.bridgeOwned),
+            batchId:String(record?.batchId || ""), batchSize:Number(record?.batchSize || 0),
+          };
+        });
+        sendResponse({ ok:true, jobs:items });
+      })
+      .catch((error) => sendResponse({ ok:false, error:String(error?.message || error || "JOB_ACTIVITY_FAILED") }));
+    return true;
+  }
+
+  if (message.type === "CORVO_FOCUS_JOB") {
+    const jobId = String(message.payload?.jobId || "").trim();
+    if (!jobId) { sendResponse({ ok:false, error:"JOB_ID_REQUIRED" }); return; }
+    chrome.storage.local.get([JOB_TABS_KEY, CLEANER_RECORDS_KEY]).then(async (data) => {
+      const jobs = data[JOB_TABS_KEY] || {};
+      const record = jobs[jobId];
+      const cleaner = Array.isArray(data[CLEANER_RECORDS_KEY]) ? data[CLEANER_RECORDS_KEY] : [];
+      const clean = cleaner.find((item) => item?.jobId === jobId) || {};
+      let tab = record?.tabId ? await chrome.tabs.get(record.tabId).catch(() => null) : null;
+      const url = String(record?.conversationUrl || clean?.conversationUrl || tab?.url || "");
+      if (!tab && /^https:\/\/chatgpt\.com\//i.test(url)) tab = await chrome.tabs.create({ url, active:true });
+      if (!tab?.id) { sendResponse({ ok:false, error:"JOB_TAB_NOT_FOUND", conversationUrl:url }); return; }
+      await chrome.tabs.update(tab.id, { active:true });
+      if (typeof tab.windowId === "number") await chrome.windows.update(tab.windowId, { focused:true }).catch(() => {});
+      sendResponse({ ok:true, jobId, tabId:tab.id, conversationUrl:url || tab.url || "" });
+    }).catch((error) => sendResponse({ ok:false, error:String(error?.message || error || "FOCUS_JOB_FAILED") }));
+    return true;
   }
 
   if (message.type === "CORVO_GET_STATUS") {
@@ -975,8 +1140,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "CORVO_CLEANER_GET_STATE") {
-    Promise.all([repairCleanerRecords(), chrome.storage.local.get([CLEANER_LOG_KEY, "corvoBridgeCleanerStatus"]), getConfig()])
-      .then(([records, data, config]) => sendResponse({ ok: true, records, log: data[CLEANER_LOG_KEY] || [], status: data.corvoBridgeCleanerStatus || null, config }))
+    Promise.all([repairCleanerRecords(), chrome.storage.local.get([CLEANER_LOG_KEY, "corvoBridgeCleanerStatus", JOB_TABS_KEY]), getConfig()])
+      .then(([records, data, config]) => {
+        const jobs = data[JOB_TABS_KEY] || {};
+        const hydrated = records.map((record) => {
+          const live = jobs[record.jobId] || {};
+          return {
+            ...record,
+            lastBridgeState:record.lastBridgeState || live.lastState || "",
+            lastBridgeStateAt:record.lastBridgeStateAt || live.lastUpdatedAt || 0,
+            lastBridgeErrorAt:record.lastBridgeErrorAt || (String(live.lastState || "").toUpperCase() === "ERROR" ? live.lastUpdatedAt : 0),
+          };
+        });
+        sendResponse({ ok: true, records:hydrated, log: data[CLEANER_LOG_KEY] || [], status: data.corvoBridgeCleanerStatus || null, config });
+      })
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }

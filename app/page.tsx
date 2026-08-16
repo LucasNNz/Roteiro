@@ -17,7 +17,7 @@ import {
   type SelectionMode,
   type SourceMode,
 } from "../lib/corvo-collector";
-import { captureCorvoBridgeFile, completeCorvoBridgeJob, dispatchCorvoBridge } from "../lib/corvo-bridge";
+import { captureCorvoBridgeFile, completeCorvoBridgeJob, dispatchCorvoBridge, focusCorvoBridgeJob, getCorvoBridgeJobActivity, type CorvoBridgeJobActivity } from "../lib/corvo-bridge";
 
 type Format = "REELS" | "VÍDEO COMPLETO";
 type Quantity = "1 VÍDEO" | "LOTE";
@@ -28,15 +28,17 @@ type WorkflowKind = "ROTEIRO" | "PROMPTS";
 type ProjectArtifact = "IDEIA" | "ROTEIRO" | "PROMPTS";
 type AutoRunStatus = "RUNNING" | "DONE" | "ERROR" | "CANCELLED";
 type AutoRunStep = "VALIDANDO" | "IDEIA" | "ROTEIRO" | "PROMPTS" | "COLLECTOR" | "ANALISTA" | "IMAGENS" | "THUMB" | "METADADOS" | "CONSOLIDANDO" | "CONCLUIDO" | "ERRO";
+type ActivityFilter = AutoRunStep | "TODOS";
 type IdeaRequestOptions = { format:Format; quantity:Quantity; mode:Mode; topic?:string; revisionProjectId?:string };
 type PipelineHistoryEvent = {
   at:string; attempt:number; specialist:"REFINADOR"|"GERADOR"|"FALLBACK"; status:string; jobId?:string;
-  errorCode?:string; reason?:string; destination?:string; promptRetry?:string;
+  errorCode?:string; reason?:string; destination?:string; promptRetry?:string; batchId?:string; logicalJobId?:string;
 };
 type PipelineItem = {
-  id:string; route:"REFINADOR"|"GERADOR"; sourceFile?:string; sourceUrl?:string; refinement?:string; reason?:string; generationPrompt?:string;
+  id:string; route:"REFINADOR"|"GERADOR"; sourceFile?:string; selectedFile?:string; sourceUrl?:string; refinement?:string; reason?:string; generationPrompt?:string;
   retryPrompt?:string; finalFile:string; jobId?:string; fallbackJobId?:string; status?:string; outputUrl?:string; outputFile?:string;
   error?:string; errorCode?:string; tentativaAtual?:number; finalFailure?:boolean; history?:PipelineHistoryEvent[];
+  logicalJobId?:string; batchId?:string; batchIndex?:number; batchSize?:number; routeConversationUrl?:string; fallbackConversationUrl?:string;
 };
 type Project = {
   id:string; title:string; topic:string; format:Format; quantity:Quantity; mode:Mode;
@@ -53,7 +55,9 @@ type Project = {
   youtubeJobId?:string; youtubeStatus?:string; youtubeMetadata?:string; youtubeError?:string;
   finalZipStatus?:string; finalZipError?:string; finalZipGeneratedAt?:string;
   autoRunStatus?:AutoRunStatus; autoRunStep?:AutoRunStep; autoRunMessage?:string; autoRunError?:string; autoRunStartedAt?:string; autoRunCompletedAt?:string;
-  autoWorkflowJobId?:string; autoWorkflowKind?:WorkflowKind;
+  autoRunRetryAt?:string; autoRunRetryCount?:number;
+  autoIdeaJobId?:string; autoIdeaPrompt?:string; autoIdeaDispatchedAt?:string;
+  autoWorkflowJobId?:string; autoWorkflowKind?:WorkflowKind; autoWorkflowPrompt?:string; autoWorkflowDispatchedAt?:string;
 };
 type CollectorSettings = {
   selectionMode:SelectionMode; sourceMode:SourceMode; maxCandidates:number; analystCandidatesPerId:number; scrollSteps:number;
@@ -83,7 +87,15 @@ const collectorEngines:Record<SourceMode,{label:string;shortLabel:string;descrip
 };
 const steps = ["IDEIA", "ROTEIRO", "PROMPTS", "IMAGENS", "FORMA"];
 const wait = (ms:number) => new Promise((resolve) => setTimeout(resolve, ms));
+const ANALYSIS_COMMITTED_STAGES = new Set(["USER_MESSAGE_COMMITTED", "MESSAGE_CONFIRMED", "WAITING_ACTION"]);
+function analysisMessageCommitted(project?:Project | null) {
+  return Boolean(project && ANALYSIS_COMMITTED_STAGES.has(String(project.analysisBridgeStage || "")));
+}
 const MAX_PIPELINE_ATTEMPTS = 3;
+const PIPELINE_BATCH_SIZE = 10;
+const MAX_PARALLEL_REFINER_BATCHES = 2;
+const MAX_PARALLEL_GENERATOR_BATCHES = 1;
+const MAX_PARALLEL_FALLBACK_BATCHES = 1;
 const ANALYSIS_RETRY_DELAYS = [60_000, 120_000, 300_000, 600_000];
 
 function analysisRetryDelay(retryCount:number) {
@@ -169,7 +181,7 @@ function defaultQueries(project:Project) {
   ];
 }
 
-function autoRunChecklist(project:Project, youtubeEnabled:boolean) {
+function autoRunChecklist(project:Project, youtubeEnabled:boolean):Array<{key:ActivityFilter;label:string;done:boolean}> {
   return [
     { key:"IDEIA", label:"IDEIA", done:Boolean(project.ideaText) },
     { key:"ROTEIRO", label:"ROTEIRO", done:Boolean(project.scriptText) },
@@ -260,19 +272,84 @@ export default function Home() {
   const [searchingMore, setSearchingMore] = useState(false);
   const [packageCode, setPackageCode] = useState("");
   const [, setAnalysisTick] = useState(0);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [activityFilter, setActivityFilter] = useState<ActivityFilter>("TODOS");
+  const [activityJobs, setActivityJobs] = useState<CorvoBridgeJobActivity[]>([]);
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityError, setActivityError] = useState("");
+  const [activityUpdatedAt, setActivityUpdatedAt] = useState<number>(0);
   const runToken = useRef(0);
   const ideaRunToken = useRef(0);
   const workflowRunToken = useRef(0);
   const thumbRuns = useRef(new Set<string>());
-  const generatorQueue = useRef<Promise<void>>(Promise.resolve());
   const packageRetryRef = useRef<RankedGroup[] | null>(null);
   const analysisRetryLocks = useRef(new Set<string>());
   const analysisPreparationLocks = useRef(new Set<string>());
   const autoRunLocks = useRef(new Set<string>());
   const projectsRef = useRef<Project[]>(projects);
 
+  function specialistToActivityStep(specialist?:string):ActivityFilter {
+    const key = String(specialist || "").toUpperCase();
+    if (["IDEIAS","SCOUT"].includes(key)) return "IDEIA";
+    if (key === "ROTEIRO") return "ROTEIRO";
+    if (key === "PROMPTS") return "PROMPTS";
+    if (key === "ANALISTA") return "ANALISTA";
+    if (["REFINADOR","GERADOR","FALLBACK"].includes(key)) return "IMAGENS";
+    if (key === "THUMB") return "THUMB";
+    if (key === "YOUTUBE") return "METADADOS";
+    return "TODOS";
+  }
+
+  function activityStepStatus(project:Project, step:ActivityFilter) {
+    if (step === "IDEIA") return project.ideaText ? "CONCLUÍDA" : project.autoRunStep === "IDEIA" ? project.autoRunMessage || "EM ANDAMENTO" : "AGUARDANDO";
+    if (step === "ROTEIRO") return project.scriptText ? "CONCLUÍDO" : project.autoRunStep === "ROTEIRO" ? project.autoRunMessage || "EM ANDAMENTO" : "AGUARDANDO";
+    if (step === "PROMPTS") return project.promptText ? "CONCLUÍDOS" : project.autoRunStep === "PROMPTS" ? project.autoRunMessage || "EM ANDAMENTO" : "AGUARDANDO";
+    if (step === "COLLECTOR") return project.analysisPreparationStage ? preparationStageLabel(project) : project.autoRunStep === "COLLECTOR" ? project.autoRunMessage || "COLETANDO" : project.packageCode ? "CONCLUÍDO" : "AGUARDANDO";
+    if (step === "ANALISTA") return project.analysisStatus || (project.autoRunStep === "ANALISTA" ? project.autoRunMessage || "EM ANDAMENTO" : "AGUARDANDO");
+    if (step === "IMAGENS") return project.pipelineStatus || (project.autoRunStep === "IMAGENS" ? project.autoRunMessage || "EM ANDAMENTO" : "AGUARDANDO");
+    if (step === "THUMB") return project.thumbStatus || (project.thumbUrl ? "CONCLUÍDA" : "AGUARDANDO");
+    if (step === "METADADOS") return project.youtubeStatus || (project.youtubeMetadata ? "CONCLUÍDOS" : settings.youtubeParallel ? "AGUARDANDO" : "DESATIVADO");
+    if (step === "CONSOLIDANDO") return project.finalZipStatus || "AGUARDANDO";
+    if (step === "CONCLUIDO") return project.autoRunStatus === "DONE" ? "CONCLUÍDO" : "AGUARDANDO";
+    return project.autoRunMessage || project.pipelineStatus || "ACOMPANHANDO";
+  }
+
+  async function refreshActivity(projectId = activeId) {
+    setActivityLoading(true);
+    try {
+      const response = await getCorvoBridgeJobActivity();
+      setActivityJobs((response.jobs || []).filter((job) => job.projectId === projectId));
+      setActivityError("");
+      setActivityUpdatedAt(Date.now());
+    } catch (error) {
+      setActivityError(bridgeErrorMessage(error));
+    } finally { setActivityLoading(false); }
+  }
+
+  function openActivity(step:ActivityFilter = "TODOS") {
+    setActivityFilter(step);
+    setActivityOpen(true);
+    void refreshActivity(activeId);
+  }
+
+  async function openBridgeConversation(job:CorvoBridgeJobActivity) {
+    try {
+      await focusCorvoBridgeJob(job.jobId);
+    } catch (error) {
+      if (job.conversationUrl) { window.open(job.conversationUrl, "_blank", "noopener,noreferrer"); return; }
+      setActivityError(bridgeErrorMessage(error));
+    }
+  }
+
   useEffect(() => { projectsRef.current = projects; localStorage.setItem("corvoquiz-projects-v02", JSON.stringify(projects)); }, [projects]);
   useEffect(() => { localStorage.setItem("corvo-collector-settings-v02", JSON.stringify(settings)); }, [settings]);
+  useEffect(() => {
+    if (!activityOpen) return;
+    void refreshActivity(activeId);
+    const timer = window.setInterval(() => void refreshActivity(activeId), 2500);
+    return () => window.clearInterval(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activityOpen, activeId]);
   useEffect(() => {
     function onBridgeStatus(event:MessageEvent) {
       if (event.source !== window || event.data?.source !== "CORVO_BRIDGE" || event.data?.type !== "CORVO_BRIDGE_STATUS") return;
@@ -298,8 +375,9 @@ export default function Home() {
         USER_MESSAGE_COMMITTED:"ANALISTA · MENSAGEM ENVIADA",
         MESSAGE_CONFIRMED:"ANALISTA · MENSAGEM CONFIRMADA",
         SEND_PENDING_RECOVERY:"ANALISTA · ENVIO PRESERVADO PARA RETOMADA",
-        FOCUSED_RETRY:"ANALISTA · RETRY COM ABA ATIVA",
-        WAITING_ACTION:"ANALISTA PROCESSANDO",
+        BACKGROUND_RETRY:"ANALISTA · RETRY EM SEGUNDO PLANO",
+        WAITING_PREVIOUS_RESPONSE:"ANALISTA · RESPOSTA ANTERIOR EM ANDAMENTO",
+        WAITING_ACTION:"ANALISTA PROCESSANDO · SEM REENVIO",
       };
       const label = labels[state];
       if (!label) return;
@@ -333,16 +411,29 @@ export default function Home() {
         });
         setTimeout(() => void startImageFlow({ ...project, ...EMPTY_IMAGE_PIPELINE }, { automaticRun:true, skipParallelBranches:true, selectionMode:"AUTO" }), 800);
       } else if (hasPreparedAnalysis(project)) {
-        const retryAt = project.analysisRetryAt || new Date(Date.now() + 45_000).toISOString();
-        patchProject(project.id, {
-          autoRunStatus:"RUNNING",
-          autoRunStep:"ANALISTA",
-          autoRunMessage:`Pacote do Analista preservado após recarga. ${analysisRetryLabel(retryAt)}.`,
-          autoRunError:undefined,
-          analysisRetryAt:retryAt,
-          analysisStatus:"PACOTE SALVO · AGUARDANDO ANALISTA",
-          pipelineStatus:"AGUARDANDO ANALISTA",
-        });
+        if (analysisMessageCommitted(project)) {
+          patchProject(project.id, {
+            autoRunStatus:"RUNNING",
+            autoRunStep:"ANALISTA",
+            autoRunMessage:"O Analista já recebeu o ZIP. Aguardando a Action sem reenviar o prompt.",
+            autoRunError:undefined,
+            analysisRetryAt:undefined,
+            analysisStatus:"ANALISTA PROCESSANDO · SEM REENVIO",
+            pipelineStatus:"ANALISANDO IMAGENS",
+          });
+          setTimeout(() => void resumePreparedAnalysis(project.id, false), 800);
+        } else {
+          const retryAt = project.analysisRetryAt || new Date(Date.now() + 45_000).toISOString();
+          patchProject(project.id, {
+            autoRunStatus:"RUNNING",
+            autoRunStep:"ANALISTA",
+            autoRunMessage:`Pacote do Analista preservado após recarga. ${analysisRetryLabel(retryAt)}.`,
+            autoRunError:undefined,
+            analysisRetryAt:retryAt,
+            analysisStatus:"PACOTE SALVO · AGUARDANDO ANALISTA",
+            pipelineStatus:"AGUARDANDO ANALISTA",
+          });
+        }
       } else if (hasAnalysisPreparationCheckpoint(project)) {
         const retryAt = project.analysisPreparationRetryAt || new Date(Date.now() + 20_000).toISOString();
         patchProject(project.id, {
@@ -355,7 +446,13 @@ export default function Home() {
           pipelineStatus:"CHECKPOINT DO ANALISTA SALVO",
         });
       } else {
-        patchProject(project.id, { autoRunStatus:"ERROR", autoRunStep:"ERRO", autoRunMessage:"A página foi recarregada durante o automático.", autoRunError:"A execução automática foi interrompida antes de existir um checkpoint reutilizável. Use RETOMAR dentro deste projeto ou inicie uma nova produção automática pelo botão superior." });
+        patchProject(project.id, {
+          autoRunStatus:"RUNNING",
+          autoRunStep:project.ideaText ? project.scriptText ? project.promptText ? "COLLECTOR" : "PROMPTS" : "ROTEIRO" : "IDEIA",
+          autoRunMessage:"Produção automática recuperada. Retomando sozinha do último ponto salvo...",
+          autoRunError:undefined,
+        });
+        setTimeout(() => void runAutomaticProduction(project.id), 900);
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -367,10 +464,16 @@ export default function Home() {
       for (const project of projectsRef.current) {
         if (hasPreparedAnalysis(project)) {
           if (analysisRetryLocks.current.has(project.id)) continue;
+          // Depois que a mensagem entrou na conversa, tempo NÃO significa falha.
+          // O Analista pode levar muito tempo em ZIPs grandes; apenas retomamos o polling da Action.
+          if (analysisMessageCommitted(project)) {
+            void resumePreparedAnalysis(project.id, false);
+            continue;
+          }
           const retryAt = project.analysisRetryAt ? new Date(project.analysisRetryAt).getTime() : 0;
           const lastDispatch = project.analysisLastDispatchAt ? new Date(project.analysisLastDispatchAt).getTime() : 0;
-          const staleProcessing = !retryAt && lastDispatch > 0 && now - lastDispatch >= 30 * 60_000;
-          if ((retryAt > 0 && retryAt <= now) || staleProcessing) void resumePreparedAnalysis(project.id, false);
+          const staleBeforeCommit = !retryAt && lastDispatch > 0 && now - lastDispatch >= 30 * 60_000;
+          if ((retryAt > 0 && retryAt <= now) || staleBeforeCommit) void resumePreparedAnalysis(project.id, false);
           continue;
         }
         if (hasAnalysisPreparationCheckpoint(project) && !analysisPreparationLocks.current.has(project.id)) {
@@ -379,6 +482,24 @@ export default function Home() {
         }
       }
     }, 12_000);
+    return () => window.clearInterval(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    // Supervisor do AUTOMÁTICO TOTAL: se uma rotina assíncrona terminar, a página
+    // recarregar ou um retry liberar, o fluxo volta a andar sem clique do usuário.
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      for (const project of projectsRef.current) {
+        if (project.autoRunStatus !== "RUNNING") continue;
+        if (autoRunLocks.current.has(project.id)) continue;
+        if (analysisRetryLocks.current.has(project.id) || analysisPreparationLocks.current.has(project.id)) continue;
+        if (hasPreparedAnalysis(project) || hasAnalysisPreparationCheckpoint(project)) continue;
+        const retryAt = project.autoRunRetryAt ? new Date(project.autoRunRetryAt).getTime() : 0;
+        if (retryAt > now) continue;
+        void runAutomaticProduction(project.id);
+      }
+    }, 5000);
     return () => window.clearInterval(timer);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -661,32 +782,55 @@ export default function Home() {
   }
 
   async function runAutomaticIdeaDiscovery(project:Project) {
-    updateAutoRun(project.id, "IDEIA", "O Corvo Scout está descobrindo e escolhendo a melhor ideia para esta produção...");
-    const response = await fetch("/api/corvo/job", {
-      method:"POST",
-      headers:{ "content-type":"application/json" },
-      body:JSON.stringify({
-        specialist:"IDEIAS",
-        tema:null,
-        format:project.format,
-        quantity:project.quantity,
-        mode:project.mode,
-        automaticTotal:true,
-        recentes:projectsRef.current
-          .filter((item) => item.id !== project.id && item.ideaText)
-          .slice(0, 12)
-          .map((item) => ({ titulo:item.title, tema:item.topic })),
-      }),
-    });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok || !result?.jobId || !result?.prompt) throw new Error(result?.message || "Não foi possível iniciar a descoberta automática de ideias.");
-    const scoutJobId = String(result.jobId);
-    await dispatchCorvoBridge({
-      jobId:scoutJobId,
-      prompt:result.prompt,
-      specialist:"SCOUT",
-      meta:{ projectId:project.id, automaticTotal:true, fromScratch:true },
-    });
+    updateAutoRun(project.id, "IDEIA", "O Corvo Scout está descobrindo a melhor ideia automaticamente...");
+    let live = latestProject(project.id) || project;
+    let scoutJobId = live.autoIdeaJobId;
+    let scoutPrompt = live.autoIdeaPrompt;
+
+    if (!scoutJobId || !scoutPrompt) {
+      const response = await fetch("/api/corvo/job", {
+        method:"POST",
+        headers:{ "content-type":"application/json" },
+        body:JSON.stringify({
+          specialist:"IDEIAS",
+          tema:null,
+          format:project.format,
+          quantity:project.quantity,
+          mode:project.mode,
+          automaticTotal:true,
+          recentes:projectsRef.current
+            .filter((item) => item.id !== project.id && item.ideaText)
+            .slice(0, 12)
+            .map((item) => ({ titulo:item.title, tema:item.topic })),
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result?.jobId || !result?.prompt) throw new Error(result?.message || "Não foi possível iniciar a descoberta automática de ideias.");
+      scoutJobId = String(result.jobId);
+      scoutPrompt = String(result.prompt);
+      patchProject(project.id, {
+        autoIdeaJobId:scoutJobId,
+        autoIdeaPrompt:scoutPrompt,
+        autoIdeaDispatchedAt:undefined,
+        autoRunStep:"IDEIA",
+        autoRunMessage:"Ideia criada no orquestrador. Enviando ao Corvo Scout em segundo plano...",
+      });
+      live = latestProject(project.id) || live;
+    }
+
+    if (!live.autoIdeaDispatchedAt) {
+      await dispatchCorvoBridge({
+        jobId:scoutJobId,
+        prompt:scoutPrompt,
+        specialist:"SCOUT",
+        meta:{ projectId:project.id, automaticTotal:true, fromScratch:true },
+      });
+      patchProject(project.id, {
+        autoIdeaDispatchedAt:new Date().toISOString(),
+        autoRunStep:"IDEIA",
+        autoRunMessage:"Corvo Scout trabalhando em segundo plano. O resultado será capturado automaticamente.",
+      });
+    }
 
     while (autoRunLocks.current.has(project.id)) {
       await wait(2200);
@@ -704,19 +848,28 @@ export default function Home() {
           topic:String(chosen.tema || "QUIZ"),
           ideaText:ideaSection(rawResult, chosen),
           stage:2,
+          autoIdeaJobId:undefined,
+          autoIdeaPrompt:undefined,
+          autoIdeaDispatchedAt:undefined,
+          autoRunRetryAt:undefined,
+          autoRunRetryCount:0,
         };
         patchProject(project.id, updated);
+        updateAutoRun(project.id, "ROTEIRO", "Ideia escolhida automaticamente. Iniciando o roteiro...");
         return updated;
       }
-      if (status.status === "ERROR") throw new Error(status?.message || "O Corvo Scout não conseguiu concluir a descoberta automática.");
+      if (status.status === "ERROR") throw new Error(status?.message || status?.error || "O Corvo Scout não conseguiu concluir a descoberta automática.");
     }
     throw new Error("AUTOMATIC_CANCELLED");
   }
 
   async function runAutomaticSpecialist(kind:WorkflowKind, project:Project) {
     if (kind === "PROMPTS" && !project.scriptText?.trim()) throw new Error("O roteiro precisa estar pronto antes dos prompts.");
-    let jobId = project.autoWorkflowKind === kind ? project.autoWorkflowJobId : undefined;
-    if (!jobId) {
+    let live = latestProject(project.id) || project;
+    let jobId = live.autoWorkflowKind === kind ? live.autoWorkflowJobId : undefined;
+    let prompt = live.autoWorkflowKind === kind ? live.autoWorkflowPrompt : undefined;
+
+    if (!jobId || !prompt) {
       const response = await fetch("/api/corvo/job", {
         method:"POST",
         headers:{ "content-type":"application/json" },
@@ -729,17 +882,32 @@ export default function Home() {
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok || !result?.jobId || !result?.prompt) throw new Error(result?.message || `Não foi possível criar ${kind}.`);
-      await dispatchCorvoBridge({
-        jobId:result.jobId, prompt:result.prompt, specialist:kind,
-        meta:{ projectId:project.id, automaticTotal:true },
+      jobId = String(result.jobId);
+      prompt = String(result.prompt);
+      patchProject(project.id, {
+        autoWorkflowJobId:jobId,
+        autoWorkflowKind:kind,
+        autoWorkflowPrompt:prompt,
+        autoWorkflowDispatchedAt:undefined,
+        autoRunStep:kind,
+        autoRunMessage:`${kind === "ROTEIRO" ? "Roteiro" : "Prompts"} preparado. Enviando ao especialista em segundo plano...`,
       });
-      jobId = result.jobId;
-      patchProject(project.id, { autoWorkflowJobId:jobId, autoWorkflowKind:kind });
+      live = latestProject(project.id) || live;
     }
 
-    if (!jobId) throw new Error(`Não foi possível determinar o JOB_ID de ${kind}.`);
-    const activeJobId = jobId;
+    if (!live.autoWorkflowDispatchedAt) {
+      await dispatchCorvoBridge({
+        jobId, prompt, specialist:kind,
+        meta:{ projectId:project.id, automaticTotal:true },
+      });
+      patchProject(project.id, {
+        autoWorkflowDispatchedAt:new Date().toISOString(),
+        autoRunStep:kind,
+        autoRunMessage:`${kind === "ROTEIRO" ? "Roteiro" : "Prompts"} em processamento no GPT. A continuação é automática.`,
+      });
+    }
 
+    const activeJobId = jobId;
     while (autoRunLocks.current.has(project.id)) {
       await wait(2200);
       const response = await fetch(`/api/corvo/resultado?jobId=${encodeURIComponent(activeJobId)}`, { cache:"no-store" });
@@ -750,10 +918,12 @@ export default function Home() {
         const output = String(status.resultado || "").trim();
         if (!output) throw new Error(`${kind} concluiu sem devolver conteúdo.`);
         const current = latestProject(project.id) || project;
+        const clearWorkflow = { autoWorkflowJobId:undefined, autoWorkflowKind:undefined, autoWorkflowPrompt:undefined, autoWorkflowDispatchedAt:undefined, autoRunRetryAt:undefined, autoRunRetryCount:0 };
         const updated:Project = kind === "ROTEIRO"
-          ? { ...current, stage:3, scriptText:output, promptText:undefined, ...EMPTY_IMAGE_PIPELINE, autoWorkflowJobId:undefined, autoWorkflowKind:undefined }
-          : { ...current, stage:4, promptText:output, ...EMPTY_IMAGE_PIPELINE, autoWorkflowJobId:undefined, autoWorkflowKind:undefined };
+          ? { ...current, stage:3, scriptText:output, promptText:undefined, ...EMPTY_IMAGE_PIPELINE, ...clearWorkflow }
+          : { ...current, stage:4, promptText:output, ...EMPTY_IMAGE_PIPELINE, ...clearWorkflow };
         patchProject(project.id, updated);
+        updateAutoRun(project.id, kind === "ROTEIRO" ? "PROMPTS" : "COLLECTOR", kind === "ROTEIRO" ? "Roteiro recebido. Iniciando prompts automaticamente..." : "Prompts recebidos. Preparando o Collector automaticamente...");
         return updated;
       }
       if (status.status === "ERROR") throw new Error(status?.error || status?.manifest?.reason || `${kind} informou uma falha.`);
@@ -783,21 +953,11 @@ export default function Home() {
     if (!initial) return;
     autoRunLocks.current.add(projectId);
     const startedAt = initial.autoRunStatus === "RUNNING" && initial.autoRunStartedAt ? initial.autoRunStartedAt : new Date().toISOString();
-    patchProject(projectId, { autoRunStatus:"RUNNING", autoRunStep:"VALIDANDO", autoRunMessage:"Validando Bridge, Collector e armazenamento...", autoRunError:undefined, autoRunStartedAt:startedAt, autoRunCompletedAt:undefined });
+    const initialStep:AutoRunStep = initial.ideaText ? initial.scriptText ? initial.promptText ? "COLLECTOR" : "PROMPTS" : "ROTEIRO" : "IDEIA";
+    patchProject(projectId, { autoRunStatus:"RUNNING", autoRunStep:initialStep, autoRunMessage:"Automático ativo. Retomando do último ponto salvo...", autoRunError:undefined, autoRunStartedAt:startedAt, autoRunCompletedAt:undefined, autoRunRetryAt:undefined });
     setNotice("MODO AUTOMÁTICO TOTAL INICIADO.");
     setTimeout(() => setNotice(""), 2400);
     try {
-      await ensurePipelineStorageReady();
-      const preflightProject = latestProject(projectId) || initial;
-      const needsCollectorNow = !(preflightProject.pipelineStatus === "IMAGENS FINAIS PRONTAS" && consolidationState(preflightProject).ready)
-        && !hasPreparedAnalysis(preflightProject)
-        && !hasAnalysisPreparationCheckpoint(preflightProject);
-      if (needsCollectorNow) {
-        const ping = await sendCollectorMessage<{ok?:boolean;authorized?:boolean;error?:string}>("PING", undefined, settings.extensionId);
-        if (!ping?.ok) throw new Error(ping?.error || "COLLECTOR_CONNECTION_ERROR");
-        if (ping.authorized === false) throw new Error("ORIGIN_NOT_AUTHORIZED");
-      }
-
       let project = latestProject(projectId) || initial;
       if (!project.ideaText?.trim()) {
         project = await runAutomaticIdeaDiscovery(project);
@@ -812,10 +972,21 @@ export default function Home() {
       }
 
       project = latestProject(projectId) || project;
-      updateAutoRun(projectId, "COLLECTOR", "Collector trabalhando. Todas as candidatas seguirão ao Analista...");
+      const imagesAlreadyReady = project.pipelineStatus === "IMAGENS FINAIS PRONTAS" && consolidationState(project).ready;
+      const pipelineRoutingExists = hasPipelineRoutingCheckpoint(project);
+      const needsCollectorNow = !imagesAlreadyReady && !pipelineRoutingExists && !hasPreparedAnalysis(project) && !hasAnalysisPreparationCheckpoint(project);
+      if (needsCollectorNow) {
+        updateAutoRun(projectId, "COLLECTOR", "Ideia, roteiro e prompts concluídos. Validando R2 e Collector somente agora...");
+        await ensurePipelineStorageReady();
+        const ping = await sendCollectorMessage<{ok?:boolean;authorized?:boolean;error?:string}>("PING", undefined, settings.extensionId);
+        if (!ping?.ok) throw new Error(ping?.error || "COLLECTOR_CONNECTION_ERROR");
+        if (ping.authorized === false) throw new Error("ORIGIN_NOT_AUTHORIZED");
+      }
+      updateAutoRun(projectId, pipelineRoutingExists ? "IMAGENS" : "COLLECTOR", pipelineRoutingExists
+        ? "Checkpoint de Refinador/Gerador encontrado. Retomando os mesmos jobs/lotes sem repetir o Collector..."
+        : "Collector trabalhando em segundo plano. Todas as candidatas seguirão ao Analista automaticamente...");
       if (!project.thumbUrl) void startThumbBranch(project);
       if (settings.youtubeParallel && !project.youtubeMetadata) void startYoutubeBranch(project);
-      const imagesAlreadyReady = project.pipelineStatus === "IMAGENS FINAIS PRONTAS" && consolidationState(project).ready;
       const imageOk = imagesAlreadyReady ? true : await startImageFlow(project, { automaticRun:true, skipParallelBranches:true, selectionMode:"AUTO" });
       if (!imageOk) {
         const waitingProject = latestProject(projectId);
@@ -865,8 +1036,29 @@ export default function Home() {
         });
         setNotice("PREPARAÇÃO DO ANALISTA PRESERVADA · RETOMADA AUTOMÁTICA PROGRAMADA.");
         setTimeout(() => setNotice(""), 5200);
+      } else if (isAutomaticTransientError(error)) {
+        const current = latestProject(projectId);
+        const retryCount = Math.min(6, Number(current?.autoRunRetryCount || 0) + 1);
+        if (retryCount <= 5) {
+          const delays = [15_000, 30_000, 60_000, 120_000, 180_000];
+          const retryAt = new Date(Date.now() + delays[Math.min(retryCount - 1, delays.length - 1)]).toISOString();
+          patchProject(projectId, {
+            autoRunStatus:"RUNNING",
+            autoRunStep:current?.autoRunStep || initialStep,
+            autoRunMessage:`Falha transitória. O automático tentará novamente sozinho (${analysisRetryLabel(retryAt)}).`,
+            autoRunError:message,
+            autoRunRetryAt:retryAt,
+            autoRunRetryCount:retryCount,
+          });
+          setNotice("AUTOMÁTICO AGUARDANDO RETRY · NÃO PRECISA CLICAR.");
+          setTimeout(() => setNotice(""), 4200);
+        } else {
+          patchProject(projectId, { autoRunStatus:"ERROR", autoRunStep:"ERRO", autoRunMessage:"O automático parou após várias tentativas consecutivas.", autoRunError:message, autoRunRetryAt:undefined });
+          setNotice(`AUTOMÁTICO PAROU: ${message}`);
+          setTimeout(() => setNotice(""), 6500);
+        }
       } else {
-        patchProject(projectId, { autoRunStatus:"ERROR", autoRunStep:"ERRO", autoRunMessage:"O automático parou porque precisa de atenção.", autoRunError:message });
+        patchProject(projectId, { autoRunStatus:"ERROR", autoRunStep:"ERRO", autoRunMessage:"O automático parou porque precisa de atenção.", autoRunError:message, autoRunRetryAt:undefined });
         setNotice(`AUTOMÁTICO PAROU: ${message}`);
         setTimeout(() => setNotice(""), 6500);
       }
@@ -935,6 +1127,12 @@ export default function Home() {
       setNotice("NÃO FOI POSSÍVEL COPIAR AUTOMATICAMENTE.");
     }
     setTimeout(() => setNotice(""), 3000);
+  }
+
+  function isAutomaticTransientError(error:unknown) {
+    const message = String(error instanceof Error ? error.message : error || "").toUpperCase();
+    if (/R2_(NOT_CONFIGURED|ENDPOINT_INVALID|BUCKET_NOT_FOUND|ACCESS_KEY_INVALID|SIGNATURE_FAILED|ACCESS_DENIED)|ORIGIN_NOT_AUTHORIZED|GPT_URL_NOT_CONFIGURED|TRATAMENTO_MANUAL_NECESSARIO/.test(message)) return false;
+    return /CORVO_BRIDGE|GPT_SEND|GPT_CONTENT|PROGRESS_TIMEOUT|HARD_TIMEOUT|FETCH FAILED|NETWORK|TIMEOUT|COLLECTOR_CONNECTION_ERROR|JOB_ALREADY_RUNNING|PACKAGE_ALREADY_RUNNING|TEMPORAR|HTTP 5\d\d/.test(message);
   }
 
   function friendlyError(error:unknown) {
@@ -1114,6 +1312,13 @@ export default function Home() {
       setImageMessage("Checkpoint antigo do Vercel Blob detectado. Recuperando o resultado do Collector para gravar um novo pacote no R2...");
       setImageStatusLine("MIGRAÇÃO DE STORAGE · VERCEL BLOB → CLOUDFLARE R2");
     }
+    if (hasPipelineRoutingCheckpoint(project)) {
+      runToken.current = Math.max(1, runToken.current);
+      setImageOpen(true); setImagePhase("searching"); setImageProgress(90);
+      setImageMessage("Pipeline de imagens já existe. Retomando os lotes salvos sem voltar ao Collector...");
+      setImageStatusLine("CHECKPOINT DO PIPELINE · RETOMADA SEM NOVA COLETA");
+      return await runRoutedPipeline(project, project.pipelineItems || []);
+    }
     if (hasPreparedAnalysis(project) && project.pipelineStatus !== "IMAGENS FINAIS PRONTAS") {
       return await resumePreparedAnalysis(project.id, !options.automaticRun);
     }
@@ -1211,7 +1416,26 @@ export default function Home() {
   function updatePipelineItem(projectId:string, itemId:string, patch:Partial<PipelineItem>) {
     setProjects((current) => {
       const next = current.map((project) => project.id === projectId
-        ? { ...project, pipelineItems:(project.pipelineItems || []).map((item) => item.id === itemId ? { ...item, ...patch } : item) }
+        ? { ...project, pipelineItems:(project.pipelineItems || []).map((item) => {
+            if (item.id !== itemId) return item;
+            const lockedFile = String(item.selectedFile || item.sourceFile || "").trim();
+            const requestedFile = String(patch.sourceFile || "").trim();
+            if (lockedFile && requestedFile && requestedFile.toLowerCase() !== lockedFile.toLowerCase()) {
+              return {
+                ...item,
+                status:"SELECTED_FILE_MISMATCH",
+                errorCode:"SELECTED_FILE_MISMATCH",
+                error:`Arquivo imutável do Analista: ${lockedFile}. O pipeline tentou trocar para ${requestedFile}.`,
+                finalFailure:true,
+              };
+            }
+            const merged = { ...item, ...patch };
+            if (lockedFile) {
+              merged.selectedFile = lockedFile;
+              merged.sourceFile = lockedFile;
+            }
+            return merged;
+          }) }
         : project);
       projectsRef.current = next;
       return next;
@@ -1228,13 +1452,34 @@ export default function Home() {
     });
   }
 
-  async function runGeneratorSerialized<T>(task:()=>Promise<T>):Promise<T> {
-    const previous = generatorQueue.current;
-    let release = () => {};
-    generatorQueue.current = new Promise<void>((resolve) => { release = resolve; });
-    await previous.catch(() => {});
-    try { return await task(); }
-    finally { release(); }
+  function chunkPipelineItems<T>(items:T[], size = PIPELINE_BATCH_SIZE) {
+    const chunks:T[][] = [];
+    for (let index = 0; index < items.length; index += size) chunks.push(items.slice(index, index + size));
+    return chunks;
+  }
+
+  function retryAwareChunks(items:PipelineItem[]) {
+    const groups = new Map<string,PipelineItem[]>();
+    for (const item of items) {
+      const key = `${String(item.routeConversationUrl || "__NEW__")}|A${Math.max(1, Number(item.tentativaAtual || 1))}`;
+      const group = groups.get(key) || [];
+      group.push(item);
+      groups.set(key, group);
+    }
+    return [...groups.values()].flatMap((group) => chunkPipelineItems(group));
+  }
+
+  async function runPool<T>(tasks:Array<()=>Promise<T>>, concurrency:number) {
+    const results:T[] = new Array(tasks.length);
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < tasks.length) {
+        const index = cursor++;
+        results[index] = await tasks[index]();
+      }
+    };
+    await Promise.all(Array.from({ length:Math.min(Math.max(1, concurrency), Math.max(1, tasks.length)) }, () => worker()));
+    return results;
   }
 
   async function createPipelineJob(specialist:"ANALISTA"|"REFINADOR"|"GERADOR"|"FALLBACK"|"YOUTUBE", project:Project, entrada:string, ids:string[] = [], tentativaAtual = 1, origem?:"GERADOR"|"REFINADOR") {
@@ -1261,53 +1506,67 @@ export default function Home() {
     return result as {jobId:string;prompt:string;uploadToken:string;status:string};
   }
 
-  async function pollPipelineJob(jobId:string, projectId:string, itemId?:string, captureType?:"REFINED_IMAGE"|"GENERATED_IMAGE") {
-    let captureAttempts = 0;
+  async function pollPipelineBatchJob(jobId:string, projectId:string, itemIds:string[], captureType?:"REFINED_IMAGE"|"GENERATED_IMAGE") {
+    const captureAttempts = new Map<string,number>();
     while (runToken.current > 0) {
       await wait(2500);
       const response = await fetch(`/api/corvo/resultado?jobId=${encodeURIComponent(jobId)}`, { cache:"no-store" });
       const status = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(status?.message || "Não foi possível acompanhar o trabalho.");
-      if (itemId) updatePipelineItem(projectId, itemId, { status:status.status || "PROCESSANDO" });
+      if (!response.ok) throw Object.assign(new Error(status?.message || "Não foi possível acompanhar o trabalho em lote."), { corvoStatus:status });
+      for (const itemId of itemIds) updatePipelineItem(projectId, itemId, { status:status.status || "PROCESSANDO" });
       if (status.status === "WAITING_FILE" && captureType) {
         const expectedFiles = Array.isArray(status.expectedFiles) && status.expectedFiles.length ? status.expectedFiles : [status.expectedFile].filter(Boolean);
-        for (const expectedFile of expectedFiles) {
-          if (Array.isArray(status.files) && status.files.some((file:any) => String(file?.name || "").toLowerCase() === String(expectedFile).toLowerCase())) continue;
-          captureAttempts += 1;
-          if (itemId) updatePipelineItem(projectId, itemId, { status:"CAPTURANDO_ARQUIVO" });
-          try { await captureCorvoBridgeFile(jobId, String(expectedFile), captureType, 180000); }
+        for (const expectedFileRaw of expectedFiles) {
+          const expectedFile = String(expectedFileRaw || "");
+          if (!expectedFile) continue;
+          if (Array.isArray(status.files) && status.files.some((file:any) => String(file?.name || "").toLowerCase() === expectedFile.toLowerCase())) continue;
+          const attempts = (captureAttempts.get(expectedFile) || 0) + 1;
+          captureAttempts.set(expectedFile, attempts);
+          for (const itemId of itemIds) updatePipelineItem(projectId, itemId, { status:`CAPTURANDO_LOTE_${captureType === "REFINED_IMAGE" ? "REFINADOR" : "GERADOR"}` });
+          try { await captureCorvoBridgeFile(jobId, expectedFile, captureType, 180000); }
           catch (error) {
-            if (captureAttempts >= 3) throw error;
+            if (attempts >= 3) throw Object.assign(error instanceof Error ? error : new Error(String(error)), { corvoStatus:status });
             await wait(5000);
           }
         }
         continue;
       }
-      if (status.status === "DONE") {
-        await completeCorvoBridgeJob(jobId).catch(() => {});
-        return status;
-      }
-      if (status.status === "ERROR") {
-        const failure = new Error(status.error || status.manifest?.reason || status.manifest?.errorCode || "O especialista informou uma falha.");
-        throw Object.assign(failure, { corvoStatus:status });
+      if (status.status === "DONE" || status.status === "ERROR") {
+        const completion = await completeCorvoBridgeJob(jobId).catch(() => null);
+        return { ...status, bridgeConversationUrl:String(completion?.conversationUrl || "") };
       }
     }
     throw new Error("PIPELINE_INTERRUPTED");
   }
 
-  async function runRoutedItem(project:Project, item:PipelineItem) {
+  async function pollPipelineJob(jobId:string, projectId:string, itemId?:string, captureType?:"REFINED_IMAGE"|"GENERATED_IMAGE") {
+    const status = await pollPipelineBatchJob(jobId, projectId, itemId ? [itemId] : [], captureType);
+    if (status.status === "ERROR") {
+      const failure = new Error(status.error || status.manifest?.reason || status.manifest?.errorCode || "O especialista informou uma falha.");
+      throw Object.assign(failure, { corvoStatus:status });
+    }
+    return status;
+  }
+
+  function buildRoutedBatchEntry(project:Project, item:PipelineItem) {
     const isRefiner = item.route === "REFINADOR";
+    const lockedSource = String(item.selectedFile || item.sourceFile || "").trim();
+    if (isRefiner && item.selectedFile && item.sourceFile && item.selectedFile.toLowerCase() !== item.sourceFile.toLowerCase()) {
+      throw new Error(`SELECTED_FILE_MISMATCH:${item.id}:${item.selectedFile}:${item.sourceFile}`);
+    }
     const baseRefinerInstruction = [
       "OBJETIVO_FINAL:",
-      "- preservar identidade, jogo, personagem, objeto e conteúdo principal;",
-      "- melhorar nitidez, definição, contraste, iluminação e enquadramento;",
-      item.refinement === "FORTE" ? "- adaptar para composição horizontal 16:9 quando necessário;" : "- fazer apenas melhoria técnica leve, sem recriar a cena;",
+      "- preservar integralmente a identidade e o conteúdo principal da candidata escolhida pelo Analista;",
+      "- melhorar nitidez, definição, contraste e iluminação sem substituir o elemento principal;",
+      item.refinement === "FORTE" ? "- pode reenquadrar cuidadosamente para 16:9 quando necessário;" : "- aplicar somente melhoria técnica leve, sem recriar a composição;",
       "- não adicionar títulos, legendas, logos ou marca-d'água;",
+      `- ARQUIVO_IMUTAVEL=${lockedSource || "N/A"}; não trocar por outra candidata.`,
     ].join("\n");
-    const entrada = isRefiner
+    return isRefiner
       ? [
           `[ID:${item.id}]`,
-          `ARQUIVO_ORIGINAL=${item.sourceFile || ""}`,
+          `ARQUIVO_ORIGINAL=${lockedSource}`,
+          `ARQUIVO_SELECIONADO_IMUTAVEL=${lockedSource}`,
           `STATUS_ORIGEM=${item.refinement === "FORTE" ? "PASSOU_COM_RESSALVAS" : "PASSOU"}`,
           `REFINAMENTO=${item.refinement || "LEVE"}`,
           `MOTIVO=${item.reason || "Imagem aprovada pelo Analista."}`,
@@ -1321,208 +1580,602 @@ export default function Home() {
           `IDENTIDADE_ESPERADA=${item.reason || project.topic}`,
           `PADRAO_ARQUIVO_FINAL=${item.finalFile}`,
         ].join("\n");
-    const attempt = item.tentativaAtual || 1;
-    const job = await createPipelineJob(item.route, project, entrada, [item.id], attempt);
-    updatePipelineItem(project.id, item.id, { jobId:job.jobId, status:"ENVIANDO", tentativaAtual:attempt, error:undefined, errorCode:undefined });
-    appendPipelineHistory(project.id, item.id, { at:new Date().toISOString(), attempt, specialist:item.route, status:"ENVIANDO", jobId:job.jobId });
-    await dispatchCorvoBridge({
-      jobId:job.jobId,
-      prompt:job.prompt,
-      specialist:item.route,
-      meta:{
-        projectId:project.id,
-        uploadToken:job.uploadToken,
-        appOrigin:window.location.origin,
-        expectedFile:item.finalFile,
-        attachments:isRefiner && item.sourceUrl ? [{ url:item.sourceUrl, name:item.sourceFile || `entrada_${item.id}.jpg`, contentType:"image/jpeg" }] : [],
-      },
-    });
-    updatePipelineItem(project.id, item.id, { status:"PROCESSANDO" });
-    const status = await pollPipelineJob(job.jobId, project.id, item.id, isRefiner ? "REFINED_IMAGE" : "GENERATED_IMAGE");
-    const expectedType = isRefiner ? "REFINED_IMAGE" : "GENERATED_IMAGE";
-    const file = Array.isArray(status.files) ? status.files.find((candidate:any) => candidate?.type === expectedType) || status.files.find((candidate:any) => candidate?.name === item.finalFile) : null;
-    if (!file?.url) throw Object.assign(new Error(`${item.route} concluiu sem devolver o arquivo real.`), { corvoStatus:status });
-    updatePipelineItem(project.id, item.id, { status:"CONCLUIDO", outputUrl:file.url, outputFile:file.name, error:undefined, errorCode:undefined, finalFailure:false });
-    appendPipelineHistory(project.id, item.id, { at:new Date().toISOString(), attempt, specialist:item.route, status:"CONCLUIDO", jobId:job.jobId });
-    return { ...item, jobId:job.jobId, status:"CONCLUIDO", outputUrl:file.url, outputFile:file.name, error:undefined, finalFailure:false } as PipelineItem;
   }
 
-  function structuredFailure(error:unknown, item:PipelineItem) {
-    const status = (error as any)?.corvoStatus;
-    const manifestItem = Array.isArray(status?.manifest?.items)
-      ? status.manifest.items.find((candidate:any) => String(candidate?.id || "") === String(item.id)) || status.manifest.items[0]
-      : undefined;
-    return {
-      status,
-      errorCode:String(manifestItem?.errorCode || status?.manifest?.errorCode || "TOOL_ERROR").toUpperCase(),
-      reason:String(manifestItem?.reason || status?.manifest?.reason || (error instanceof Error ? error.message : error) || "Falha sem motivo informado."),
-    };
+  function isTechnicalPipelineFailure(errorCode?:string, reason?:string) {
+    const text = `${errorCode || ""} ${reason || ""}`.toUpperCase();
+    return /(CORVO_BRIDGE|BRIDGE_BUSY|PROGRESS_TIMEOUT|HARD_TIMEOUT|ATTACHMENT_|GPT_SEND|COMPOSER_|SEND_CONTROL|SEND_BUTTON|CHATGPT_RATE_LIMITED|RATE_LIMITED|NETWORK|FETCH FAILED|TAB_CREATE|CONTENT_SCRIPT)/.test(text);
   }
 
-  async function runFallback(project:Project, item:PipelineItem, failure:{errorCode:string;reason:string}) {
-    const attempt = item.tentativaAtual || 1;
-    const originalInstruction = item.route === "GERADOR"
-      ? item.retryPrompt || item.generationPrompt || "Gerar imagem final conforme o contexto do projeto."
-      : item.retryPrompt || `Refinar ${item.sourceFile || item.id} com intensidade ${item.refinement || "LEVE"}, preservando identidade e conteúdo principal.`;
-    const entrada = [
-      `[ID:${item.id}]`,
-      `ORIGEM=${item.route}`,
-      `ERROR_CODE=${failure.errorCode}`,
-      `MOTIVO=${failure.reason}`,
-      item.route === "GERADOR" ? `PROMPT_ORIGINAL=${originalInstruction}` : `INSTRUCAO_ORIGINAL=${originalInstruction}`,
-      `CONTEXTO=${project.topic}. Projeto ${project.id}.`,
-      `IDENTIDADE=${item.reason || project.topic}`,
-      `TENTATIVA_ATUAL=${attempt}`,
-      "",
-      "Decida RETRY ou NAO_RECUPERAVEL. Não gere nem edite imagem nesta etapa.",
-    ].join("\n");
-    const job = await createPipelineJob("FALLBACK", project, entrada, [item.id], attempt, item.route);
-    updatePipelineItem(project.id, item.id, { fallbackJobId:job.jobId, status:"AGUARDANDO_FALLBACK", error:failure.reason, errorCode:failure.errorCode });
-    appendPipelineHistory(project.id, item.id, { at:new Date().toISOString(), attempt, specialist:"FALLBACK", status:"ENVIANDO", jobId:job.jobId, errorCode:failure.errorCode, reason:failure.reason });
-    await dispatchCorvoBridge({ jobId:job.jobId, prompt:job.prompt, specialist:"FALLBACK", meta:{ projectId:project.id, itemId:item.id } });
-    const status = await pollPipelineJob(job.jobId, project.id);
-    const decision = Array.isArray(status?.manifest?.items)
-      ? status.manifest.items.find((candidate:any) => String(candidate?.id || "") === String(item.id)) || status.manifest.items[0]
-      : undefined;
-    const fallbackStatus = String(decision?.status || "").toUpperCase();
-    const destination = String(decision?.destination || "").toUpperCase();
-    const promptRetry = String(decision?.retryPrompt || "");
-    appendPipelineHistory(project.id, item.id, {
-      at:new Date().toISOString(), attempt, specialist:"FALLBACK", status:fallbackStatus || "INVALID_OUTPUT", jobId:job.jobId,
-      errorCode:failure.errorCode, reason:String(decision?.reason || failure.reason), destination, promptRetry,
-    });
-    return { fallbackStatus, destination, promptRetry, reason:String(decision?.reason || failure.reason), jobId:job.jobId };
-  }
-
-  async function runRoutedWithFallback(project:Project, initialItem:PipelineItem) {
-    let item = { ...initialItem, tentativaAtual:initialItem.tentativaAtual || 1 };
-    while ((item.tentativaAtual || 1) <= MAX_PIPELINE_ATTEMPTS) {
+  async function dispatchPipelineJobResilient(payload:{jobId:string;prompt:string;specialist:string;meta:Record<string,unknown>}, projectId:string, itemIds:string[]) {
+    let lastError:unknown = null;
+    for (let dispatchAttempt = 0; dispatchAttempt < 3; dispatchAttempt++) {
       try {
-        const output = item.route === "GERADOR"
-          ? await runGeneratorSerialized(() => runRoutedItem(project, item))
-          : await runRoutedItem(project, item);
-        return { ok:true as const, item:output };
+        return await dispatchCorvoBridge({
+          ...payload,
+          meta:{ ...payload.meta, forceNewConversation:dispatchAttempt === 0 ? payload.meta.forceNewConversation !== false : false },
+        });
       } catch (error) {
-        const failure = structuredFailure(error, item);
-        appendPipelineHistory(project.id, item.id, {
-          at:new Date().toISOString(), attempt:item.tentativaAtual || 1, specialist:item.route, status:"FALHOU",
-          jobId:String(failure.status?.jobId || item.jobId || "") || undefined, errorCode:failure.errorCode, reason:failure.reason,
-        });
-        updatePipelineItem(project.id, item.id, { status:"FALHOU", error:failure.reason, errorCode:failure.errorCode });
-
-        if ((item.tentativaAtual || 1) >= MAX_PIPELINE_ATTEMPTS) {
-          updatePipelineItem(project.id, item.id, { status:"FALHA_FINAL", finalFailure:true, error:failure.reason, errorCode:failure.errorCode });
-          return { ok:false as const, item, error:failure.reason };
-        }
-
-        let fallback;
-        try { fallback = await runFallback(project, item, failure); }
-        catch (fallbackError) {
-          const message = bridgeErrorMessage(fallbackError);
-          appendPipelineHistory(project.id, item.id, {
-            at:new Date().toISOString(), attempt:item.tentativaAtual || 1, specialist:"FALLBACK", status:"FALHOU", reason:message,
-          });
-          updatePipelineItem(project.id, item.id, { status:"FALHA_FINAL", finalFailure:true, error:message });
-          return { ok:false as const, item, error:message };
-        }
-
-        if (fallback.fallbackStatus !== "RETRY") {
-          const message = fallback.reason || "Fallback marcou o ID como não recuperável.";
-          updatePipelineItem(project.id, item.id, { status:"NAO_RECUPERAVEL", finalFailure:true, error:message });
-          return { ok:false as const, item, error:message };
-        }
-        if (!["GERADOR","REFINADOR"].includes(fallback.destination) || !fallback.promptRetry) {
-          const message = "Fallback retornou RETRY sem DESTINO/PROMPT_RETRY válidos.";
-          updatePipelineItem(project.id, item.id, { status:"FALHA_FINAL", finalFailure:true, error:message });
-          return { ok:false as const, item, error:message };
-        }
-        if (fallback.destination === "REFINADOR" && !item.sourceUrl) {
-          const message = "Fallback apontou para o Refinador, mas este ID não possui imagem de origem disponível.";
-          updatePipelineItem(project.id, item.id, { status:"FALHA_FINAL", finalFailure:true, error:message });
-          return { ok:false as const, item, error:message };
-        }
-
-        const nextAttempt = (item.tentativaAtual || 1) + 1;
-        item = {
-          ...item,
-          route:fallback.destination as "GERADOR"|"REFINADOR",
-          tentativaAtual:nextAttempt,
-          retryPrompt:fallback.promptRetry,
-          fallbackJobId:fallback.jobId,
-          status:"RETRY_PENDENTE",
-          error:undefined,
-          errorCode:undefined,
-          finalFailure:false,
-        };
-        updatePipelineItem(project.id, item.id, {
-          route:item.route, tentativaAtual:item.tentativaAtual, retryPrompt:item.retryPrompt, fallbackJobId:item.fallbackJobId,
-          status:item.status, error:undefined, errorCode:undefined, finalFailure:false,
-        });
+        lastError = error;
+        const message = bridgeErrorMessage(error);
+        if (!isTechnicalPipelineFailure("", message) || dispatchAttempt >= 2) throw error;
+        const rateLimited = /RATE_LIMIT/i.test(message);
+        const delay = rateLimited ? (dispatchAttempt === 0 ? 180_000 : 300_000) : (dispatchAttempt === 0 ? 15_000 : 35_000);
+        const resumeAt = new Date(Date.now() + delay).toISOString();
+        for (const itemId of itemIds) updatePipelineItem(projectId, itemId, { status:rateLimited ? "PAUSADO_RATE_LIMIT" : "RETRY_TECNICO_MESMO_JOB", error:message, errorCode:rateLimited ? "CHATGPT_RATE_LIMITED" : "BRIDGE_TRANSIENT" });
+        setImageStatusLine(rateLimited
+          ? `LIMITE TEMPORÁRIO DO CHATGPT · LOTE PAUSADO · RETOMA ${analysisRetryLabel(resumeAt)}`
+          : `FALHA TÉCNICA TRANSITÓRIA · MESMO JOB/CONVERSA · ${analysisRetryLabel(resumeAt)}`);
+        await wait(delay);
       }
     }
-    return { ok:false as const, item, error:"Limite de tentativas atingido." };
+    throw lastError instanceof Error ? lastError : new Error(String(lastError || "CORVO_BRIDGE_ERROR"));
   }
 
+  function batchFailure(error:unknown, status:any, item:PipelineItem) {
+    const manifestItem = Array.isArray(status?.manifest?.items)
+      ? status.manifest.items.find((candidate:any) => String(candidate?.id || "") === String(item.id))
+      : undefined;
+    const errorCode = String(manifestItem?.errorCode || status?.manifest?.errorCode || (error instanceof Error && error.message.startsWith("SELECTED_FILE_MISMATCH") ? "SELECTED_FILE_MISMATCH" : "TOOL_ERROR")).toUpperCase();
+    const reason = String(manifestItem?.reason || status?.manifest?.reason || (error instanceof Error ? error.message : error) || "Falha sem motivo informado.");
+    return { errorCode, reason, technical:isTechnicalPipelineFailure(errorCode, reason) };
+
+  }
+
+  function resolveRoutedBatchStatus(project:Project, batch:PipelineItem[], jobId:string, batchId:string, attempt:number, status:any, preferredConversationUrl = "") {
+    const route = batch[0]?.route;
+    const routeConversationUrl = String(status?.bridgeConversationUrl || preferredConversationUrl || "");
+    const manifestItems = Array.isArray(status?.manifest?.items) ? status.manifest.items : [];
+    const successes:PipelineItem[] = [];
+    const failures:Array<{item:PipelineItem;errorCode:string;reason:string;technical?:boolean}> = [];
+    for (const item of batch) {
+      const manifestItem = manifestItems.find((candidate:any) => String(candidate?.id || "") === String(item.id));
+      const successStatus = route === "REFINADOR" ? "REFINADA" : "GERADA";
+      const itemStatus = String(manifestItem?.status || "").toUpperCase();
+      const outputName = String(manifestItem?.file || item.finalFile || "").trim();
+      const file = Array.isArray(status?.files)
+        ? status.files.find((candidate:any) => String(candidate?.name || "").toLowerCase() === outputName.toLowerCase())
+        : null;
+      if (itemStatus === successStatus && file?.url) {
+        const output = { ...item, jobId, status:"CONCLUIDO", outputUrl:file.url, outputFile:file.name, error:undefined, errorCode:undefined, finalFailure:false, batchId, routeConversationUrl } as PipelineItem;
+        updatePipelineItem(project.id, item.id, output);
+        appendPipelineHistory(project.id, item.id, { at:new Date().toISOString(), attempt, specialist:route, status:"CONCLUIDO", jobId, batchId, logicalJobId:item.logicalJobId || `${project.id}:ITEM:${item.id}` });
+        successes.push(output);
+      } else {
+        const failure = batchFailure(new Error(itemStatus === successStatus ? `${route} concluiu o ID ${item.id} sem arquivo real.` : `Falha no ${route} para ID ${item.id}.`), status, item);
+        const failedItem = { ...item, jobId, status:"FALHOU", error:failure.reason, errorCode:failure.errorCode, batchId, routeConversationUrl } as PipelineItem;
+        updatePipelineItem(project.id, item.id, failedItem);
+        appendPipelineHistory(project.id, item.id, { at:new Date().toISOString(), attempt, specialist:route, status:"FALHOU", jobId, errorCode:failure.errorCode, reason:failure.reason, batchId, logicalJobId:item.logicalJobId || `${project.id}:ITEM:${item.id}` });
+        failures.push({ item:failedItem, ...failure });
+      }
+    }
+    return { successes, failures };
+  }
+
+  function latestPipelineHistory(item:PipelineItem, specialist:"REFINADOR"|"GERADOR"|"FALLBACK") {
+    return [...(item.history || [])].reverse().find((event) => event.specialist === specialist);
+  }
+
+  function hasPipelineRoutingCheckpoint(project:Project | undefined | null) {
+    return Boolean(
+      project?.analysisStatus === "CONCLUÍDA"
+      && project?.pipelineItems?.length
+      && project.pipelineStatus !== "IMAGENS FINAIS PRONTAS"
+    );
+  }
+
+  async function resumeExistingRoutedBatch(project:Project, batch:PipelineItem[]) {
+    const jobId = String(batch[0]?.jobId || "");
+    const route = batch[0]?.route;
+    const batchId = String(batch[0]?.batchId || `${project.id}:${route}:RECOVERED`);
+    const attempt = Math.max(1, ...batch.map((item) => Number(item.tentativaAtual || 1)));
+    if (!jobId || !route) return null;
+    try {
+      for (const item of batch) updatePipelineItem(project.id, item.id, { status:"RETOMANDO_JOB_EXISTENTE" });
+      const status = await pollPipelineBatchJob(jobId, project.id, batch.map((item) => item.id), route === "REFINADOR" ? "REFINED_IMAGE" : "GENERATED_IMAGE");
+      return resolveRoutedBatchStatus(project, batch, jobId, batchId, attempt, status, String(batch[0]?.routeConversationUrl || ""));
+    } catch (error) {
+      const status = (error as any)?.corvoStatus;
+      const failures = batch.map((item) => {
+        const failure = batchFailure(error, status, item);
+        const failedItem = { ...item, status:"FALHOU", error:failure.reason, errorCode:failure.errorCode, batchId } as PipelineItem;
+        updatePipelineItem(project.id, item.id, failedItem);
+        appendPipelineHistory(project.id, item.id, { at:new Date().toISOString(), attempt, specialist:route, status:"FALHOU", jobId, errorCode:failure.errorCode, reason:failure.reason, batchId, logicalJobId:item.logicalJobId || `${project.id}:ITEM:${item.id}` });
+        return { item:failedItem, ...failure };
+      });
+      await completeCorvoBridgeJob(jobId).catch(() => {});
+      return { successes:[] as PipelineItem[], failures };
+    }
+  }
+
+  async function resumeExistingFallbackBatch(project:Project, failures:Array<{item:PipelineItem;errorCode:string;reason:string;technical?:boolean}>) {
+    const jobId = String(failures[0]?.item.fallbackJobId || "");
+    const batchId = String(failures[0]?.item.batchId || `${project.id}:FB:RECOVERED`);
+    const attempt = Math.max(1, ...failures.map((failure) => Number(failure.item.tentativaAtual || 1)));
+    if (!jobId) return null;
+    try {
+      for (const failure of failures) updatePipelineItem(project.id, failure.item.id, { status:"RETOMANDO_FALLBACK_EXISTENTE" });
+      const status = await pollPipelineBatchJob(jobId, project.id, failures.map((failure) => failure.item.id));
+      if (status?.status === "ERROR") throw Object.assign(new Error(status?.error || status?.manifest?.reason || status?.manifest?.errorCode || "O Fallback informou uma falha."), { corvoStatus:status });
+      const manifestItems = Array.isArray(status?.manifest?.items) ? status.manifest.items : [];
+      const fallbackConversationUrl = String(status?.bridgeConversationUrl || failures[0]?.item.fallbackConversationUrl || "");
+      return failures.map((failure) => {
+        const item = failure.item;
+        const decision = manifestItems.find((candidate:any) => String(candidate?.id || "") === String(item.id));
+        const fallbackStatus = String(decision?.status || "INVALID_OUTPUT").toUpperCase();
+        const destination = String(decision?.destination || "").toUpperCase();
+        const promptRetry = String(decision?.retryPrompt || "");
+        const reason = String(decision?.reason || failure.reason);
+        appendPipelineHistory(project.id, item.id, { at:new Date().toISOString(), attempt, specialist:"FALLBACK", status:fallbackStatus, jobId, errorCode:failure.errorCode, reason, destination, promptRetry, batchId, logicalJobId:item.logicalJobId || `${project.id}:ITEM:${item.id}` });
+        updatePipelineItem(project.id, item.id, { fallbackConversationUrl:fallbackConversationUrl || item.fallbackConversationUrl });
+        return { item:{ ...item, fallbackJobId:jobId, fallbackConversationUrl:fallbackConversationUrl || item.fallbackConversationUrl }, fallbackStatus, destination, promptRetry, reason, jobId, fallbackConversationUrl:fallbackConversationUrl || item.fallbackConversationUrl };
+      });
+    } catch (error) {
+      const message = bridgeErrorMessage(error);
+      const completion = await completeCorvoBridgeJob(jobId).catch(() => null);
+      const fallbackConversationUrl = String(completion?.conversationUrl || failures[0]?.item.fallbackConversationUrl || "");
+      return failures.map((failure) => ({ item:{ ...failure.item, fallbackConversationUrl:fallbackConversationUrl || failure.item.fallbackConversationUrl }, fallbackStatus:"FALHOU", destination:"", promptRetry:"", reason:failure.reason, jobId, fallbackError:message, fallbackTechnical:isTechnicalPipelineFailure("", message), fallbackConversationUrl:fallbackConversationUrl || failure.item.fallbackConversationUrl }));
+    }
+  }
+
+  async function runRoutedBatch(project:Project, batch:PipelineItem[], batchId:string, attempt:number) {
+    if (!batch.length) return { successes:[] as PipelineItem[], failures:[] as Array<{item:PipelineItem;errorCode:string;reason:string;technical?:boolean}> };
+    const route = batch[0].route;
+    if (batch.some((item) => item.route !== route)) throw new Error("PIPELINE_BATCH_ROUTE_MISMATCH");
+    if (batch.length > PIPELINE_BATCH_SIZE) throw new Error("PIPELINE_BATCH_TOO_LARGE");
+    const ids = batch.map((item) => item.id);
+    let job:any = null;
+    try {
+      const entrada = [
+        `LOTE_ID=${batchId}`,
+        `QUANTIDADE_ITENS=${batch.length}`,
+        `REGRA=Processe todos os IDs deste lote em uma única conversa e devolva um bloco [ID:...] para cada item.`,
+        "",
+        ...batch.flatMap((item,index) => [buildRoutedBatchEntry(project, item), index < batch.length - 1 ? "" : ""]),
+      ].join("\n");
+      job = await createPipelineJob(route, project, entrada, ids, attempt);
+      const attachments = route === "REFINADOR"
+        ? batch.map((item) => ({
+            url:String(item.sourceUrl || ""),
+            name:String(item.selectedFile || item.sourceFile || `entrada_${item.id}.jpg`),
+            contentType:"image/jpeg",
+          })).filter((item) => item.url)
+        : [];
+      if (route === "REFINADOR" && attachments.length !== batch.length) throw new Error("REFINER_BATCH_SOURCE_MISSING");
+
+      for (const item of batch) {
+        const logicalJobId = item.logicalJobId || `${project.id}:ITEM:${item.id}`;
+        updatePipelineItem(project.id, item.id, {
+          jobId:job.jobId, status:"ENVIANDO_LOTE", tentativaAtual:attempt, error:undefined, errorCode:undefined,
+          logicalJobId, batchId, batchIndex:ids.indexOf(item.id) + 1, batchSize:batch.length,
+        });
+        appendPipelineHistory(project.id, item.id, { at:new Date().toISOString(), attempt, specialist:route, status:"ENVIANDO_LOTE", jobId:job.jobId, batchId, logicalJobId });
+      }
+      const preferredConversationUrl = batch.length && batch.every((item) => item.routeConversationUrl && item.routeConversationUrl === batch[0].routeConversationUrl)
+        ? String(batch[0].routeConversationUrl || "")
+        : "";
+      await dispatchPipelineJobResilient({
+        jobId:job.jobId,
+        prompt:job.prompt,
+        specialist:route,
+        meta:{
+          projectId:project.id,
+          uploadToken:job.uploadToken,
+          appOrigin:window.location.origin,
+          attachments,
+          batchId,
+          batchSize:batch.length,
+          logicalBatch:true,
+          preferredConversationUrl,
+          forceNewConversation:!preferredConversationUrl,
+        },
+      }, project.id, ids);
+      for (const item of batch) updatePipelineItem(project.id, item.id, { status:"PROCESSANDO_LOTE" });
+      const status = await pollPipelineBatchJob(job.jobId, project.id, ids, route === "REFINADOR" ? "REFINED_IMAGE" : "GENERATED_IMAGE");
+      return resolveRoutedBatchStatus(project, batch, job.jobId, batchId, attempt, status, preferredConversationUrl);
+    } catch (error) {
+      const status = (error as any)?.corvoStatus;
+      const completion = job?.jobId ? await completeCorvoBridgeJob(job.jobId).catch(() => null) : null;
+      const recoveredConversationUrl = String(completion?.conversationUrl || batch[0]?.routeConversationUrl || "");
+      const failures = batch.map((item) => {
+        const failure = batchFailure(error, status, item);
+        const failedItem = { ...item, jobId:job?.jobId || item.jobId, status:"FALHOU", error:failure.reason, errorCode:failure.errorCode, batchId, routeConversationUrl:recoveredConversationUrl || item.routeConversationUrl } as PipelineItem;
+        updatePipelineItem(project.id, item.id, failedItem);
+        appendPipelineHistory(project.id, item.id, { at:new Date().toISOString(), attempt, specialist:route, status:"FALHOU", jobId:job?.jobId, errorCode:failure.errorCode, reason:failure.reason, batchId, logicalJobId:item.logicalJobId || `${project.id}:ITEM:${item.id}` });
+        return { item:failedItem, ...failure };
+      });
+      return { successes:[] as PipelineItem[], failures };
+    }
+  }
+
+  async function runFallbackBatch(project:Project, failures:Array<{item:PipelineItem;errorCode:string;reason:string;technical?:boolean}>, batchId:string, attempt:number) {
+    if (!failures.length) return [] as Array<{item:PipelineItem;fallbackStatus:string;destination:string;promptRetry:string;reason:string;jobId?:string;fallbackError?:string;fallbackTechnical?:boolean;fallbackConversationUrl?:string}>;
+    if (failures.length > PIPELINE_BATCH_SIZE) throw new Error("FALLBACK_BATCH_TOO_LARGE");
+    const origin = failures[0].item.route;
+    if (failures.some((failure) => failure.item.route !== origin)) throw new Error("FALLBACK_BATCH_ORIGIN_MISMATCH");
+    const entrada = [
+      `LOTE_ID=${batchId}`,
+      `ORIGEM=${origin}`,
+      `QUANTIDADE_FALHAS=${failures.length}`,
+      "Analise todos os IDs do lote numa única resposta. Não gere nem edite imagens.",
+      "REGRAS_DE_CONTINUIDADE=Este é um JOB lógico em lote. Uma falha técnica do Bridge não cria um novo trabalho lógico; quando houver retry, preserve os mesmos IDs e arquivos imutáveis.",
+      "",
+      ...failures.flatMap((failure,index) => {
+        const item = failure.item;
+        const originalInstruction = item.route === "GERADOR"
+          ? item.retryPrompt || item.generationPrompt || "Gerar imagem final conforme o contexto do projeto."
+          : item.retryPrompt || `Refinar ${item.selectedFile || item.sourceFile || item.id} com intensidade ${item.refinement || "LEVE"}, preservando identidade e conteúdo principal.`;
+        return [[
+          `[ID:${item.id}]`,
+          `LOGICAL_JOB_ID=${item.logicalJobId || `${project.id}:ITEM:${item.id}`}`,
+          `ORIGEM=${item.route}`,
+          `ERROR_CODE=${failure.errorCode}`,
+          `MOTIVO=${failure.reason}`,
+          item.route === "GERADOR" ? `PROMPT_ORIGINAL=${originalInstruction}` : `INSTRUCAO_ORIGINAL=${originalInstruction}`,
+          item.selectedFile ? `ARQUIVO_SELECIONADO_IMUTAVEL=${item.selectedFile}` : "",
+          `CONTEXTO=${project.topic}. Projeto ${project.id}.`,
+          `IDENTIDADE=${item.reason || project.topic}`,
+          `TENTATIVA_ATUAL=${attempt}`,
+        ].filter(Boolean).join("\n"), index < failures.length - 1 ? "" : ""];
+      }),
+    ].join("\n");
+
+    let preferredConversationUrl = failures.length && failures.every((failure) => failure.item.fallbackConversationUrl && failure.item.fallbackConversationUrl === failures[0].item.fallbackConversationUrl)
+      ? String(failures[0].item.fallbackConversationUrl || "")
+      : "";
+    let lastJob:any = null;
+    let lastError = "";
+
+    // Falha técnica do próprio Fallback não cria cascata de conversas. Fazemos até
+    // duas recuperações de transporte na MESMA conversa antes de devolver erro ao scheduler.
+    for (let transportAttempt = 0; transportAttempt < 2; transportAttempt++) {
+      let job:any = null;
+      try {
+        job = await createPipelineJob("FALLBACK", project, entrada, failures.map((failure) => failure.item.id), attempt, origin);
+        lastJob = job;
+        for (const failure of failures) {
+          const item = failure.item;
+          updatePipelineItem(project.id, item.id, { fallbackJobId:job.jobId, status:"AGUARDANDO_FALLBACK_LOTE", error:failure.reason, errorCode:failure.errorCode, batchId, fallbackConversationUrl:preferredConversationUrl || item.fallbackConversationUrl });
+          appendPipelineHistory(project.id, item.id, { at:new Date().toISOString(), attempt, specialist:"FALLBACK", status:"ENVIANDO_LOTE", jobId:job.jobId, errorCode:failure.errorCode, reason:failure.reason, batchId, logicalJobId:item.logicalJobId || `${project.id}:ITEM:${item.id}` });
+        }
+        await dispatchPipelineJobResilient({
+          jobId:job.jobId,
+          prompt:job.prompt,
+          specialist:"FALLBACK",
+          meta:{ projectId:project.id, batchId, batchSize:failures.length, logicalBatch:true, preferredConversationUrl, forceNewConversation:!preferredConversationUrl },
+        }, project.id, failures.map((failure) => failure.item.id));
+        const status = await pollPipelineBatchJob(job.jobId, project.id, failures.map((failure) => failure.item.id));
+        if (status?.status === "ERROR") throw Object.assign(new Error(status?.error || status?.manifest?.reason || status?.manifest?.errorCode || "O Fallback informou uma falha."), { corvoStatus:status });
+        const conversationUrl = String(status?.bridgeConversationUrl || preferredConversationUrl || "");
+        const manifestItems = Array.isArray(status?.manifest?.items) ? status.manifest.items : [];
+        return failures.map((failure) => {
+          const item = failure.item;
+          const decision = manifestItems.find((candidate:any) => String(candidate?.id || "") === String(item.id));
+          const fallbackStatus = String(decision?.status || "INVALID_OUTPUT").toUpperCase();
+          const destination = String(decision?.destination || "").toUpperCase();
+          const promptRetry = String(decision?.retryPrompt || "");
+          const reason = String(decision?.reason || failure.reason);
+          updatePipelineItem(project.id, item.id, { fallbackConversationUrl:conversationUrl || item.fallbackConversationUrl });
+          appendPipelineHistory(project.id, item.id, { at:new Date().toISOString(), attempt, specialist:"FALLBACK", status:fallbackStatus, jobId:job.jobId, errorCode:failure.errorCode, reason, destination, promptRetry, batchId, logicalJobId:item.logicalJobId || `${project.id}:ITEM:${item.id}` });
+          return { item:{ ...item, fallbackJobId:job.jobId, fallbackConversationUrl:conversationUrl || item.fallbackConversationUrl }, fallbackStatus, destination, promptRetry, reason, jobId:job.jobId, fallbackConversationUrl:conversationUrl || item.fallbackConversationUrl };
+        });
+      } catch (error) {
+        lastError = bridgeErrorMessage(error);
+        const completion = job?.jobId ? await completeCorvoBridgeJob(job.jobId).catch(() => null) : null;
+        preferredConversationUrl = String(completion?.conversationUrl || preferredConversationUrl || "");
+        const technical = isTechnicalPipelineFailure("", lastError);
+        if (technical && transportAttempt < 1) {
+          for (const failure of failures) updatePipelineItem(project.id, failure.item.id, { status:"RETRY_TECNICO_FALLBACK_MESMA_CONVERSA", fallbackConversationUrl:preferredConversationUrl || failure.item.fallbackConversationUrl });
+          const delay = /RATE_LIMIT/i.test(lastError) ? 180_000 : 20_000;
+          setImageStatusLine(/RATE_LIMIT/i.test(lastError)
+            ? `FALLBACK PAUSADO POR RATE LIMIT · MESMA CONVERSA · ${analysisRetryLabel(new Date(Date.now()+delay).toISOString())}`
+            : "FALLBACK COM FALHA TÉCNICA · RETOMANDO A MESMA CONVERSA");
+          await wait(delay);
+          continue;
+        }
+        break;
+      }
+    }
+
+    const technical = isTechnicalPipelineFailure("", lastError);
+    return failures.map((failure) => {
+      appendPipelineHistory(project.id, failure.item.id, { at:new Date().toISOString(), attempt, specialist:"FALLBACK", status:"FALHOU", jobId:lastJob?.jobId, reason:lastError, batchId, logicalJobId:failure.item.logicalJobId || `${project.id}:ITEM:${failure.item.id}` });
+      return {
+        item:{ ...failure.item, fallbackJobId:lastJob?.jobId, fallbackConversationUrl:preferredConversationUrl || failure.item.fallbackConversationUrl },
+        fallbackStatus:"FALHOU", destination:"", promptRetry:"", reason:failure.reason, jobId:lastJob?.jobId,
+        fallbackError:lastError || "Falha no Fallback.", fallbackTechnical:technical, fallbackConversationUrl:preferredConversationUrl || failure.item.fallbackConversationUrl,
+      };
+    });
+  }
+
+
   async function runRoutedPipeline(project:Project, items:PipelineItem[]) {
-    const refiners = items.filter((item) => item.route === "REFINADOR");
-    const generators = items.filter((item) => item.route === "GERADOR");
-    const failures:{id:string;error:string}[] = [];
-    const finalItems = new Map<string,PipelineItem>(items.map((item) => [String(item.id), item]));
-    let completed = 0;
+    const failuresFinal:{id:string;error:string}[] = [];
+    const finalItems = new Map<string,PipelineItem>();
+    const completedIds = new Set<string>();
     const total = items.length;
+    const normalizedItems:PipelineItem[] = items.map((item) => ({
+      ...item,
+      selectedFile:item.route === "REFINADOR" ? String(item.selectedFile || item.sourceFile || "") : item.selectedFile,
+      sourceFile:item.route === "REFINADOR" ? String(item.selectedFile || item.sourceFile || "") : item.sourceFile,
+      logicalJobId:item.logicalJobId || `${project.id}:ITEM:${item.id}`,
+      tentativaAtual:Math.max(1, Number(item.tentativaAtual || 1)),
+    }));
+
+    for (const item of normalizedItems) {
+      if (item.status === "CONCLUIDO" && item.outputUrl) {
+        finalItems.set(String(item.id), item);
+        completedIds.add(String(item.id));
+      } else if (item.finalFailure || ["FALHA_FINAL","NAO_RECUPERAVEL","SELECTED_FILE_MISMATCH"].includes(String(item.status || ""))) {
+        finalItems.set(String(item.id), item);
+        failuresFinal.push({ id:item.id, error:item.error || item.errorCode || "Tratamento manual necessário." });
+      }
+    }
+    let pending = normalizedItems.filter((item) => !completedIds.has(String(item.id)) && !item.finalFailure && !["FALHA_FINAL","NAO_RECUPERAVEL","SELECTED_FILE_MISMATCH"].includes(String(item.status || "")));
+
     const setProgress = (label:string) => {
+      const completed = completedIds.size;
       setImagePhase("searching");
       setImageProgress(Math.max(90, Math.min(99, 90 + (completed / Math.max(1,total)) * 9)));
       setImageMessage(label);
-      setImageStatusLine(`${completed}/${total} IMAGENS FINAIS · FALLBACK AUTOMÁTICO · GERADOR 1 POR VEZ`);
+      setImageStatusLine(`${completed}/${total} FINAIS · LOTES DE ATÉ ${PIPELINE_BATCH_SIZE} · REFINADOR ${MAX_PARALLEL_REFINER_BATCHES} EM PARALELO · GERADOR/FALLBACK CONTROLADOS`);
       updateAutoRun(project.id, "IMAGENS", `${label} · ${completed}/${total}`);
     };
-    patchProject(project.id, { pipelineStatus:"ROTEANDO IMAGENS", pipelineItems:items });
-    setProgress("O Analista terminou. Distribuindo imagens entre Refinador e Gerador...");
 
-    let refinerIndex = 0;
-    const refinerWorker = async () => {
-      while (refinerIndex < refiners.length) {
-        const item = refiners[refinerIndex++];
-        const result = await runRoutedWithFallback(project, item);
-        finalItems.set(String(item.id), result.item);
-        if (!result.ok) failures.push({ id:item.id, error:result.error });
-        completed += 1;
-        setProgress(`Refinando e recuperando imagens... ${completed}/${total}`);
+    const markFinalFailure = (item:PipelineItem, message:string, status = "FALHA_FINAL") => {
+      const failed = { ...item, status, finalFailure:true, error:message } as PipelineItem;
+      updatePipelineItem(project.id, item.id, failed);
+      finalItems.set(String(item.id), failed);
+      if (!failuresFinal.some((failure) => String(failure.id) === String(item.id))) failuresFinal.push({ id:item.id, error:message });
+      return failed;
+    };
+
+    const applyFallbackDecisions = (decisions:Array<{item:PipelineItem;fallbackStatus:string;destination:string;promptRetry:string;reason:string;jobId?:string;fallbackError?:string;fallbackTechnical?:boolean;fallbackConversationUrl?:string}>, nextPending:PipelineItem[]) => {
+      for (const fallback of decisions) {
+        const item = fallback.item;
+        const currentAttempt = Math.max(1, Number(item.tentativaAtual || 1));
+        if (fallback.fallbackError) {
+          markFinalFailure(item, fallback.fallbackError);
+          continue;
+        }
+        if (fallback.fallbackStatus !== "RETRY") {
+          markFinalFailure(item, fallback.reason || "Fallback marcou o ID como não recuperável.", "NAO_RECUPERAVEL");
+          continue;
+        }
+        if (currentAttempt >= MAX_PIPELINE_ATTEMPTS) {
+          markFinalFailure(item, `O ID ${item.id} atingiu o limite de ${MAX_PIPELINE_ATTEMPTS} tentativas. ${fallback.reason || ""}`.trim());
+          continue;
+        }
+        if (!["GERADOR","REFINADOR"].includes(fallback.destination) || !fallback.promptRetry) {
+          markFinalFailure(item, "Fallback retornou RETRY sem DESTINO/PROMPT_RETRY válidos.");
+          continue;
+        }
+        if (fallback.destination === "REFINADOR" && !item.sourceUrl) {
+          markFinalFailure(item, "Fallback apontou para o Refinador, mas este ID não possui a candidata original selecionada pelo Analista.");
+          continue;
+        }
+        const nextItem:PipelineItem = {
+          ...item,
+          route:fallback.destination as "GERADOR"|"REFINADOR",
+          tentativaAtual:currentAttempt + 1,
+          retryPrompt:fallback.promptRetry,
+          fallbackJobId:fallback.jobId,
+          status:"RETRY_PENDENTE_LOTE",
+          error:undefined,
+          errorCode:undefined,
+          finalFailure:false,
+          selectedFile:item.selectedFile,
+          sourceFile:item.selectedFile || item.sourceFile,
+          routeConversationUrl:fallback.destination === item.route ? item.routeConversationUrl : undefined,
+          fallbackConversationUrl:fallback.fallbackConversationUrl || item.fallbackConversationUrl,
+        };
+        updatePipelineItem(project.id, item.id, nextItem);
+        nextPending.push(nextItem);
       }
     };
-    const refinerWorkers = Array.from({ length:Math.min(3, Math.max(1, refiners.length)) }, () => refinerWorker());
 
-    const generatorWorker = (async () => {
-      for (const item of generators) {
-        const result = await runRoutedWithFallback(project, item);
-        finalItems.set(String(item.id), result.item);
-        if (!result.ok) failures.push({ id:item.id, error:result.error });
-        completed += 1;
-        setProgress(`Gerador/Fallback trabalhando em fila única... ${completed}/${total}`);
+    patchProject(project.id, { pipelineStatus:`PIPELINE EM LOTES DE ATÉ ${PIPELINE_BATCH_SIZE}`, pipelineItems:normalizedItems });
+    setProgress(completedIds.size ? `Retomando o pipeline salvo: ${completedIds.size}/${total} imagens já estavam concluídas.` : "O Analista terminou. Organizando Refinador e Gerador em lotes controlados...");
+
+    // 1) Retoma FALLBACKs que já tinham sido enviados antes de um reload. O histórico
+    // é a fonte de verdade: só há fallback pendente se o último evento dele ainda é ENVIANDO_LOTE.
+    const pendingFallbackGroups = new Map<string,PipelineItem[]>();
+    for (const item of pending) {
+      const lastFallback = latestPipelineHistory(item, "FALLBACK");
+      if (item.fallbackJobId && lastFallback?.status === "ENVIANDO_LOTE") {
+        const group = pendingFallbackGroups.get(item.fallbackJobId) || [];
+        group.push(item);
+        pendingFallbackGroups.set(item.fallbackJobId, group);
       }
-    })();
+    }
+    if (pendingFallbackGroups.size) {
+      setProgress(`Retomando ${pendingFallbackGroups.size} lote(s) de Fallback já enviados, sem abrir novas conversas...`);
+      const recoveredIds = new Set<string>();
+      const tasks = [...pendingFallbackGroups.values()].map((group) => async () => {
+        group.forEach((item) => recoveredIds.add(String(item.id)));
+        const failures = group.map((item) => ({ item, errorCode:String(item.errorCode || "TOOL_ERROR"), reason:String(item.error || "Falha anterior aguardando Fallback."), technical:false }));
+        return await resumeExistingFallbackBatch(project, failures);
+      });
+      const results = await runPool(tasks, MAX_PARALLEL_FALLBACK_BATCHES);
+      const next = pending.filter((item) => !recoveredIds.has(String(item.id)));
+      for (const decisions of results) if (decisions) applyFallbackDecisions(decisions, next);
+      pending = next;
+    }
 
-    await Promise.all([...refinerWorkers, generatorWorker]);
-    await wait(50);
+    // 2) Retoma Refinador/Gerador que já estavam PROCESSANDO no mesmo JOB. Em vez de
+    // despachar uma nova conversa, só fazemos polling/captura do job que já existe.
+    const activeRouteGroups = new Map<string,PipelineItem[]>();
+    for (const item of pending) {
+      const lastRoute = latestPipelineHistory(item, item.route);
+      if (item.jobId && lastRoute?.status === "ENVIANDO_LOTE") {
+        const key = `${item.route}:${item.jobId}`;
+        const group = activeRouteGroups.get(key) || [];
+        group.push(item);
+        activeRouteGroups.set(key, group);
+      }
+    }
+    if (activeRouteGroups.size) {
+      setProgress(`Retomando ${activeRouteGroups.size} lote(s) já ativos no ChatGPT, sem duplicar conversas...`);
+      const recoveredIds = new Set<string>();
+      const tasks = [...activeRouteGroups.values()].map((group) => async () => {
+        group.forEach((item) => recoveredIds.add(String(item.id)));
+        return await resumeExistingRoutedBatch(project, group);
+      });
+      const recovered = await runPool(tasks, Math.max(MAX_PARALLEL_REFINER_BATCHES, MAX_PARALLEL_GENERATOR_BATCHES));
+      let next = pending.filter((item) => !recoveredIds.has(String(item.id)));
+      const recoveredSemantic:Array<{item:PipelineItem;errorCode:string;reason:string;technical?:boolean}> = [];
+      for (const result of recovered) {
+        if (!result) continue;
+        for (const success of result.successes) {
+          finalItems.set(String(success.id), success);
+          completedIds.add(String(success.id));
+        }
+        for (const failure of result.failures) {
+          const currentAttempt = Math.max(1, Number(failure.item.tentativaAtual || 1));
+          if (currentAttempt >= MAX_PIPELINE_ATTEMPTS) {
+            markFinalFailure(failure.item, failure.reason);
+          } else if (failure.technical) {
+            const retry = { ...failure.item, tentativaAtual:currentAttempt + 1, status:"RETRY_TECNICO_PENDENTE", finalFailure:false } as PipelineItem;
+            updatePipelineItem(project.id, retry.id, retry);
+            next.push(retry);
+          } else recoveredSemantic.push(failure);
+        }
+      }
+      if (recoveredSemantic.length) {
+        const fallbackTasks:Array<()=>Promise<Awaited<ReturnType<typeof runFallbackBatch>>>> = [];
+        const grouped = new Map<string,typeof recoveredSemantic>();
+        for (const failure of recoveredSemantic) {
+          const key = `${failure.item.route}|A${Math.max(1, Number(failure.item.tentativaAtual || 1))}|FB:${failure.item.fallbackConversationUrl || "__NEW__"}`;
+          const group = grouped.get(key) || [];
+          group.push(failure);
+          grouped.set(key, group);
+        }
+        for (const failures of grouped.values()) {
+          chunkPipelineItems(failures).forEach((batch,index) => {
+            const attempt = Math.max(1, Number(batch[0]?.item.tentativaAtual || 1));
+            fallbackTasks.push(() => runFallbackBatch(project, batch, `${project.id}:FB:RECOVERED:A${attempt}:B${String(index + 1).padStart(2,"0")}`, attempt));
+          });
+        }
+        const fallbackGroups = await runPool(fallbackTasks, MAX_PARALLEL_FALLBACK_BATCHES);
+        for (const decisions of fallbackGroups) applyFallbackDecisions(decisions, next);
+      }
+      pending = next;
+    }
+
+    // 3) Scheduler normal. A tentativa agora pertence ao ITEM, não à volta global.
+    // Isso impede que um reload zere a contagem e também evita misturar tentativa 1 e 2 no mesmo lote.
+    let schedulerRound = 0;
+    const schedulerRoundLimit = MAX_PIPELINE_ATTEMPTS * 3;
+    while (pending.length && schedulerRound < schedulerRoundLimit) {
+      schedulerRound++;
+      const refiners = pending.filter((item) => item.route === "REFINADOR");
+      const generators = pending.filter((item) => item.route === "GERADOR");
+      const refinerChunks = retryAwareChunks(refiners);
+      const generatorChunks = retryAwareChunks(generators);
+      setProgress(`Scheduler: ${refinerChunks.length} lote(s) de Refinador e ${generatorChunks.length} lote(s) de Gerador · ${pending.length} item(ns) pendentes.`);
+
+      const refinerTasks = refinerChunks.map((batch,index) => () => {
+        const attempt = Math.max(1, Number(batch[0]?.tentativaAtual || 1));
+        return runRoutedBatch(project, batch, `${project.id}:REF:A${attempt}:B${String(index + 1).padStart(2,"0")}`, attempt);
+      });
+      const generatorTasks = generatorChunks.map((batch,index) => () => {
+        const attempt = Math.max(1, Number(batch[0]?.tentativaAtual || 1));
+        return runRoutedBatch(project, batch, `${project.id}:GEN:A${attempt}:B${String(index + 1).padStart(2,"0")}`, attempt);
+      });
+      const [refinerResults, generatorResults] = await Promise.all([
+        runPool(refinerTasks, MAX_PARALLEL_REFINER_BATCHES),
+        runPool(generatorTasks, MAX_PARALLEL_GENERATOR_BATCHES),
+      ]);
+      const roundResults = [...refinerResults, ...generatorResults];
+      const roundFailures:Array<{item:PipelineItem;errorCode:string;reason:string;technical?:boolean}> = [];
+      for (const result of roundResults) {
+        for (const success of result.successes) {
+          finalItems.set(String(success.id), success);
+          completedIds.add(String(success.id));
+        }
+        roundFailures.push(...result.failures);
+      }
+      setProgress(`${completedIds.size}/${total} concluídas; ${roundFailures.length} falha(s) serão classificadas sem criar retry desnecessário.`);
+      if (!roundFailures.length) { pending = []; break; }
+
+      const technicalFailures:Array<{item:PipelineItem;errorCode:string;reason:string;technical?:boolean}> = [];
+      const semanticFailures:Array<{item:PipelineItem;errorCode:string;reason:string;technical?:boolean}> = [];
+      for (const failure of roundFailures) {
+        const currentAttempt = Math.max(1, Number(failure.item.tentativaAtual || 1));
+        if (currentAttempt >= MAX_PIPELINE_ATTEMPTS) markFinalFailure(failure.item, failure.reason);
+        else if (failure.technical) technicalFailures.push(failure);
+        else semanticFailures.push(failure);
+      }
+
+      const nextPending:PipelineItem[] = technicalFailures.map((failure) => {
+        const currentAttempt = Math.max(1, Number(failure.item.tentativaAtual || 1));
+        const nextItem:PipelineItem = {
+          ...failure.item,
+          tentativaAtual:currentAttempt + 1,
+          status:"RETRY_TECNICO_PENDENTE",
+          error:failure.reason,
+          errorCode:failure.errorCode,
+          finalFailure:false,
+          selectedFile:failure.item.selectedFile,
+          sourceFile:failure.item.selectedFile || failure.item.sourceFile,
+        };
+        updatePipelineItem(project.id, nextItem.id, nextItem);
+        appendPipelineHistory(project.id, nextItem.id, {
+          at:new Date().toISOString(), attempt:currentAttempt, specialist:nextItem.route, status:"RETRY_TECNICO_SEM_FALLBACK",
+          errorCode:failure.errorCode, reason:failure.reason, batchId:nextItem.batchId, logicalJobId:nextItem.logicalJobId,
+        });
+        return nextItem;
+      });
+      if (technicalFailures.length) {
+        const rateLimited = technicalFailures.some((failure) => /RATE_LIMIT/i.test(`${failure.errorCode} ${failure.reason}`));
+        const delay = rateLimited ? 180_000 : 20_000;
+        setProgress(`${technicalFailures.length} falha(s) técnicas: nenhum Fallback novo será aberto; os mesmos trabalhos lógicos aguardam uma pausa.`);
+        await wait(delay);
+      }
+
+      const fallbackTasks:Array<()=>Promise<Awaited<ReturnType<typeof runFallbackBatch>>>> = [];
+      const semanticGroups = new Map<string,typeof semanticFailures>();
+      for (const failure of semanticFailures) {
+        const key = `${failure.item.route}|A${Math.max(1, Number(failure.item.tentativaAtual || 1))}|FB:${failure.item.fallbackConversationUrl || "__NEW__"}`;
+        const group = semanticGroups.get(key) || [];
+        group.push(failure);
+        semanticGroups.set(key, group);
+      }
+      for (const [key, failures] of semanticGroups) {
+        const origin = failures[0]?.item.route || "REFINADOR";
+        const attempt = Math.max(1, Number(failures[0]?.item.tentativaAtual || 1));
+        chunkPipelineItems(failures).forEach((batch,index) => fallbackTasks.push(() => runFallbackBatch(project, batch, `${project.id}:FB:${origin}:A${attempt}:B${String(index + 1).padStart(2,"0")}`, attempt)));
+      }
+      const fallbackGroups = await runPool(fallbackTasks, MAX_PARALLEL_FALLBACK_BATCHES);
+      for (const decisions of fallbackGroups) applyFallbackDecisions(decisions, nextPending);
+      pending = nextPending;
+    }
+
+    if (pending.length) {
+      for (const item of pending) markFinalFailure(item, "O scheduler atingiu o limite de segurança antes de concluir este item.");
+      pending = [];
+    }
+
+    await wait(80);
     const liveItems = latestProject(project.id)?.pipelineItems || [];
     const liveById = new Map<string,PipelineItem>(liveItems.map((item) => [String(item.id), item]));
-    const consolidatedItems = items.map((original) => ({ ...original, ...(finalItems.get(String(original.id)) || {}), ...(liveById.get(String(original.id)) || {}) }));
-    if (failures.length) {
+    const consolidatedItems = normalizedItems.map((original) => ({ ...original, ...(liveById.get(String(original.id)) || {}), ...(finalItems.get(String(original.id)) || {}) }));
+    if (failuresFinal.length) {
       patchProject(project.id, { pipelineStatus:"TRATAMENTO MANUAL NECESSÁRIO", pipelineItems:consolidatedItems });
       setImagePhase("error");
       setImageProgress(100);
-      setImageMessage(`${failures.length} imagem(ns) chegaram ao limite ou foram marcadas como não recuperáveis.`);
-      setImageStatusLine(`${total-failures.length}/${total} FINAIS · ${failures.length} MANUAIS`);
+      setImageMessage(`${failuresFinal.length} imagem(ns) chegaram ao limite ou foram marcadas como não recuperáveis.`);
+      setImageStatusLine(`${total-failuresFinal.length}/${total} FINAIS · ${failuresFinal.length} MANUAIS · LOTES LÓGICOS CONCLUÍDOS`);
       return false;
     }
     patchProject(project.id, { pipelineStatus:"IMAGENS FINAIS PRONTAS", imageCount:items.length, pipelineItems:consolidatedItems });
     setImagePhase("done");
     setImageProgress(100);
-    setImageMessage("Refinador, Gerador e Fallback concluíram todas as imagens finais. A Consolidação já pode gerar o ZIP final.");
-    setImageStatusLine(`${items.length}/${items.length} IMAGENS FINAIS`);
+    setImageMessage(`Refinador, Gerador e Fallback concluíram em lotes de até ${PIPELINE_BATCH_SIZE}. A Consolidação já pode gerar o ZIP final.`);
+    setImageStatusLine(`${items.length}/${items.length} IMAGENS FINAIS · LOTES LÓGICOS CONCLUÍDOS`);
     return true;
   }
+
 
   function hasPreparedAnalysis(project:Project | undefined | null) {
     if (hasLegacyAnalysisStorage(project)) return false;
@@ -1738,6 +2391,21 @@ export default function Home() {
   function scheduleAnalysisRetry(projectId:string, error:unknown) {
     const current = latestProject(projectId);
     if (!current || !hasPreparedAnalysis(current)) return;
+    if (analysisMessageCommitted(current)) {
+      patchProject(projectId, {
+        analysisStatus:"ANALISTA PROCESSANDO · SEM REENVIO",
+        analysisRetryAt:undefined,
+        analysisLastError:bridgeErrorMessage(error),
+        pipelineStatus:"ANALISANDO IMAGENS",
+        autoRunStatus:current.autoRunStatus === "RUNNING" ? "RUNNING" : current.autoRunStatus,
+        autoRunStep:current.autoRunStatus === "RUNNING" ? "ANALISTA" : current.autoRunStep,
+        autoRunMessage:current.autoRunStatus === "RUNNING" ? "O Analista já recebeu a mensagem. Houve falha apenas no acompanhamento; o app continuará consultando a Action sem reenviar." : current.autoRunMessage,
+      });
+      setImagePhase("searching"); setImageProgress(92);
+      setImageMessage("O Analista continua processando. O app não enviará outra mensagem; apenas retomará o acompanhamento da Action.");
+      setImageStatusLine("ANALISTA PROCESSANDO · REENVIO BLOQUEADO");
+      return;
+    }
     const count = (current.analysisRetryCount || 0) + 1;
     const message = bridgeErrorMessage(error);
     const nextAt = new Date(Date.now() + analysisRetryDelayForError(error, count - 1)).toISOString();
@@ -1805,6 +2473,7 @@ export default function Home() {
         id,
         route:"REFINADOR" as const,
         sourceFile,
+        selectedFile:sourceFile,
         sourceUrl:sourceRecord?.url,
         refinement:String(manifestItem.refinement || (statusName === "PASSOU" ? "LEVE" : "FORTE")),
         reason:String(manifestItem.reason || ""),
@@ -1838,6 +2507,20 @@ export default function Home() {
   }
 
   async function dispatchAnalysis(project:Project, analysisJob:{jobId:string;prompt:string;uploadToken:string}, zipFile:any, expectedIds:string[]) {
+    const liveBeforeDispatch = latestProject(project.id) || project;
+    if (liveBeforeDispatch.analysisJobId === analysisJob.jobId && analysisMessageCommitted(liveBeforeDispatch)) {
+      patchProject(project.id, {
+        analysisStatus:"ANALISTA PROCESSANDO · SEM REENVIO",
+        analysisRetryAt:undefined,
+        analysisLastError:undefined,
+        pipelineStatus:"ANALISANDO IMAGENS",
+      });
+      setImagePhase("searching"); setImageProgress(92);
+      setImageMessage("O ZIP já foi enviado ao Analista. Aguardando a Action sem enviar outra mensagem.");
+      setImageStatusLine("ANALISTA PROCESSANDO · REENVIO BLOQUEADO");
+      const status = await pollPipelineJob(analysisJob.jobId, project.id);
+      return await finishAnalysisFromStatus(liveBeforeDispatch, analysisJob, expectedIds, status);
+    }
     patchProject(project.id, {
       analysisJobId:analysisJob.jobId,
       analysisStatus:"ENVIANDO AO ANALISTA",
@@ -1910,19 +2593,16 @@ export default function Home() {
           await resetAnalysisJob(analysisJob.jobId, analysisJob.uploadToken);
         }
       } else {
-        const committedStages = new Set(["USER_MESSAGE_COMMITTED", "MESSAGE_CONFIRMED", "WAITING_ACTION"]);
-        const bridgeStage = String(project.analysisBridgeStage || "");
-        const bridgeUpdatedAt = project.analysisBridgeUpdatedAt ? new Date(project.analysisBridgeUpdatedAt).getTime() : 0;
-        const committedRecently = committedStages.has(bridgeStage) && (!bridgeUpdatedAt || Date.now() - bridgeUpdatedAt < 45 * 60_000);
-        if (currentResponse.ok && committedRecently && currentStatus?.status !== "ERROR") {
+        const committed = analysisMessageCommitted(project);
+        if (currentResponse.ok && committed && currentStatus?.status !== "ERROR") {
           patchProject(projectId, {
-            analysisStatus:"ANALISTA PROCESSANDO",
+            analysisStatus:"ANALISTA PROCESSANDO · SEM REENVIO",
             pipelineStatus:"ANALISANDO IMAGENS",
             analysisRetryAt:undefined,
             analysisLastError:undefined,
           });
-          setImageMessage("A mensagem já foi enviada ao Analista. Retomando apenas a espera pelo resultado, sem reenviar o prompt.");
-          setImageStatusLine("MENSAGEM JÁ ENVIADA · AGUARDANDO ACTION");
+          setImageMessage("A mensagem já foi enviada ao Analista. Aguardando somente a Action, sem limite de tempo e sem reenviar o prompt.");
+          setImageStatusLine("MENSAGEM ENVIADA · REENVIO AUTOMÁTICO BLOQUEADO");
           const completedStatus = await pollPipelineJob(analysisJob.jobId, project.id);
           const routed = await finishAnalysisFromStatus(project, analysisJob, expectedIds, completedStatus);
           if (routed && latestProject(projectId)?.autoRunStatus === "RUNNING") setTimeout(() => void runAutomaticProduction(projectId), 100);
@@ -2293,7 +2973,7 @@ export default function Home() {
             <button className="primary-action" onClick={continueProduction}>{active.stage<=2?(active.scriptText?"REVISAR ROTEIRO":"CRIAR ROTEIRO"):active.stage===3?(active.promptText?"REVISAR PROMPTS":"CRIAR PROMPTS"):active.stage===4?"BUSCAR IMAGENS":"BAIXAR PRODUÇÃO"} <span>→</span></button>
             <button className="secondary-action" onClick={() => downloadProject(active)}>↓ BAIXAR PROJETO</button>
           </div>
-          {active.autoRunStatus&&<div className={`auto-run-panel ${active.autoRunStatus.toLowerCase()}`}><div className="auto-run-head"><div><span>AUTOMÁTICO TOTAL</span><b>{active.autoRunMessage||"Acompanhando a produção automática."}</b>{active.autoRunError&&<small>{active.autoRunError}</small>}</div>{active.autoRunStatus==="RUNNING"?<button onClick={()=>void cancelAutomaticProduction(active.id)}>PARAR</button>:<em>{active.autoRunStatus==="DONE"?"CONCLUÍDO":active.autoRunStatus==="ERROR"?"PRECISA DE ATENÇÃO":"INTERROMPIDO"}</em>}</div><div className="auto-run-steps">{autoRunChecklist(active,settings.youtubeParallel).map((item)=><span className={item.done?"done":active.autoRunStep===item.key?"current":""} key={item.key}><i>{item.done?"✓":active.autoRunStep===item.key?"•":"○"}</i>{item.label}</span>)}</div></div>}
+          {active.autoRunStatus&&<div className={`auto-run-panel ${active.autoRunStatus.toLowerCase()}`}><div className="auto-run-head"><div><span>AUTOMÁTICO TOTAL</span><b>{active.autoRunMessage||"Acompanhando a produção automática."}</b>{active.autoRunError&&<small>{active.autoRunError}</small>}</div>{active.autoRunStatus==="RUNNING"?<div className="auto-run-actions"><button className="monitor" onClick={()=>openActivity(active.autoRunStep || "TODOS")}>ACOMPANHAR</button><button onClick={()=>void cancelAutomaticProduction(active.id)}>PARAR</button></div>:<em>{active.autoRunStatus==="DONE"?"CONCLUÍDO":active.autoRunStatus==="ERROR"?"PRECISA DE ATENÇÃO":"INTERROMPIDO"}</em>}</div><div className="auto-run-steps">{autoRunChecklist(active,settings.youtubeParallel).map((item)=><button type="button" className={item.done?"done":active.autoRunStep===item.key?"current":""} key={item.key} onClick={()=>openActivity(item.key)} title={`Acompanhar ${item.label}`}><i>{item.done?"✓":active.autoRunStep===item.key?"•":"○"}</i>{item.label}</button>)}</div></div>}
         </div>
         <aside className="card-side" id="arquivos">
           <div className="mini-title"><span>MEMÓRIA DA PRODUÇÃO</span><b>{[active.ideaText,active.scriptText,active.promptText].filter(Boolean).length}/3</b></div>
@@ -2301,16 +2981,34 @@ export default function Home() {
           <button className={`file-row action ${active.scriptText?"done":"pending"}`} disabled={!active.scriptText} onClick={()=>openArtifact("ROTEIRO")}><span>▤</span><div><b>ROTEIRO.TXT</b><small>{active.scriptText?"ABRIR ROTEIRO COMPLETO":"AGUARDANDO ROTEIRISTA"}</small></div><i>{active.scriptText?"→":"○"}</i></button>
           <button className={`file-row action ${active.promptText?"done":"pending"}`} disabled={!active.promptText} onClick={()=>openArtifact("PROMPTS")}><span>✦</span><div><b>PROMPTS.TXT</b><small>{active.promptText?"ABRIR BUSCAS DE IMAGEM":"AGUARDANDO ROTEIRO"}</small></div><i>{active.promptText?"→":"○"}</i></button>
           <button className={`file-row action ${active.thumbUrl?"done":active.thumbStatus==="FALHOU"?"pending":""}`} disabled={!active.thumbUrl} onClick={()=>active.thumbUrl&&window.open(active.thumbUrl,"_blank","noopener,noreferrer")}><span>▰</span><div><b>THUMBNAIL</b><small>{active.thumbUrl?"ABRIR IMAGEM FINAL":active.thumbError||active.thumbStatus||"INICIA EM PARALELO COM O COLLECTOR"}</small></div><i>{active.thumbUrl?"→":"○"}</i></button>
-          <button className={`file-row action ${active.analysisStatus==="CONCLUÍDA"?"done":active.analysisStatus?"pending":""}`} disabled={!active.analysisManifest&&!hasPreparedAnalysis(active)&&!hasAnalysisPreparationCheckpoint(active)} onClick={()=>{if(active.analysisManifest){setNotice("MANIFESTO DO ANALISTA SALVO NO PROJETO.");setTimeout(()=>setNotice(""),2800);}else if(hasPreparedAnalysis(active)){void resumePreparedAnalysis(active.id,true);}else if(hasAnalysisPreparationCheckpoint(active)){void resumeAnalysisPreparation(active.id,true);}}}><span>◫</span><div><b>{hasPreparedAnalysis(active)?"PACOTE DO ANALISTA SALVO":hasAnalysisPreparationCheckpoint(active)?"CHECKPOINT DO ANALISTA SALVO":"ANÁLISE DE IMAGENS"}</b><small>{hasPreparedAnalysis(active)?`${active.analysisStatus||"AGUARDANDO ANALISTA"} · ${analysisRetryLabel(active.analysisRetryAt)}`:hasAnalysisPreparationCheckpoint(active)?`${preparationStageLabel(active)} · ${analysisRetryLabel(active.analysisPreparationRetryAt)}`:active.analysisStatus||"COMEÇA APÓS O PACOTE DO COLLECTOR"}</small>{active.analysisLastError&&hasPreparedAnalysis(active)?<em>{active.analysisLastError}</em>:null}{active.analysisPreparationError&&hasAnalysisPreparationCheckpoint(active)?<em>{active.analysisPreparationError}</em>:null}</div><i>{active.analysisStatus==="CONCLUÍDA"?"✓":hasPreparedAnalysis(active)||hasAnalysisPreparationCheckpoint(active)?"↻":"○"}</i></button>
+          <button className={`file-row action ${active.analysisStatus==="CONCLUÍDA"?"done":active.analysisStatus?"pending":""}`} disabled={!active.analysisManifest&&!hasPreparedAnalysis(active)&&!hasAnalysisPreparationCheckpoint(active)} onClick={()=>{if(analysisMessageCommitted(active)){openActivity("ANALISTA");}else if(active.analysisManifest){openActivity("ANALISTA");}else if(hasPreparedAnalysis(active)){void resumePreparedAnalysis(active.id,true);}else if(hasAnalysisPreparationCheckpoint(active)){void resumeAnalysisPreparation(active.id,true);}}}><span>◫</span><div><b>{hasPreparedAnalysis(active)?"PACOTE DO ANALISTA SALVO":hasAnalysisPreparationCheckpoint(active)?"CHECKPOINT DO ANALISTA SALVO":"ANÁLISE DE IMAGENS"}</b><small>{hasPreparedAnalysis(active)?`${active.analysisStatus||"AGUARDANDO ANALISTA"} · ${analysisRetryLabel(active.analysisRetryAt)}`:hasAnalysisPreparationCheckpoint(active)?`${preparationStageLabel(active)} · ${analysisRetryLabel(active.analysisPreparationRetryAt)}`:active.analysisStatus||"COMEÇA APÓS O PACOTE DO COLLECTOR"}</small>{active.analysisLastError&&hasPreparedAnalysis(active)?<em>{active.analysisLastError}</em>:null}{active.analysisPreparationError&&hasAnalysisPreparationCheckpoint(active)?<em>{active.analysisPreparationError}</em>:null}</div><i>{active.analysisStatus==="CONCLUÍDA"?"✓":hasPreparedAnalysis(active)||hasAnalysisPreparationCheckpoint(active)?"↻":"○"}</i></button>
           <button className={`file-row action ${active.youtubeMetadata?"done":active.youtubeStatus==="FALHOU"?"pending":""}`} disabled={!active.youtubeMetadata} onClick={()=>{if(active.youtubeMetadata)downloadTextFile(`${active.id}_YOUTUBE.txt`,active.youtubeMetadata);}}><span>▶</span><div><b>YOUTUBE / METADADOS</b><small>{active.youtubeMetadata?"BAIXAR DADOS EDITORIAIS":active.youtubeError||active.youtubeStatus||(settings.youtubeParallel?"INICIA EM PARALELO":"DESATIVADO NAS CONFIGURAÇÕES")}</small></div><i>{active.youtubeMetadata?"↓":"○"}</i></button>
           <button className={`file-row action ${consolidationState(active).ready?"done":active.pipelineItems?.length?"pending":""}`} disabled={!active.pipelineItems?.length} onClick={()=>{setConsolidationMessage("");setConsolidationOpen(true);}}><span>▦</span><div><b>CONSOLIDAÇÃO / ZIP FINAL</b><small>{active.pipelineItems?.length ? `${consolidationState(active).completed}/${consolidationState(active).items.length} FINAIS · ${consolidationState(active).ready ? "PRONTO PARA GERAR" : active.pipelineStatus || "AGUARDANDO"}` : "AGUARDANDO O ANALISTA"}</small></div><i>{active.finalZipStatus==="CONCLUIDO"?"✓":consolidationState(active).ready?"→":"○"}</i></button>
-          {active.packageCode ? <button className="package-ready" onClick={() => hasLegacyAnalysisStorage(active) ? void startImageFlow(active,{ automaticRun:active.autoRunStatus==="RUNNING", skipParallelBranches:true, selectionMode:"AUTO" }) : hasPreparedAnalysis(active) ? void resumePreparedAnalysis(active.id,true) : hasAnalysisPreparationCheckpoint(active) ? void resumeAnalysisPreparation(active.id,true) : active.pipelineStatus==="ERRO NO PIPELINE" ? void startImageFlow() : setImageOpen(true)}><span>{active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?"✓":hasLegacyAnalysisStorage(active)||hasPreparedAnalysis(active)||hasAnalysisPreparationCheckpoint(active)?"↻":"⌁"}</span><div><b>{active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?"IMAGENS FINAIS PRONTAS":hasLegacyAnalysisStorage(active)?"CHECKPOINT ANTIGO · MIGRAR PARA R2":hasPreparedAnalysis(active)?"PACOTE PRESERVADO · REENVIAR ANALISTA":hasAnalysisPreparationCheckpoint(active)?"CHECKPOINT PRESERVADO · RETOMAR PREPARAÇÃO":"PIPELINE DE IMAGENS"}</b><small>{hasLegacyAnalysisStorage(active)?"O VERCEL BLOB ANTIGO NÃO SERÁ REUTILIZADO":hasPreparedAnalysis(active)?`${active.analysisZipName||"ZIP DO ANALISTA"} · ${analysisRetryLabel(active.analysisRetryAt)}`:hasAnalysisPreparationCheckpoint(active)?`${preparationStageLabel(active)} · ${analysisRetryLabel(active.analysisPreparationRetryAt)}`:active.pipelineStatus||`${active.imageCount || 0} ARQUIVOS · ${active.packageCode}`}</small></div></button> : <button className="collector-box" disabled={!active.promptText || active.stage<4} onClick={()=>void startImageFlow()}><span>⌁</span><b>{collectorRunning?"ACOMPANHAR BUSCA":active.promptText&&active.stage>=4?"BUSCAR COM O CORVO":"AGUARDANDO PROMPTS"}</b><small>{collectorRunning?"O COLLECTOR CONTINUA TRABALHANDO":active.promptText&&active.stage>=4?`MOTOR: ${collectorEngines[settings.sourceMode].label} · SEGUNDO PLANO`:"A PRÓXIMA ETAPA SERÁ LIBERADA"}</small></button>}
+          {active.packageCode ? <button className="package-ready" onClick={() => analysisMessageCommitted(active) ? openActivity("ANALISTA") : hasLegacyAnalysisStorage(active) ? void startImageFlow(active,{ automaticRun:active.autoRunStatus==="RUNNING", skipParallelBranches:true, selectionMode:"AUTO" }) : hasPreparedAnalysis(active) ? void resumePreparedAnalysis(active.id,true) : hasAnalysisPreparationCheckpoint(active) ? void resumeAnalysisPreparation(active.id,true) : active.pipelineStatus==="ERRO NO PIPELINE" ? void startImageFlow() : setImageOpen(true)}><span>{active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?"✓":hasLegacyAnalysisStorage(active)||hasPreparedAnalysis(active)||hasAnalysisPreparationCheckpoint(active)?"↻":"⌁"}</span><div><b>{active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?"IMAGENS FINAIS PRONTAS":hasLegacyAnalysisStorage(active)?"CHECKPOINT ANTIGO · MIGRAR PARA R2":hasPreparedAnalysis(active)?(analysisMessageCommitted(active)?"ANALISTA PROCESSANDO · ACOMPANHAR":"PACOTE PRESERVADO · REENVIAR ANALISTA"):hasAnalysisPreparationCheckpoint(active)?"CHECKPOINT PRESERVADO · RETOMAR PREPARAÇÃO":"PIPELINE DE IMAGENS"}</b><small>{hasLegacyAnalysisStorage(active)?"O VERCEL BLOB ANTIGO NÃO SERÁ REUTILIZADO":hasPreparedAnalysis(active)?`${active.analysisZipName||"ZIP DO ANALISTA"} · ${analysisRetryLabel(active.analysisRetryAt)}`:hasAnalysisPreparationCheckpoint(active)?`${preparationStageLabel(active)} · ${analysisRetryLabel(active.analysisPreparationRetryAt)}`:active.pipelineStatus||`${active.imageCount || 0} ARQUIVOS · ${active.packageCode}`}</small></div></button> : <button className="collector-box" disabled={!active.promptText || active.stage<4} onClick={()=>void startImageFlow()}><span>⌁</span><b>{collectorRunning?"ACOMPANHAR BUSCA":active.promptText&&active.stage>=4?"BUSCAR COM O CORVO":"AGUARDANDO PROMPTS"}</b><small>{collectorRunning?"O COLLECTOR CONTINUA TRABALHANDO":active.promptText&&active.stage>=4?`MOTOR: ${collectorEngines[settings.sourceMode].label} · SEGUNDO PLANO`:"A PRÓXIMA ETAPA SERÁ LIBERADA"}</small></button>}
         </aside>
       </article>}
     </section>
 
     <section className="projects" id="projetos"><div className="section-heading"><div><span className="section-number">02</span><h2>PROJETOS RECENTES</h2></div><span className="project-count">{String(projects.length).padStart(2,"0")} PRODUÇÕES</span></div><div className="project-list">{projects.map((project) => <button className={`project-row ${project.id===activeId?"selected":""}`} key={project.id} onClick={() => setActiveId(project.id)}><span className="project-icon">{project.format==="REELS"?"▯":"▭"}</span><span className="project-name"><b>{project.title}</b><small>{project.id}</small></span><span className="project-format">{project.format}</span><span className="progress"><i style={{width:`${project.stage*20}%`}} /></span><span className="stage-label">ETAPA {project.stage}/5</span><span className="row-arrow">→</span></button>)}</div></section>
-    <footer><span>CORVOQUIZ PRODUÇÃO <i>V0.6.37</i></span><span>R2 SDK OFICIAL + DIAGNÓSTICO POR ETAPAS · V0.6.37</span></footer>
+    {activityOpen && active && <div className="modal-backdrop activity-backdrop" onMouseDown={(event)=>{if(event.currentTarget===event.target)setActivityOpen(false);}}><section className="activity-modal" role="dialog" aria-modal="true" aria-labelledby="activity-title">
+      <button className="modal-x" onClick={()=>setActivityOpen(false)}>×</button>
+      <span className="modal-kicker">CENTRAL AO VIVO</span><h2 id="activity-title">ACOMPANHAR PRODUÇÃO</h2><p>{active.title}</p>
+      <div className="activity-tabs">{(["TODOS","IDEIA","ROTEIRO","PROMPTS","COLLECTOR","ANALISTA","IMAGENS","THUMB","METADADOS"] as ActivityFilter[]).map((step)=><button key={step} className={activityFilter===step?"active":""} onClick={()=>setActivityFilter(step)}>{step}</button>)}</div>
+      <div className="activity-current"><span>ETAPA SELECIONADA</span><b>{activityFilter}</b><small>{activityStepStatus(active,activityFilter)}</small></div>
+      <div className="activity-list">
+        {activityJobs.filter((job)=>activityFilter==="TODOS" || specialistToActivityStep(job.specialist)===activityFilter).map((job)=><div className="activity-job" key={job.jobId}>
+          <div className="activity-job-head"><span>{job.specialist||"GPT"}</span><em className={String(job.state||"").includes("ERROR")?"error":String(job.state||"").includes("WAITING")||String(job.state||"").includes("PROCESS")?"working":""}>{job.state||"ABERTO"}</em></div>
+          <b>{job.message||"Conversa aberta pelo Corvo Bridge."}</b>
+          <small>{job.batchId?`LOTE ${job.batchId}${job.batchSize?` · ${job.batchSize} ITEM(NS)`:""} · `:""}JOB {job.jobId} · {job.tabStatus?`ABA ${job.tabStatus.toUpperCase()} · `:""}{job.updatedAt?`ATUALIZADO HÁ ${elapsedLabel(new Date(job.updatedAt).toISOString())}`:""}</small>
+          <div className="activity-job-actions"><button onClick={()=>void openBridgeConversation(job)}>ABRIR CONVERSA ↗</button>{job.conversationUrl?<span>CONVERSA LOCALIZADA</span>:<span>AGUARDANDO URL DA CONVERSA</span>}</div>
+        </div>)}
+        {!activityLoading && !activityJobs.filter((job)=>activityFilter==="TODOS" || specialistToActivityStep(job.specialist)===activityFilter).length && <div className="activity-empty"><b>NENHUMA CONVERSA ATIVA NESTA ETAPA</b><small>Etapas concluídas podem ter a aba fechada automaticamente pelo Bridge. O status persistido do projeto continua acima.</small></div>}
+      </div>
+      {activityError&&<div className="activity-error">{activityError}</div>}
+      <div className="activity-footer"><small>{activityLoading?"ATUALIZANDO...":activityUpdatedAt?`ÚLTIMA LEITURA · ${new Date(activityUpdatedAt).toLocaleTimeString("pt-BR")}`:"AGUARDANDO BRIDGE"}</small><button onClick={()=>void refreshActivity(active.id)}>ATUALIZAR AGORA</button></div>
+    </section></div>}
+
+    <footer><span>CORVOQUIZ PRODUÇÃO <i>V0.6.41</i></span><span>BATCHING 10 + JOB LÓGICO + CLEANER · V0.6.41</span></footer>
     {notice && <div className="toast">{notice}</div>}
 
     {createOpen && <div className="modal-backdrop" onMouseDown={(event) => event.target===event.currentTarget&&closeCreationModal()}><section className="creation-modal idea-modal" role="dialog" aria-modal="true" aria-labelledby="new-production-title"><button className="modal-close" disabled={ideaLoading} onClick={closeCreationModal} aria-label="Fechar">×</button><div className="modal-symbol">✦</div><span className="modal-kicker">{ideaRevisionProjectId?"REFAZER IDEIA":"NOVA PRODUÇÃO"}</span><h2 id="new-production-title">{ideaRevisionProjectId?"ESCOLHA UMA NOVA DIREÇÃO":"O QUE VAMOS CRIAR?"}</h2><p>{ideaRevisionProjectId?"Ao confirmar, roteiro, prompts e imagens serão refeitos automaticamente.":"Comece sem tema e peça ideias ao Corvo, ou informe uma direção opcional."}</p>
@@ -2352,8 +3050,8 @@ export default function Home() {
         <div className="downloads-head"><div><span>INSTALAÇÃO E SUPORTE</span><h3 id="downloads-title">ARQUIVOS PARA BAIXAR</h3></div><small>SE PRECISAR REINSTALAR</small></div>
         <div className="download-grid">
           <a className="download-card" href="/downloads/CORVO_COLLECTOR_V080_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.8.0</small></div><i>↓</i></a>
-          <a className="download-card" href="/downloads/CORVO_BRIDGE_V0620_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.20 · R2 + RETOMADA DO ENVIO + DIAGNÓSTICO</small></div><i>↓</i></a>
-          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0637.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
+          <a className="download-card" href="/downloads/CORVO_BRIDGE_V0624_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.24 · BATCHING + CLEANER RESILIENTE</small></div><i>↓</i></a>
+          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0641.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
         </div>
       </section>
       <details className="advanced-settings"><summary>CONFIGURAÇÕES AVANÇADAS</summary><div className="settings-grid"><label>CANDIDATAS COLETADAS/ID<input type="number" min="1" max="20" value={settings.maxCandidates} onChange={(event)=>setSettings({...settings,maxCandidates:Math.max(1,Math.min(20,Number(event.target.value)||20))})}/></label><label>CANDIDATAS/ID → ANALISTA<input type="number" min="1" max="30" value={settings.analystCandidatesPerId} onChange={(event)=>setSettings({...settings,analystCandidatesPerId:Math.max(1,Math.min(30,Number(event.target.value)||10))})}/></label><label>VARREDURA<input type="number" value={settings.scrollSteps} onChange={(event)=>setSettings({...settings,scrollSteps:Number(event.target.value)})}/></label><label>QUALIDADE JPEG<input type="number" step=".01" value={settings.jpegQuality} onChange={(event)=>setSettings({...settings,jpegQuality:Number(event.target.value)})}/></label><label>PREFIXO<input value={settings.prefix} onChange={(event)=>setSettings({...settings,prefix:event.target.value})}/></label></div><p>A busca coleta no máximo 20 candidatas únicas por ID. No modo Mesclado, a meta é dividida entre Google e Pinterest. Depois, o limite do Analista reduz apenas o transporte; o app não escolhe a vencedora.</p><label className="batch-label">COMANDOS EM LOTE — OPCIONAL<textarea value={settings.batchText} onChange={(event)=>setSettings({...settings,batchText:event.target.value})} placeholder={"01|primeira busca\n02|segunda busca"} /></label></details>

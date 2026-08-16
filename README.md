@@ -1,6 +1,48 @@
-# CorvoQuiz Produção — V0.6.37
+# CORVOQUIZ V0.6.41 — BATCHING REAL + JOB LÓGICO + CLEANER RESILIENTE
 
-## V0.6.37 — SDK S3 oficial do R2 + diagnóstico por etapas
+## Correção estrutural da pipeline de imagens
+
+- REFINADOR: até 10 imagens por JOB/conversa. 60 imagens aprovadas = 6 lotes, com no máximo 2 lotes ativos ao mesmo tempo.
+- GERADOR: até 10 IDs por JOB/conversa, com um lote ativo por vez.
+- FALLBACK: até 10 falhas por JOB/conversa, com um lote ativo por vez.
+- Falhas técnicas do Bridge (timeout, attachment, composer, rate limit) NÃO são mais enviadas automaticamente ao Fallback. O mesmo JOB é retomado primeiro.
+- Rate limit do ChatGPT é detectado pelo Bridge; o lote pausa e tenta novamente sem abrir uma cascata de Fallbacks.
+- Cada item recebe um logicalJobId persistente; tentativas e fallback ficam no histórico do mesmo trabalho lógico.
+- Retry semântico que permanece no mesmo especialista reabre a conversa original do lote; não cria outra conversa visível.
+- A candidata escolhida pelo Analista vira selectedFile imutável. Refinador/Fallback/retry não podem trocar c001 por c009 ou qualquer outra candidata.
+- Captura de várias imagens no mesmo job passou a reservar uma imagem física diferente para cada ARQUIVO esperado.
+- Central ao Vivo exibe LOTE_ID e quantidade de itens quando o job é batelado.
+- Reload não volta ao Collector: se `analysisStatus=CONCLUÍDA` e já existem `pipelineItems`, o app retoma os JOBs/lotes persistidos, inclusive jobs que ainda estavam processando.
+- O Fallback também preserva/reutiliza sua conversa em ciclos posteriores do mesmo conjunto de itens, evitando uma nova aba a cada retry semântico.
+- Captura física de lote ignora imagens anexadas pelo usuário e aceita somente imagens provenientes das respostas do assistant.
+
+## Cleaner V0.6.24
+
+- Uma falha de exclusão não interrompe mais a fila inteira.
+- Conversas duplicadas mapeadas por vários jobs são deduplicadas por conversationId antes da exclusão.
+- Falhas permanecem pendentes para retry; conversas seguintes continuam sendo apagadas.
+- O popup conta conversas únicas, não registros duplicados de jobs.
+- Jobs em erro deixam de bloquear a limpeza para sempre: após a janela de segurança, entram como pendentes de limpeza.
+- Cada conversa recebe até duas tentativas de exclusão; se continuar falhando, a aba de manutenção é resetada e o Cleaner segue imediatamente para a próxima.
+
+# CORVOQUIZ V0.6.40 — AUTOMÁTICO CONTÍNUO + SEGUNDO PLANO TOTAL
+
+
+## O que mudou na V0.6.40
+
+- IDEIA começa imediatamente no automático; R2/Collector só são validados quando chegam as imagens.
+- JOB da ideia, prompt e confirmação de envio ficam persistidos para sobreviver a reload.
+- Roteiro e prompts também persistem JOB/prompt/envio e retomam sem clique.
+- Supervisor a cada 5 s retoma produções RUNNING quando nenhuma rotina está ativa.
+- Falhas transitórias ganham retry automático com backoff; configuração inválida continua pedindo atenção.
+- Bridge V0.6.23 nunca ativa uma aba do GPT como fallback. Retry de composer/send ocorre na aba oculta.
+- A única ação que leva uma conversa ao primeiro plano é o clique explícito em ABRIR CONVERSA na Central ao Vivo.
+
+A V0.6.40 corrige o AUTOMÁTICO TOTAL para avançar sozinho desde a ideia até o ZIP final, com retomada persistente dos jobs iniciais e supervisor de continuidade. O Bridge V0.6.23 mantém todos os envios e retries em segundo plano; uma conversa só vai ao primeiro plano quando o usuário clicar explicitamente em ABRIR CONVERSA.
+
+# CorvoQuiz Produção — V0.6.36
+
+## V0.6.36 — SDK S3 oficial do R2 + diagnóstico por etapas
 
 - O armazenamento R2 deixou de usar assinatura AWS SigV4 implementada manualmente.
 - O app agora usa `@aws-sdk/client-s3` para PUT/GET/DELETE/HeadBucket e `@aws-sdk/s3-request-presigner` para URLs temporárias.
@@ -324,7 +366,7 @@ Use `public/downloads/CORVO_COLLECTOR_V080_EXTENSION.zip` ou carregue a pasta `c
 
 - Corvo Collector V0.8.0;
 - Corvo Bridge V0.6.20;
-- Kit completo CorvoQuiz V0.6.37.
+- Kit completo CorvoQuiz V0.6.36.
 
 ## Fora do escopo atual
 
@@ -338,10 +380,10 @@ Publicação automática no YouTube continua futura: upload do vídeo final, apl
 - Novo endpoint `POST /api/corvo/candidatos-lote` grava um ZIP por lote no Blob e registra todas as entradas em uma única operação no Redis.
 - A consolidação do pacote do Analista baixa cada lote uma única vez, mantendo compatibilidade com candidatas antigas armazenadas individualmente.
 - Lotes usam retry automático em falhas temporárias de rede, 429 e 5xx.
-## V0.6.37 — saneamento R2 + recuperação de checkpoint malformado
-- `R2_BUCKET_NAME` e demais variáveis são normalizadas para uma única linha; valores colados repetidamente não contaminam mais o SDK.
-- `R2_ENDPOINT` em `*.r2.cloudflarestorage.com` é sempre reduzido ao origin base; `/bucket` é removido automaticamente.
-- Diagnóstico expõe `storageWarnings` sem segredos (`R2_BUCKET_MULTILINE_SANITIZED`, `R2_ENDPOINT_BUCKET_PATH_REMOVED`).
-- URLs R2 assinadas geradas antes da correção podem ser lidas diretamente como fallback, permitindo reconstruir o ZIP do Analista sem repetir o Collector enquanto a assinatura estiver válida.
-- `/api/corvo/pacote` retorna `R2_CANDIDATE_RECOVERY_FAILED` com amostra das falhas.
-- Modal ORGANIZANDO mostra o estado/erro real do checkpoint e botão RETOMAR AGORA; não aparenta mais travamento silencioso.
+
+## V0.6.39 — trava de espera do Analista
+- Depois de USER_MESSAGE_COMMITTED/MESSAGE_CONFIRMED/WAITING_ACTION, o app nunca reenvia automaticamente o job do Analista por timeout.
+- ZIPs grandes podem levar horas; o app apenas consulta a Action até DONE/ERROR.
+- Recarga da página retoma somente o polling quando a mensagem já foi enviada.
+- O Bridge V0.6.21 bloqueia um novo job ANALISTA enquanto a conversa do Analista ainda está respondendo.
+- O retry por tempo continua existindo apenas antes da confirmação real do envio (composer/anexo/botão).

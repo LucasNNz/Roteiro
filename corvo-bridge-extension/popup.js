@@ -30,15 +30,25 @@ async function refresh(){
     const c=await chrome.runtime.sendMessage({type:"CORVO_CLEANER_GET_STATE"});
     if(c?.ok){
       const eligible=(c.records||[]).filter(r=>r.eligible===true);
-      mappedPending=eligible.filter(r=>r.done&&!r.deleted&&r.conversationUrl&&r.conversationId).length;
-      const today=eligible.filter(r=>r.day===new Date().toLocaleDateString("en-CA")).length;
-      document.querySelector("#cleaner").textContent=`🧹 Cleaner: ${c.config.cleanerEnabled?"ATIVO":"DESATIVADO"} • ${c.config.cleanerHour||"22:00"}\nHoje: ${today} próprias • Pendentes: ${mappedPending}${c.config.cleanerDryRun!==false?" • MODO TESTE":""}`;
+      const now=Date.now(), staleMs=15*60*1000;
+      const candidateRecords=eligible.filter(r=>{
+        if(r.deleted||!r.conversationUrl||!r.conversationId)return false;
+        if(r.done)return true;
+        const state=String(r.lastBridgeState||r.cleanerState||"").toUpperCase();
+        const errorAt=Number(r.lastBridgeErrorAt||r.lastBridgeStateAt||r.updatedAt||0);
+        return state==="ERROR"&&errorAt>0&&(now-errorAt)>=staleMs;
+      });
+      const uniquePending=new Set(candidateRecords.map(r=>r.conversationId));
+      mappedPending=uniquePending.size;
+      const failedReady=new Set(candidateRecords.filter(r=>String(r.lastBridgeState||r.cleanerState||"").toUpperCase()==="ERROR"&&!r.done).map(r=>r.conversationId)).size;
+      const today=new Set(eligible.filter(r=>r.day===new Date().toLocaleDateString("en-CA")&&r.conversationId).map(r=>r.conversationId)).size;
+      document.querySelector("#cleaner").textContent=`🧹 Cleaner: ${c.config.cleanerEnabled?"ATIVO":"DESATIVADO"} • ${c.config.cleanerHour||"22:00"}\nHoje: ${today} conversas próprias • Pendentes: ${mappedPending}${failedReady?` • Falhas liberadas: ${failedReady}`:""}${c.config.cleanerDryRun!==false?" • MODO TESTE":""}`;
       const deleteButton=document.querySelector("#deleteMapped");
       const cleanerStatus=c.status||null;
       deleteButton.disabled=mappedPending===0||Boolean(cleanerStatus?.running);
       deleteButton.textContent=cleanerStatus?.running
         ?`Limpando ${cleanerStatus.current||0}/${cleanerStatus.candidates||mappedPending}...`
-        :(mappedPending>0?`Apagar ${mappedPending} mapeada${mappedPending===1?"":"s"} agora`:"Nenhuma conversa para apagar");
+        :(mappedPending>0?`Apagar/tentar ${mappedPending} conversa${mappedPending===1?"":"s"} agora`:"Nenhuma conversa para apagar");
       const output=document.querySelector("#cleanerAction");
       if(cleanerStatus?.running){
         const firstError=cleanerStatus?.errors?.[0]?.error;
@@ -56,7 +66,7 @@ document.querySelector("#deleteMapped").addEventListener("click",async(e)=>{
   const b=e.currentTarget;
   if(mappedPending<1)return;
   const count=mappedPending;
-  if(!confirm(`Apagar agora ${count} conversa${count===1?"":"s"} concluída${count===1?"":"s"} já mapeada${count===1?"":"s"} pelo Corvo Bridge?\n\nA exclusão é permanente. Somente conversas próprias, concluídas e já registradas pelo Cleaner serão usadas.`))return;
+  if(!confirm(`Apagar agora ${count} conversa${count===1?"":"s"} já liberada${count===1?"":"s"} pelo Corvo Bridge?\n\nA exclusão é permanente. Entram apenas conversas próprias já concluídas ou jobs em erro há tempo suficiente para não interferir em retries ativos.`))return;
   const output=document.querySelector("#cleanerAction");
   b.disabled=true;
   b.textContent="Apagando...";

@@ -1,8 +1,9 @@
 (() => {
-  if (globalThis.__CORVO_CHATGPT_BRIDGE_V0619__) return;
-  globalThis.__CORVO_CHATGPT_BRIDGE_V0619__ = true;
+  if (globalThis.__CORVO_CHATGPT_BRIDGE_V0624__) return;
+  globalThis.__CORVO_CHATGPT_BRIDGE_V0624__ = true;
 
   let busy = false;
+  const capturedImageAssignments = new Map();
   const COMPOSER_TIMEOUT_MS = 30000;
   const BUTTON_TIMEOUT_MS = 60000;
   const CONFIRM_TIMEOUT_MS = 60000;
@@ -999,13 +1000,30 @@
   function generatedImageCandidates(payload = {}) {
     const seen = new Set();
     const items = [];
-    const scopes = [
-      ...document.querySelectorAll('article[data-testid^="conversation-turn"]'),
-      ...document.querySelectorAll('[data-message-author-role="assistant"]')
-    ];
+    // Em jobs batelados o composer contém até 10 imagens de ENTRADA. Elas jamais
+    // podem ser confundidas com a saída refinada/gerada. Por isso o capturador
+    // considera somente regiões pertencentes ao ASSISTANT.
+    const assistantScopes = [
+      ...document.querySelectorAll('[data-message-author-role="assistant"]'),
+      ...document.querySelectorAll('article[data-testid^="conversation-turn"]')
+    ].filter((scope, index, all) => {
+      if (all.indexOf(scope) !== index) return false;
+      const ownRole = scope.getAttribute?.('data-message-author-role');
+      if (ownRole) return ownRole === 'assistant';
+      if (scope.querySelector?.('[data-message-author-role="user"]')) return false;
+      return Boolean(scope.querySelector?.('[data-message-author-role="assistant"]'));
+    });
 
     function addImage(image, scope = null, scopeIndex = -1) {
       if (!image || seen.has(image)) return;
+      const authorNode = image.closest?.('[data-message-author-role]');
+      if (authorNode && authorNode.getAttribute('data-message-author-role') !== 'assistant') return;
+      const turn = scope || image.closest('article[data-testid^="conversation-turn"], [data-message-author-role="assistant"]');
+      if (!turn) return;
+      const turnRole = turn.getAttribute?.('data-message-author-role');
+      if (turnRole && turnRole !== 'assistant') return;
+      if (!turnRole && turn.querySelector?.('[data-message-author-role="user"]')) return;
+
       seen.add(image);
       if (!visible(image)) return;
       const width = image.naturalWidth || image.width || image.clientWidth || 0;
@@ -1015,7 +1033,6 @@
       if (!src || src.startsWith("data:image/svg")) return;
       if (/avatar|profile|ícone|icon|favicon/.test(alt)) return;
       if (width < 420 || height < 220 || width * height < 180000) return;
-      const turn = scope || image.closest('article[data-testid^="conversation-turn"], [data-message-author-role="assistant"]');
       const text = String(turn?.textContent || "");
       const manifest = /\[CORVO_THUMBNAIL\]|TIPO_ARQUIVO\s*=\s*THUMBNAIL|\[CORVO_IMAGE_(GENERATION|REFINEMENT)\]/i.test(text) ? 1 : 0;
       const jobMatch = payload?.jobId && text.includes(String(payload.jobId)) ? 1 : 0;
@@ -1024,18 +1041,17 @@
       items.push({ image, scope: turn, scopeIndex, manifest, jobMatch, fileMatch, area: width * height, y: rect.top + window.scrollY });
     }
 
-    scopes.forEach((scope, scopeIndex) => {
+    assistantScopes.forEach((scope, scopeIndex) => {
       [...scope.querySelectorAll('img')].forEach((image) => addImage(image, scope, scopeIndex));
     });
-    [...document.querySelectorAll('img')].forEach((image) => addImage(image));
 
     return items.sort((a, b) =>
-      a.jobMatch - b.jobMatch ||
-      a.fileMatch - b.fileMatch ||
-      a.manifest - b.manifest ||
-      a.scopeIndex - b.scopeIndex ||
+      b.jobMatch - a.jobMatch ||
+      b.fileMatch - a.fileMatch ||
+      b.manifest - a.manifest ||
       a.y - b.y ||
-      a.area - b.area
+      a.scopeIndex - b.scopeIndex ||
+      b.area - a.area
     );
   }
 
@@ -1081,8 +1097,26 @@
   async function captureGeneratedImage(payload = {}, timeout = 30000) {
     const deadline = Date.now() + Math.max(5000, Number(payload?.timeout || timeout));
     let lastError = "GENERATED_IMAGE_NOT_FOUND";
+    const jobId = String(payload?.jobId || "");
+    const requestedName = String(payload?.name || "");
+    const assignments = capturedImageAssignments.get(jobId) || new Map();
+    capturedImageAssignments.set(jobId, assignments);
     while (Date.now() < deadline) {
-      const candidate = generatedImageCandidates(payload).at(-1);
+      const candidates = generatedImageCandidates(payload);
+      const assignedSrc = assignments.get(requestedName) || "";
+      const used = new Set([...assignments.entries()].filter(([name]) => name !== requestedName).map(([,src]) => src));
+      let candidate = assignedSrc ? candidates.find((item) => String(item.image.currentSrc || item.image.src || "") === assignedSrc) : null;
+      if (!candidate) {
+        const unused = candidates.filter((item) => !used.has(String(item.image.currentSrc || item.image.src || "")));
+        const exact = unused.filter((item) => item.fileMatch > 0);
+        // Em lotes, cada ARQUIVO esperado precisa receber uma imagem física
+        // distinta. Quando o texto do GPT não vincula explicitamente o nome do
+        // arquivo à imagem, usamos a ordem visual da conversa (topo -> baixo),
+        // que acompanha a ordem dos blocos [ID] do manifesto.
+        const pool = exact.length ? exact : unused;
+        candidate = [...pool].sort((a,b) => a.y - b.y || a.scopeIndex - b.scopeIndex || a.area - b.area)[0] || null;
+        if (candidate) assignments.set(requestedName, String(candidate.image.currentSrc || candidate.image.src || ""));
+      }
       if (candidate) {
         const src = String(candidate.image.currentSrc || candidate.image.src || "");
         try {
@@ -1126,9 +1160,33 @@
       }
       await sleep(750);
     }
+    if (requestedName) assignments.delete(requestedName);
     throw new Error(lastError);
   }
 
+
+  function detectRateLimitDialog() {
+    const nodes = [...document.querySelectorAll('[role="dialog"], [role="alertdialog"], body')];
+    for (const node of nodes) {
+      if (node !== document.body && !isVisible(node)) continue;
+      const text = String(node.innerText || node.textContent || "").replace(/\s+/g, " ").trim();
+      if (!/(excesso de solicitações|solicitações rápido demais|aguarde alguns minutos|too many requests|requests too quickly|try again in a few minutes)/i.test(text)) continue;
+      return node;
+    }
+    return null;
+  }
+
+  async function rejectIfRateLimited(jobId) {
+    const dialog = detectRateLimitDialog();
+    if (!dialog) return false;
+    const text = shortText(dialog.innerText || dialog.textContent || "", 500);
+    const buttons = [...dialog.querySelectorAll('button')].filter(isVisible);
+    const dismiss = buttons.find((button) => /(entendido|ok|got it|close|fechar)/i.test(String(button.innerText || button.textContent || button.getAttribute('aria-label') || '')));
+    if (dismiss) clickButton(dismiss);
+    await reportDiagnostic(jobId, "CHATGPT_RATE_LIMIT_DETECTED", { text, dismissed:Boolean(dismiss), page:pageDiagnostic() });
+    await reportStage(jobId, "RATE_LIMITED", "O ChatGPT limitou temporariamente as solicitações. O lote será pausado e retomado depois, sem abrir Fallback.");
+    throw new Error("CHATGPT_RATE_LIMITED");
+  }
 
   async function sendPrompt(job) {
     if (busy) {
@@ -1139,9 +1197,16 @@
     try {
       await reportDiagnostic(job.jobId, "SEND_PROMPT_START", { specialist:job.specialist || "", attempt:job.bridgeAttempt || "background", page:pageDiagnostic(), promptLength:String(job.prompt || "").length, attachmentCount:Array.isArray(job?.meta?.attachments) ? job.meta.attachments.length : 0 });
       if (conversationHasJob(job.jobId)) {
-        await reportDiagnostic(job.jobId, "JOB_ALREADY_IN_CONVERSATION", { page:pageDiagnostic() });
+        await reportDiagnostic(job.jobId, "JOB_ALREADY_IN_CONVERSATION", { streaming:responseIsStreaming(), page:pageDiagnostic() });
+        await reportStage(job.jobId, "WAITING_ACTION", "Este job já está na conversa. Aguardando o GPT concluir; nenhuma nova mensagem será enviada.");
         await reportSent(job.jobId);
         return;
+      }
+      await rejectIfRateLimited(job.jobId);
+      if (String(job.specialist || "").toUpperCase() === "ANALISTA" && responseIsStreaming()) {
+        await reportDiagnostic(job.jobId, "ANALYST_PREVIOUS_RESPONSE_ACTIVE", { page:pageDiagnostic() });
+        await reportStage(job.jobId, "WAITING_PREVIOUS_RESPONSE", "O Corvo Analista ainda está respondendo ao job anterior. Novo envio bloqueado.");
+        throw new Error("ANALYST_PREVIOUS_RESPONSE_ACTIVE");
       }
 
       await reportStage(job.jobId, "WAITING_COMPOSER", "Aguardando o editor do GPT ficar pronto...");
@@ -1172,6 +1237,7 @@
       }
       if (!composerText(findComposer()).includes(job.jobId)) throw new Error("COMPOSER_LOST_AFTER_ATTACHMENT");
 
+      await rejectIfRateLimited(job.jobId);
       await reportStage(job.jobId, "WAITING_SEND_CONTROL", attachmentBytes ? "ZIP pronto. Aguardando o botão de enviar ficar disponível..." : "Solicitação pronta. Aguardando o botão de enviar...");
       const attachmentButtonTimeout = attachmentBytes
         ? Math.max(120000, Math.min(300000, 45000 + Math.floor(attachmentBytes / 180)))
@@ -1245,7 +1311,7 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "CORVO_BRIDGE_PING") {
       chrome.runtime.sendMessage({ type: "CORVO_GPT_READY" }).catch(() => {});
-      sendResponse({ ok: true, version:"0.6.20", page:pageDiagnostic() });
+      sendResponse({ ok: true, version:"0.6.24", page:pageDiagnostic() });
       return;
     }
     if (message?.type === "CORVO_SEND_PROMPT") {

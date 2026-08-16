@@ -25,6 +25,25 @@
       } catch {}
     }
 
+    if (msg.type === "CORVO_BRIDGE_GET_JOB_ACTIVITY") {
+      try {
+        const response = await chrome.runtime.sendMessage({ type:"CORVO_GET_JOB_ACTIVITY" });
+        window.postMessage({ source:"CORVO_BRIDGE", type:"CORVO_BRIDGE_JOB_ACTIVITY_ACK", payload:response || {} }, "*");
+      } catch (error) {
+        window.postMessage({ source:"CORVO_BRIDGE", type:"CORVO_BRIDGE_JOB_ACTIVITY_ACK", payload:{ ok:false, error:error.message || "JOB_ACTIVITY_FAILED" } }, "*");
+      }
+    }
+
+    if (msg.type === "CORVO_BRIDGE_FOCUS_JOB") {
+      const jobId = String(msg.payload?.jobId || "").trim();
+      try {
+        const response = await chrome.runtime.sendMessage({ type:"CORVO_FOCUS_JOB", payload:{ jobId } });
+        window.postMessage({ source:"CORVO_BRIDGE", type:"CORVO_BRIDGE_FOCUS_JOB_ACK", payload:{ ...(response || {}), jobId } }, "*");
+      } catch (error) {
+        window.postMessage({ source:"CORVO_BRIDGE", type:"CORVO_BRIDGE_FOCUS_JOB_ACK", payload:{ ok:false, jobId, error:error.message || "FOCUS_JOB_FAILED" } }, "*");
+      }
+    }
+
     if (msg.type === "CORVO_BRIDGE_JOB_COMPLETE") {
       const jobId = String(msg.payload?.jobId || "").trim();
       if (!jobId) {
@@ -56,5 +75,5 @@
     }
   });
 
-  window.postMessage({ source: "CORVO_BRIDGE", type: "CORVO_BRIDGE_READY", payload: { version: "0.6.20" } }, "*");
+  window.postMessage({ source: "CORVO_BRIDGE", type: "CORVO_BRIDGE_READY", payload: { version: "0.6.24" } }, "*");
 })();
