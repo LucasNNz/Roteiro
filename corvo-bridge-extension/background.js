@@ -91,7 +91,7 @@ async function getDiagnostic(jobId) {
   const start = events[0]?.at || job.createdAt || Date.now();
   const lines = [
     "CORVO BRIDGE DIAGNÓSTICO V1",
-    `Bridge: V0.6.16`,
+    `Bridge: V0.6.17`,
     `JOB_ID: ${id}`,
     `Eventos: ${events.length}`,
     `Status atual: ${data.corvoBridgeStatus?.state || ""} | ${data.corvoBridgeStatus?.message || ""}`,
@@ -601,22 +601,88 @@ function rejectDelivery(jobId, error) {
   delivery.reject(error instanceof Error ? error : new Error(String(error || "GPT_SEND_FAILED")));
 }
 
+function isMissingReceiverError(error) {
+  const text = String(error?.message || error || "");
+  return /Receiving end does not exist|Could not establish connection/i.test(text);
+}
+
+async function waitTabComplete(tabId, timeout = 30000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (tab.status === "complete") return tab;
+    } catch (error) {
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 350));
+  }
+  throw new Error("TAB_RELOAD_TIMEOUT");
+}
+
+async function injectChatGptBridge(tabId, pending) {
+  await appendDiagnostic(pending?.jobId, "CONTENT_SCRIPT_INJECT_START", { tabId }, "background").catch(() => {});
+  try {
+    const result = await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["chatgpt-bridge.js"]
+    });
+    await appendDiagnostic(pending?.jobId, "CONTENT_SCRIPT_INJECT_OK", { tabId, frames:Array.isArray(result) ? result.length : 0 }, "background").catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    return true;
+  } catch (error) {
+    await appendDiagnostic(pending?.jobId, "CONTENT_SCRIPT_INJECT_FAILED", { tabId, error:String(error?.message || error || "") }, "background").catch(() => {});
+    return false;
+  }
+}
+
+async function reloadTabForBridge(tabId, pending) {
+  await appendDiagnostic(pending?.jobId, "TAB_RELOAD_FOR_CONTENT_SCRIPT", { tabId }, "background").catch(() => {});
+  await chrome.tabs.reload(tabId);
+  await waitTabComplete(tabId, 35000);
+  // document.complete pode chegar antes do content script em document_idle.
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  await appendDiagnostic(pending?.jobId, "TAB_RELOAD_COMPLETE", { tabId }, "background").catch(() => {});
+}
+
 async function pingTabUntilReady(tabId) {
   const pending = pendingByTab.get(tabId);
   if (pending) appendDiagnostic(pending.jobId, "PING_START", { tabId }, "background").catch(() => {});
+  let injectionTried = false;
+  let reloadTried = false;
+
   for (let attempt = 0; attempt < 80; attempt++) {
     try {
       const pong = await chrome.tabs.sendMessage(tabId, { type: "CORVO_BRIDGE_PING" });
-      if (pending) appendDiagnostic(pending.jobId, "PING_OK", { tabId, attempt:attempt + 1, pong }, "background").catch(() => {});
+      if (pending) appendDiagnostic(pending.jobId, "PING_OK", { tabId, attempt:attempt + 1, pong, recovered:injectionTried || reloadTried }, "background").catch(() => {});
       return;
     } catch (error) {
-      if (pending && [0, 3, 9, 19, 39, 79].includes(attempt)) appendDiagnostic(pending.jobId, "PING_WAIT", { tabId, attempt:attempt + 1, error:String(error?.message || error || "") }, "background").catch(() => {});
+      const errorText = String(error?.message || error || "");
+      if (pending && [0, 3, 9, 19, 39, 79].includes(attempt)) appendDiagnostic(pending.jobId, "PING_WAIT", { tabId, attempt:attempt + 1, error:errorText }, "background").catch(() => {});
+
+      if (isMissingReceiverError(error) && !injectionTried) {
+        injectionTried = true;
+        if (pending) await appendDiagnostic(pending.jobId, "CONTENT_SCRIPT_MISSING", { tabId, error:errorText }, "background").catch(() => {});
+        const injected = await injectChatGptBridge(tabId, pending);
+        if (injected) continue;
+      }
+
+      if (isMissingReceiverError(error) && injectionTried && !reloadTried && attempt >= 2) {
+        reloadTried = true;
+        try {
+          await reloadTabForBridge(tabId, pending);
+          continue;
+        } catch (reloadError) {
+          if (pending) await appendDiagnostic(pending.jobId, "TAB_RELOAD_FAILED", { tabId, error:String(reloadError?.message || reloadError || "") }, "background").catch(() => {});
+        }
+      }
+
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
   }
   if (pending) {
-    appendDiagnostic(pending.jobId, "PING_FAILED", { tabId }, "background").catch(() => {});
-    rejectDelivery(pending.jobId, new Error("GPT_SEND_FAILED"));
+    appendDiagnostic(pending.jobId, "PING_FAILED", { tabId, injectionTried, reloadTried }, "background").catch(() => {});
+    rejectDelivery(pending.jobId, new Error("GPT_CONTENT_SCRIPT_UNAVAILABLE"));
   }
 }
 

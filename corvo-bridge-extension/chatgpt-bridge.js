@@ -1,4 +1,7 @@
 (() => {
+  if (globalThis.__CORVO_CHATGPT_BRIDGE_V0617__) return;
+  globalThis.__CORVO_CHATGPT_BRIDGE_V0617__ = true;
+
   let busy = false;
   const COMPOSER_TIMEOUT_MS = 30000;
   const BUTTON_TIMEOUT_MS = 12000;
@@ -1136,7 +1139,7 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "CORVO_BRIDGE_PING") {
       chrome.runtime.sendMessage({ type: "CORVO_GPT_READY" }).catch(() => {});
-      sendResponse({ ok: true, version:"0.6.16", page:pageDiagnostic() });
+      sendResponse({ ok: true, version:"0.6.17", page:pageDiagnostic() });
       return;
     }
     if (message?.type === "CORVO_SEND_PROMPT") {

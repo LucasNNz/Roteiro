@@ -1,6 +1,14 @@
-# CORVO BRIDGE V0.6.16 — DIAGNÓSTICO DO ENVIO PARA GPTS COM ANEXO
+# CORVO BRIDGE V0.6.17 — AUTORRECUPERAÇÃO DO CONTENT SCRIPT + DIAGNÓSTICO
 
-## V0.6.16 — diagnóstico persistente por JOB_ID
+## V0.6.17 — hotfix do handshake em aba reutilizada
+
+- Se uma aba do ChatGPT for reutilizada sem o `chatgpt-bridge.js` ativo, o Bridge detecta `Receiving end does not exist`.
+- Tenta injetar `chatgpt-bridge.js` programaticamente via `chrome.scripting.executeScript`.
+- Se a injeção não confirmar, recarrega a aba do GPT e aguarda o content script declarativo subir.
+- O envio só avança depois de `PING_OK`.
+- Novos eventos de diagnóstico: `CONTENT_SCRIPT_MISSING`, `CONTENT_SCRIPT_INJECT_START/OK/FAILED`, `TAB_RELOAD_FOR_CONTENT_SCRIPT`, `TAB_RELOAD_COMPLETE/FAILED`.
+- Mantém todo o diagnóstico V0.6.16.
+
 
 O Bridge registra os estados reais do envio ao GPT e permite copiar o diagnóstico pelo popup. O log inclui composer, file inputs, download/anexo, botão de enviar e confirmação da mensagem, sem copiar o conteúdo integral do prompt ou tokens sensíveis.
 

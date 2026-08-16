@@ -1,3 +1,7 @@
+## Alteração V0.6.30 — autorrecuperação do handshake em aba reutilizada
+
+O diagnóstico mostrou `TAB_REUSED` seguido de `Receiving end does not exist`: a aba do Analista estava aberta, mas sem o content script do Bridge. O Bridge V0.6.17 passa a detectar esse estado, injetar `chatgpt-bridge.js` via `chrome.scripting`, e usar reload da aba como fallback. Nenhum anexo/prompt é iniciado antes do `PING_OK`. O checkpoint de preparação continua preservado durante toda a recuperação.
+
 ## Alteração V0.6.29 — diagnóstico de handshake do Analista
 
 O Bridge V0.6.16 passa a persistir um trace por JOB_ID cobrindo: abertura/ping da aba, composer, preenchimento, download do anexo, descoberta e estado dos inputs de arquivo, confirmação visual do ZIP, botões de envio e presença do JOB_ID na mensagem do usuário. O trace pode ser copiado pelo popup para localizar a falha exata sem desmontar o checkpoint do Analista.

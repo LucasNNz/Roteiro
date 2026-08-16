@@ -1,4 +1,12 @@
-# CorvoQuiz Produção — V0.6.29
+# CorvoQuiz Produção — V0.6.30
+
+## V0.6.30 — handshake autorrecuperável do Analista
+
+- Bridge V0.6.17 corrige o gap identificado pelo diagnóstico: aba reutilizada do GPT sem content script receptor.
+- Ao detectar `Receiving end does not exist`, injeta o `chatgpt-bridge.js` automaticamente.
+- Se necessário, recarrega a aba do GPT e aguarda novo handshake.
+- ZIP/mensagem só começam depois de `PING_OK`.
+- Checkpoint do Analista continua preservado durante a recuperação.
 
 ## V0.6.29 — diagnóstico completo do envio ao Analista
 
@@ -254,9 +262,9 @@ Configure no projeto:
 
 ## Instalação
 
-### Corvo Bridge V0.6.16
+### Corvo Bridge V0.6.17
 
-Use `public/downloads/CORVO_BRIDGE_V0616_EXTENSION.zip` ou carregue a pasta `corvo-bridge-extension` em `chrome://extensions`.
+Use `public/downloads/CORVO_BRIDGE_V0617_EXTENSION.zip` ou carregue a pasta `corvo-bridge-extension` em `chrome://extensions`.
 
 ### Corvo Collector V0.8.0
 
@@ -265,8 +273,8 @@ Use `public/downloads/CORVO_COLLECTOR_V077_EXTENSION.zip` ou carregue a pasta `c
 ## Downloads dentro do app
 
 - Corvo Collector V0.8.0;
-- Corvo Bridge V0.6.16;
-- Kit completo CorvoQuiz V0.6.29.
+- Corvo Bridge V0.6.17;
+- Kit completo CorvoQuiz V0.6.30.
 
 ## Fora do escopo atual
 

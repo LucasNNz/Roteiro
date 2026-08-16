@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Corvo Bridge",
-  "version": "0.6.16",
-  "description": "Encaminha especialistas do CorvoQuiz com diagnóstico detalhado de editor/anexo/envio, captura arquivos e exclui conversas mapeadas com verificação forte.",
+  "version": "0.6.17",
+  "description": "Encaminha especialistas do CorvoQuiz com autorrecuperação do content script em abas reutilizadas, diagnóstico detalhado, captura de arquivos e Cleaner.",
   "permissions": [
     "storage",
     "tabs",
-    "alarms"
+    "alarms",
+    "scripting"
   ],
   "host_permissions": [
     "https://*.blob.vercel-storage.com/*",
