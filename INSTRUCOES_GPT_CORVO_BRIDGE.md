@@ -1,3 +1,7 @@
+# V0.6.47 / BRIDGE V0.6.32 — PRESET OU
+
+O contrato do Forma usa `TIPO: QUAL_VOCE_PREFERE` com `IMAGEM_A` e `IMAGEM_B`. No CorvoQuiz, cada uma vira um slot físico independente (`01_A`, `01_B`). O Bridge pode capturar esses slots como imagens separadas ou recortar uma grade técnica 2-colunas, mas o pacote final nunca deve fundir A e B em um único arquivo.
+
 # Instruções do GPT — Corvo Bridge
 
 Adicione este bloco às instruções dos três GPTs personalizados: ideias, roteiro e prompts de imagem.

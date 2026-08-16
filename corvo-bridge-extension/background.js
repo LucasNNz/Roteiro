@@ -99,7 +99,7 @@ async function getDiagnostic(jobId) {
   const start = events[0]?.at || job.createdAt || Date.now();
   const lines = [
     "CORVO BRIDGE DIAGNÓSTICO V1",
-    `Bridge: V0.6.30`,
+    `Bridge: V0.6.32`,
     `JOB_ID: ${id}`,
     `Eventos: ${events.length}`,
     `Status atual: ${data.corvoBridgeStatus?.state || ""} | ${data.corvoBridgeStatus?.message || ""}`,
@@ -799,6 +799,10 @@ async function setCaptureRecovery(jobId, payload = {}, patch = {}) {
     jobId,
     name: String(payload.name || current[jobId]?.name || "").trim(),
     type: String(payload.type || current[jobId]?.type || "THUMBNAIL").trim().toUpperCase(),
+    expectedFiles: Array.isArray(payload.expectedFiles) ? payload.expectedFiles.map((value) => String(value || "").trim()).filter(Boolean) : (current[jobId]?.expectedFiles || []),
+    expectedIndex: Number.isInteger(payload.expectedIndex) ? Number(payload.expectedIndex) : (Number.isInteger(current[jobId]?.expectedIndex) ? current[jobId].expectedIndex : undefined),
+    compositeSplitMode: String(payload.compositeSplitMode || current[jobId]?.compositeSplitMode || "AUTO").trim().toUpperCase(),
+    compositeColumns: Number.isInteger(payload.compositeColumns) ? Number(payload.compositeColumns) : (Number.isInteger(current[jobId]?.compositeColumns) ? current[jobId].compositeColumns : undefined),
     updatedAt: Date.now(),
     ...patch
   };
@@ -812,38 +816,83 @@ async function clearCaptureRecovery(jobId) {
   await chrome.storage.local.set({ [CAPTURE_RECOVERY_KEY]: current });
 }
 
+async function cropCapturedBlob(blob, crop = {}) {
+  const mode = String(crop?.mode || 'ROWS').toUpperCase();
+  const count = Math.max(1, Number(crop?.count || 1));
+  const index = Number(crop?.index);
+  if (count <= 1 || !Number.isInteger(index) || index < 0 || index >= count) return blob;
+  if (typeof createImageBitmap !== 'function' || typeof OffscreenCanvas !== 'function') {
+    throw new Error('BACKGROUND_COMPOSITE_CROP_UNAVAILABLE');
+  }
+  const bitmap = await createImageBitmap(blob);
+  try {
+    const width = bitmap.width || 0;
+    const height = bitmap.height || 0;
+    if (!width || !height) throw new Error('COMPOSITE_DIMENSIONS_MISSING');
+    let sx = 0, sy = 0, sw = width, sh = height;
+    if (mode === 'GRID') {
+      const columns = Math.max(1, Math.min(count, Number(crop?.columns || 2)));
+      const rows = Math.max(1, Math.ceil(count / columns));
+      const row = Math.floor(index / columns);
+      const column = index % columns;
+      const x0 = Math.round((width * column) / columns);
+      const x1 = Math.round((width * (column + 1)) / columns);
+      const y0 = Math.round((height * row) / rows);
+      const y1 = Math.round((height * (row + 1)) / rows);
+      sx = Math.max(0, x0); sw = Math.max(1, Math.min(width - sx, x1 - x0));
+      sy = Math.max(0, y0); sh = Math.max(1, Math.min(height - sy, y1 - y0));
+    } else if (mode === 'ROWS' || mode === 'AUTO') {
+      const y0 = Math.round((height * index) / count);
+      const y1 = Math.round((height * (index + 1)) / count);
+      sy = Math.max(0, y0);
+      sh = Math.max(1, Math.min(height - sy, y1 - y0));
+    }
+    const canvas = new OffscreenCanvas(sw, sh);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('BACKGROUND_CANVAS_UNAVAILABLE');
+    ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, sw, sh);
+    const output = await canvas.convertToBlob({ type:'image/png' });
+    if (!output.size || !output.type.startsWith('image/')) throw new Error('COMPOSITE_CROP_EMPTY');
+    return output;
+  } finally {
+    try { bitmap.close?.(); } catch {}
+  }
+}
+
 async function fetchCapturedBlob(captured) {
+  let blob;
   if (captured?.dataUrl) {
     const response = await withTimeout(fetch(captured.dataUrl), 12000, "DATA_URL_FETCH_TIMEOUT");
-    const blob = await response.blob();
-    if (!blob.size || !blob.type.startsWith("image/")) throw new Error("INVALID_CAPTURED_IMAGE");
-    return blob;
+    blob = await response.blob();
+  } else {
+    const src = String(captured?.src || "").trim();
+    if (!/^https:\/\//i.test(src)) throw new Error("CAPTURED_IMAGE_SOURCE_MISSING");
+    const response = await withTimeout(fetch(src, { cache: "no-store", credentials: "include" }), 15000, "IMAGE_BACKGROUND_FETCH_TIMEOUT");
+    if (!response.ok) throw new Error(`IMAGE_BACKGROUND_FETCH_${response.status}`);
+    blob = await response.blob();
   }
-  const src = String(captured?.src || "").trim();
-  if (!/^https:\/\//i.test(src)) throw new Error("CAPTURED_IMAGE_SOURCE_MISSING");
-  const response = await withTimeout(fetch(src, { cache: "no-store", credentials: "include" }), 15000, "IMAGE_BACKGROUND_FETCH_TIMEOUT");
-  if (!response.ok) throw new Error(`IMAGE_BACKGROUND_FETCH_${response.status}`);
-  const blob = await response.blob();
-  if (!blob.size || !blob.type.startsWith("image/")) throw new Error("INVALID_CAPTURED_IMAGE");
+  if (!blob?.size || !blob.type.startsWith("image/")) throw new Error("INVALID_CAPTURED_IMAGE");
+  if (captured?.crop) blob = await cropCapturedBlob(blob, captured.crop);
+  if (!blob?.size || !blob.type.startsWith("image/")) throw new Error("INVALID_CAPTURED_IMAGE");
   return blob;
 }
 
 async function ensureCaptureBridgeVersion(tabId, jobId) {
   let pong = null;
   try { pong = await chrome.tabs.sendMessage(tabId, { type:"CORVO_BRIDGE_PING" }); } catch {}
-  if (String(pong?.version || "") === "0.6.30") return pong;
+  if (String(pong?.version || "") === "0.6.32") return pong;
 
-  await appendDiagnostic(jobId, "CAPTURE_BRIDGE_VERSION_REFRESH", { tabId, foundVersion:String(pong?.version || "missing"), expectedVersion:"0.6.30" }, "background").catch(() => {});
+  await appendDiagnostic(jobId, "CAPTURE_BRIDGE_VERSION_REFRESH", { tabId, foundVersion:String(pong?.version || "missing"), expectedVersion:"0.6.32" }, "background").catch(() => {});
   // Uma extensão MV3 atualizada não substitui o content script já injetado numa
   // aba antiga. Recarregar a conversa preserva o conteúdo e garante que a lógica
-  // V0.6.30 de gallery/variantes esteja ativa antes da recuperação do arquivo.
+  // V0.6.32 de gallery/variantes esteja ativa antes da recuperação do arquivo.
   await reloadTabForBridge(tabId, { jobId });
   pong = await chrome.tabs.sendMessage(tabId, { type:"CORVO_BRIDGE_PING" }).catch(() => null);
-  if (String(pong?.version || "") !== "0.6.30") {
+  if (String(pong?.version || "") !== "0.6.32") {
     const injected = await injectChatGptBridge(tabId, { jobId });
     if (injected) pong = await chrome.tabs.sendMessage(tabId, { type:"CORVO_BRIDGE_PING" }).catch(() => null);
   }
-  if (String(pong?.version || "") !== "0.6.30") throw new Error("CAPTURE_BRIDGE_VERSION_NOT_READY");
+  if (String(pong?.version || "") !== "0.6.32") throw new Error("CAPTURE_BRIDGE_VERSION_NOT_READY");
   return pong;
 }
 
@@ -875,7 +924,14 @@ async function captureFromConversationResilient(record, jobId, payload = {}) {
       const contentTimeout = Math.max(3000, Math.min(5200, remaining - 600));
       const captured = await withTimeout(chrome.tabs.sendMessage(record.tabId, {
         type: "CORVO_CAPTURE_GENERATED_IMAGE",
-        payload: { jobId, name:payload.name, timeout:contentTimeout }
+        payload: {
+          jobId, name:payload.name, timeout:contentTimeout,
+          expectedFiles:Array.isArray(payload.expectedFiles) ? payload.expectedFiles : undefined,
+          expectedIndex:Number.isInteger(payload.expectedIndex) ? payload.expectedIndex : undefined,
+          expectedCount:Array.isArray(payload.expectedFiles) ? payload.expectedFiles.length : undefined,
+          compositeSplitMode:String(payload.compositeSplitMode || "AUTO"),
+          compositeColumns:Number.isInteger(payload.compositeColumns) ? payload.compositeColumns : undefined
+        }
       }), Math.min(7000, contentTimeout + 1500), "CAPTURE_SLICE_TIMEOUT");
 
       if (captured?.ok && (captured.dataUrl || captured.src)) return captured;
@@ -891,11 +947,11 @@ async function captureFromConversationResilient(record, jobId, payload = {}) {
         // A aba pode ter navegado/recarregado no meio da captura. Não mantemos um
         // Port aberto por 30s: cada fatia é curta e o content script é revalidado.
         let pong = await chrome.tabs.sendMessage(record.tabId, { type:"CORVO_BRIDGE_PING" }).catch(() => null);
-        if (String(pong?.version || "") !== "0.6.30") {
+        if (String(pong?.version || "") !== "0.6.32") {
           const injected = await injectChatGptBridge(record.tabId, { jobId }).catch(() => false);
           if (injected) pong = await chrome.tabs.sendMessage(record.tabId, { type:"CORVO_BRIDGE_PING" }).catch(() => null);
         }
-        if (String(pong?.version || "") !== "0.6.30") {
+        if (String(pong?.version || "") !== "0.6.32") {
           await reloadTabForBridge(record.tabId, { jobId }).catch(() => {});
         }
       }
@@ -913,7 +969,7 @@ async function performCaptureAndUploadFile(jobId, payload = {}) {
   const name = String(payload.name || "").trim();
   if (!name) throw new Error("FILE_NAME_REQUIRED");
   const fileType = String(payload.type || "THUMBNAIL").trim().toUpperCase();
-  await setCaptureRecovery(jobId, { name, type: fileType }, { stage: "CAPTURING", startedAt: Date.now() });
+  await setCaptureRecovery(jobId, { ...payload, name, type: fileType }, { stage: "CAPTURING", startedAt: Date.now() });
   await setStatus("CAPTURING_FILE", jobId, `Capturando ${name} na conversa...`, { fileName: name, fileType });
   const captured = await captureFromConversationResilient(record, jobId, { ...payload, name, timeout:32000 });
   if (!captured?.ok || (!captured.dataUrl && !captured.src)) throw new Error(captured?.error || "GENERATED_IMAGE_NOT_FOUND");
@@ -925,7 +981,7 @@ async function performCaptureAndUploadFile(jobId, payload = {}) {
   form.append("tipo", fileType);
   form.append("nomeArquivo", name);
   form.append("arquivo", blob, name);
-  await setCaptureRecovery(jobId, { name, type: fileType }, { stage: "UPLOADING" });
+  await setCaptureRecovery(jobId, { ...payload, name, type: fileType }, { stage: "UPLOADING" });
   await setStatus("UPLOADING_FILE", jobId, `Enviando ${name} ao CorvoQuiz...`, { fileName: name, fileType });
   const upload = await withTimeout(fetch(`${config.appOrigin}/api/corvo/arquivo`, {
     method: "POST",
@@ -968,7 +1024,13 @@ async function retryLastCapture() {
   if (!name) throw new Error("CAPTURE_FILE_NAME_UNKNOWN");
   let type = String(recovery.type || status.fileType || "").trim().toUpperCase();
   if (!type) type = /^thumb_/i.test(name) ? "THUMBNAIL" : "OTHER";
-  return captureAndUploadFile(jobId, { name, type });
+  return captureAndUploadFile(jobId, {
+    name, type,
+    expectedFiles:Array.isArray(recovery.expectedFiles) ? recovery.expectedFiles : [],
+    expectedIndex:Number.isInteger(recovery.expectedIndex) ? recovery.expectedIndex : undefined,
+    compositeSplitMode:String(recovery.compositeSplitMode || "AUTO"),
+    compositeColumns:Number.isInteger(recovery.compositeColumns) ? recovery.compositeColumns : undefined
+  });
 }
 
 

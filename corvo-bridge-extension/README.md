@@ -1,18 +1,25 @@
-# CORVO BRIDGE V0.6.30 — AUTO-FECHAMENTO CONFIRMADO + CAPTURA MV3
+# CORVO BRIDGE V0.6.32 — PRESET OU A/B + GRID 2 COLUNAS
+
+- Recebe a lista oficial de arquivos/índices do app em todas as fatias de captura.
+- GRID de comparação recorta 2 colunas: A à esquerda, B à direita, uma linha por cena.
+- Mantém MV3 resiliente, Cleaner e auto-close.
+
+# CORVO BRIDGE V0.6.32 — ARQUIVOS OFICIAIS + SPLIT DE CONTACT SHEET
 
 - **Atualizar lista** reconcilia as conversas mapeadas com o ChatGPT e remove da fila registros de conversas apagadas manualmente.
 - Antes de cada exclusão, o Cleaner faz uma pré-checagem: se a conversa já não existir, marca `REMOVED_EXTERNALLY` e segue sem repetir a tentativa.
 - **Parar limpeza** cancela a fila atual, fecha a aba oculta de manutenção e impede que o Cleaner avance para a próxima conversa.
 - O popup e as Configurações exibem o estado de atualização/parada.
 
-## V0.6.30 — fechamento confirmado + canal de captura curto
+## V0.6.32 — arquivos oficiais + captura composta
 
 - Quando o upload do último arquivo retorna `DONE`, o próprio background fecha a aba `bridgeOwned`; Thumb/Gerador/Refinador não dependem mais do comando final do app.
 - O vínculo do job só é apagado depois do fechamento confirmado; há até 3 tentativas e estado `closePending` se necessário.
 - `CORVO_CAPTURE_AND_UPLOAD` responde imediatamente com `accepted=true`; o resultado final é entregue via `CORVO_BRIDGE_STATUS`.
 - A captura do ChatGPT é feita em fatias curtas, evitando manter o canal MV3 aberto por ~30 segundos.
 - Se uma navegação/reload destruir o content script, o Bridge revalida a versão e tenta novamente na mesma conversa.
-- Detecta quando um lote com vários `ARQUIVO=` foi entregue como uma única imagem composta e retorna `BATCH_COMPOSITE_IMAGE_DETECTED` em vez de anexar o mosaico ao primeiro ID.
+- O app envia `expectedFiles` e `expectedIndex`; o Bridge não precisa redescobrir o manifesto no DOM.
+- Quando um lote com vários arquivos chega como um único contact sheet, recorta uma faixa horizontal por ID e faz upload com o nome oficial.
 - Cleaner, STOP persistente, checkpoint e captura de variantes continuam preservados.
 
 # HISTÓRICO — V0.6.24 — BATCHING + CLEANER RESILIENTE

@@ -77,7 +77,13 @@ export function completeCorvoBridgeJob(jobId: string, timeoutMs = 10000) {
   });
 }
 
-export function captureCorvoBridgeFile(jobId: string, name: string, type = "THUMBNAIL", timeoutMs = 180000) {
+export function captureCorvoBridgeFile(
+  jobId: string,
+  name: string,
+  type = "THUMBNAIL",
+  timeoutMs = 180000,
+  captureContext: { expectedFiles?:string[]; expectedIndex?:number; compositeSplitMode?:"ROWS"|"AUTO"|"GRID"; compositeColumns?:number } = {}
+) {
   return new Promise<BridgeAck>((resolve, reject) => {
     let accepted = false;
     const expectedName = String(name || "").trim().toLowerCase();
@@ -127,7 +133,17 @@ export function captureCorvoBridgeFile(jobId: string, name: string, type = "THUM
     }
 
     window.addEventListener("message", onMessage);
-    window.postMessage({ source: "CORVOQUIZ", type: "CORVO_BRIDGE_CAPTURE_FILE", payload: { jobId, name, type } }, "*");
+    window.postMessage({
+      source: "CORVOQUIZ",
+      type: "CORVO_BRIDGE_CAPTURE_FILE",
+      payload: {
+        jobId, name, type,
+        expectedFiles:Array.isArray(captureContext.expectedFiles) ? captureContext.expectedFiles : undefined,
+        expectedIndex:Number.isInteger(captureContext.expectedIndex) ? captureContext.expectedIndex : undefined,
+        compositeSplitMode:captureContext.compositeSplitMode || "AUTO",
+        compositeColumns:Number.isInteger(captureContext.compositeColumns) ? captureContext.compositeColumns : undefined
+      }
+    }, "*");
   });
 }
 

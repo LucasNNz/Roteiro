@@ -1,3 +1,14 @@
+## V0.6.47 / Bridge V0.6.32 — contrato de comparação Forma
+
+- `QUAL_VOCE_PREFERE` = 2 slots físicos por cena (`IMAGEM_A`, `IMAGEM_B`).
+- Collector/Analista usam IDs de slot (`01_A`, `01_B`).
+- Gerador/Refinador recebem CENA_BASE, SLOT_COMPARACAO, CAMPO_FORMA e regra de não fundir A/B.
+- Bridge usa GRID com 2 colunas para recuperar contact sheets de comparação.
+- Checkpoint V3 migra o modelo legado 1 cena = 1 asset.
+
+## V0.6.31 — fonte oficial de arquivos + split de contact sheet
+O app envia `expectedFiles/expectedIndex` ao Bridge. Se um batch vier como um único asset composto, o Bridge recorta uma faixa horizontal por ID e faz upload com os nomes oficiais.
+
 ## V0.6.41 — Scheduler de imagens por lote
 
 Regra operacional:

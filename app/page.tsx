@@ -36,6 +36,7 @@ type PipelineHistoryEvent = {
 };
 type PipelineItem = {
   id:string; route:"REFINADOR"|"GERADOR"; sourceFile?:string; selectedFile?:string; sourceUrl?:string; refinement?:string; reason?:string; generationPrompt?:string;
+  sceneId?:string; slot?:"A"|"B"|"SINGLE"; formaField?:string; preset?:string;
   retryPrompt?:string; finalFile:string; jobId?:string; fallbackJobId?:string; status?:string; outputUrl?:string; outputFile?:string;
   error?:string; errorCode?:string; tentativaAtual?:number; finalFailure?:boolean; history?:PipelineHistoryEvent[];
   logicalJobId?:string; batchId?:string; batchIndex?:number; batchSize?:number; routeConversationUrl?:string; fallbackConversationUrl?:string;
@@ -205,6 +206,83 @@ function defaultQueries(project:Project) {
   ];
 }
 
+type FormaComparisonSlot = {
+  key:string; sceneId:string; slot:"A"|"B"; formaField:"IMAGEM_A"|"IMAGEM_B"; fileName:string; optionText:string; question:string; preset:"QUAL_VOCE_PREFERE";
+};
+
+function normalizeSceneId(value:string) {
+  const clean = String(value || "").trim();
+  return /^\d+$/.test(clean) ? clean.padStart(2, "0") : clean;
+}
+
+function scriptField(block:string, field:string) {
+  const match = block.match(new RegExp(`^\\s*${field}\\s*:\\s*(.+?)\\s*$`, "mi"));
+  return String(match?.[1] || "").trim();
+}
+
+function formaComparisonSlots(scriptText?:string):FormaComparisonSlot[] {
+  const text = String(scriptText || "");
+  const blockRegex = /(?:^|\n)\s*\[([^\]\r\n]+)\]\s*\r?\n([\s\S]*?)(?=\n\s*\[[^\]\r\n]+\]\s*(?:\r?\n|$)|$)/g;
+  const slots:FormaComparisonSlot[] = [];
+  for (const match of text.matchAll(blockRegex)) {
+    const sceneId = normalizeSceneId(String(match[1] || ""));
+    const block = String(match[2] || "");
+    const tipo = scriptField(block, "TIPO").toUpperCase();
+    const imageA = scriptField(block, "IMAGEM_A");
+    const imageB = scriptField(block, "IMAGEM_B");
+    // O contrato Forma oficial usa QUAL_VOCE_PREFERE. Para recuperar roteiros
+    // legados que já tenham IMAGEM_A/IMAGEM_B mas um rótulo antigo de preset,
+    // os dois campos físicos são a fonte de verdade da comparação.
+    if (!imageA || !imageB) continue;
+    if (tipo && !["QUAL_VOCE_PREFERE","OU","COMPARACAO","COMPARAÇÃO"].includes(tipo) && !/PREFERE|COMPAR|\bOU\b/.test(tipo)) continue;
+    const question = scriptField(block, "PERGUNTA");
+    slots.push({ key:`${sceneId}_A`, sceneId, slot:"A", formaField:"IMAGEM_A", fileName:imageA, optionText:scriptField(block, "A"), question, preset:"QUAL_VOCE_PREFERE" });
+    slots.push({ key:`${sceneId}_B`, sceneId, slot:"B", formaField:"IMAGEM_B", fileName:imageB, optionText:scriptField(block, "B"), question, preset:"QUAL_VOCE_PREFERE" });
+  }
+  return slots;
+}
+
+function comparisonSlotPrompt(project:Project, slot:FormaComparisonSlot, baseQuery = "") {
+  const fileStem = slot.fileName.replace(/^.*[\\/]/, "").replace(/\.[^.]+$/, "").replace(/^q?\d+[-_]?/i, "").replace(/[-_]+/g, " ").trim();
+  const option = slot.optionText || fileStem || `${project.topic} opção ${slot.slot}`;
+  const context = [baseQuery, option, project.topic].map((value) => String(value || "").trim()).filter(Boolean).join(" · ");
+  return `${context}. Gerar/procurar SOMENTE a opção ${slot.slot} da comparação; um único elemento/cena independente, sem mostrar a opção oposta, sem divisão A/B, sem colagem, sem texto, sem logos e sem marca-d'água.`;
+}
+
+function guideItemsForProject(project:Project, rawText?:string):GuideItem[] {
+  const base = rawText?.trim() ? parseGuideText(rawText) : defaultQueries(project);
+  const slots = formaComparisonSlots(project.scriptText);
+  if (!slots.length) return base;
+  const slotByKey = new Map(slots.map((slot) => [slot.key.toUpperCase(), slot]));
+  const slotsByScene = new Map<string,FormaComparisonSlot[]>();
+  for (const slot of slots) slotsByScene.set(slot.sceneId.toUpperCase(), [...(slotsByScene.get(slot.sceneId.toUpperCase()) || []), slot]);
+  const output:GuideItem[] = [];
+  const emitted = new Set<string>();
+  const emitSlot = (slot:FormaComparisonSlot, source?:GuideItem) => {
+    const key = slot.key.toUpperCase();
+    if (emitted.has(key)) return;
+    emitted.add(key);
+    output.push({ id:slot.key, sceneId:slot.sceneId, slot:slot.slot, formaField:slot.formaField, targetFile:slot.fileName, query:comparisonSlotPrompt(project, slot, source?.query || "") });
+  };
+  for (const item of base) {
+    const rawId = String(item.id || "").trim();
+    const key = rawId.toUpperCase();
+    const direct = slotByKey.get(key);
+    if (direct) { emitSlot(direct, item); continue; }
+    const scene = normalizeSceneId(rawId).toUpperCase();
+    const sceneSlots = slotsByScene.get(scene);
+    if (sceneSlots?.length) { sceneSlots.forEach((slot) => emitSlot(slot, item)); continue; }
+    output.push(item);
+  }
+  for (const slot of slots) emitSlot(slot);
+  return output;
+}
+
+function comparisonSlotForItem(project:Project, id:string) {
+  const key = String(id || "").trim().toUpperCase();
+  return formaComparisonSlots(project.scriptText).find((slot) => slot.key.toUpperCase() === key);
+}
+
 function autoRunChecklist(project:Project, youtubeEnabled:boolean):Array<{key:ActivityFilter;label:string;done:boolean}> {
   return [
     { key:"IDEIA", label:"IDEIA", done:Boolean(project.ideaText) },
@@ -231,9 +309,11 @@ function consolidationState(project:Project) {
   const duplicateIds = [...idCounts.entries()].filter(([,count]) => count > 1).map(([id]) => id);
   const duplicateFiles = [...fileCounts.entries()].filter(([,count]) => count > 1).map(([name]) => name);
   const missingIds = items.filter((item) => !item.outputUrl || item.finalFailure).map((item) => item.id);
-  const invalidFiles = items.filter((item) => !/\.(png|jpe?g|webp)$/i.test(item.finalFile || item.outputFile || "")).map((item) => item.id);
-  const ready = items.length > 0 && !duplicateIds.length && !duplicateFiles.length && !missingIds.length && !invalidFiles.length;
-  return { items, duplicateIds, duplicateFiles, missingIds, invalidFiles, ready, completed:items.filter((item) => Boolean(item.outputUrl) && !item.finalFailure).length };
+  const invalidFiles = items.filter((item) => !/\.(png|jpe?g|webp|gif|avif)$/i.test(item.finalFile || item.outputFile || "")).map((item) => item.id);
+  const itemIds = new Set(items.map((item) => String(item.id || "").toUpperCase()));
+  const missingFormaSlots = formaComparisonSlots(project.scriptText).filter((slot) => !itemIds.has(slot.key.toUpperCase())).map((slot) => slot.key);
+  const ready = items.length > 0 && !duplicateIds.length && !duplicateFiles.length && !missingIds.length && !invalidFiles.length && !missingFormaSlots.length;
+  return { items, duplicateIds, duplicateFiles, missingIds, invalidFiles, missingFormaSlots, ready, completed:items.filter((item) => Boolean(item.outputUrl) && !item.finalFailure).length };
 }
 
 function ideaSection(resultText:string, idea:CorvoIdea) {
@@ -279,6 +359,72 @@ function migratePipelineCheckpoint(project:Project):Project {
   };
 }
 
+function migrateComparisonPipelineCheckpoint(project:Project):Project {
+  if (Number(project.pipelineCheckpointVersion || 0) >= 3) return project;
+  const slots = formaComparisonSlots(project.scriptText);
+  if (!slots.length) return { ...project, pipelineCheckpointVersion:3 };
+  const slotsByScene = new Map<string,FormaComparisonSlot[]>();
+  const slotByKey = new Map(slots.map((slot) => [slot.key.toUpperCase(), slot]));
+  for (const slot of slots) slotsByScene.set(slot.sceneId.toUpperCase(), [...(slotsByScene.get(slot.sceneId.toUpperCase()) || []), slot]);
+
+  if (project.pipelineItems?.length) {
+    let migrated = 0;
+    const nextItems:PipelineItem[] = [];
+    for (const item of project.pipelineItems) {
+      const directSlot = slotByKey.get(String(item.id || "").toUpperCase());
+      if (directSlot) {
+        nextItems.push({ ...item, sceneId:directSlot.sceneId, slot:directSlot.slot, formaField:directSlot.formaField, preset:directSlot.preset, finalFile:directSlot.fileName });
+        continue;
+      }
+      const sceneId = normalizeSceneId(String(item.id || ""));
+      const sceneSlots = slotsByScene.get(sceneId.toUpperCase());
+      if (!sceneSlots?.length) { nextItems.push(item); continue; }
+      migrated += 1;
+      for (const slot of sceneSlots) {
+        nextItems.push({
+          ...item,
+          id:slot.key,
+          sceneId:slot.sceneId,
+          slot:slot.slot,
+          formaField:slot.formaField,
+          preset:slot.preset,
+          route:"GERADOR",
+          sourceFile:"", selectedFile:undefined, sourceUrl:undefined, refinement:undefined,
+          generationPrompt:comparisonSlotPrompt(project, slot, item.generationPrompt || item.reason || ""),
+          retryPrompt:undefined, finalFile:slot.fileName, outputUrl:undefined, outputFile:undefined,
+          jobId:undefined, fallbackJobId:undefined, jobPrompt:undefined, jobUploadToken:undefined,
+          status:"PENDENTE", tentativaAtual:1, finalFailure:false, error:undefined, errorCode:undefined,
+          batchId:undefined, batchIndex:undefined, batchSize:undefined, routeConversationUrl:undefined, fallbackConversationUrl:undefined,
+          logicalJobId:`${project.id}:ITEM:${slot.key}`,
+          reason:`Preset Forma QUAL_VOCE_PREFERE · ${slot.formaField} · opção ${slot.slot}.`,
+        });
+      }
+    }
+    return {
+      ...project, pipelineCheckpointVersion:3, pipelineItems:nextItems,
+      ...(migrated ? {
+        pipelineStatus:`CHECKPOINT V3 · ${migrated} CENA(S) OU EXPANDIDA(S) PARA ${migrated * 2} SLOTS A/B`,
+        finalZipStatus:undefined, finalZipError:undefined, finalZipGeneratedAt:undefined,
+        autoRunStep:project.autoRunStatus === "RUNNING" ? "IMAGENS" : project.autoRunStep,
+        autoRunMessage:project.autoRunStatus === "RUNNING" ? "Comparações do preset OU migradas para dois assets físicos A/B por cena. Retomando somente a geração das imagens afetadas." : project.autoRunMessage,
+      } : {}),
+    };
+  }
+
+  const expected = new Set((project.analysisExpectedIds || []).map((id) => normalizeSceneId(String(id)).toUpperCase()));
+  const legacyAnalysis = slots.some((slot) => expected.has(slot.sceneId.toUpperCase()) && !expected.has(slot.key.toUpperCase()));
+  if (legacyAnalysis && (project.analysisJobId || project.packageCode)) {
+    return {
+      ...project, ...EMPTY_IMAGE_PIPELINE, pipelineCheckpointVersion:3,
+      pipelineStatus:"CHECKPOINT V3 · PRESET OU REABERTO EM 2 SLOTS A/B POR CENA",
+      autoRunStep:project.autoRunStatus === "RUNNING" ? "COLLECTOR" : project.autoRunStep,
+      autoRunMessage:project.autoRunStatus === "RUNNING" ? "Comparação antiga tinha 1 ID por cena. Reexecutando somente o pipeline de imagens com IMAGEM_A e IMAGEM_B separadas." : project.autoRunMessage,
+      autoRunError:undefined,
+    };
+  }
+  return { ...project, pipelineCheckpointVersion:3 };
+}
+
 function migrateThumbnailCheckpoint(project:Project):Project {
   const expectedAspect = thumbAspectRatioForFormat(project.format);
   const expectedFormat = project.format;
@@ -312,7 +458,7 @@ function migrateThumbnailCheckpoint(project:Project):Project {
 
 function loadProjects() {
   return safeLoad<Project[]>(PROJECTS_STORAGE_KEY, initialProjects).map((rawProject) => {
-    const project = migrateThumbnailCheckpoint(migratePipelineCheckpoint(rawProject));
+    const project = migrateThumbnailCheckpoint(migrateComparisonPipelineCheckpoint(migratePipelineCheckpoint(rawProject)));
     const withIdea = project.ideaText ? project : { ...project, ideaText:`TÍTULO: ${project.title}\nTEMA: ${project.topic}` };
     if (withIdea.stage >= 3 && !withIdea.scriptText) return { ...withIdea, stage:2 };
     if (withIdea.stage >= 4 && !withIdea.promptText) return { ...withIdea, stage:3 };
@@ -1289,7 +1435,7 @@ export default function Home() {
         updateThumb(project.id, { thumbStatus:"CAPTURANDO ARQUIVO", thumbFileName:expectedFile, thumbError:undefined });
         captureAttempts += 1;
         try {
-          await captureCorvoBridgeFile(jobId, expectedFile, "THUMBNAIL");
+          await captureCorvoBridgeFile(jobId, expectedFile, "THUMBNAIL", 180000, { expectedFiles:[expectedFile], expectedIndex:0, compositeSplitMode:"AUTO" });
         } catch (error) {
           if (captureAttempts >= 3) throw error;
           updateThumb(project.id, { thumbStatus:"AGUARDANDO CAPTURA", thumbError:bridgeErrorMessage(error) });
@@ -1446,9 +1592,8 @@ export default function Home() {
       await ensurePipelineStorageReady();
       if (token !== runToken.current) return false;
       if (!options.skipParallelBranches) { void startThumbBranch(project); void startYoutubeBranch(project); }
-      const items = settings.batchText.trim()
-        ? parseGuideText(settings.batchText)
-        : project.promptText?.trim() ? parseGuideText(project.promptText) : defaultQueries(project);
+      const guideText = settings.batchText.trim() ? settings.batchText : project.promptText?.trim() ? project.promptText : "";
+      const items = guideItemsForProject(project, guideText);
       if (!items.length) throw new Error("Os prompts retornados não contêm buscas utilizáveis.");
       let finalJob:any = null;
       const currentResponse = await sendCollectorMessage<any>("GET_STATUS", undefined, settings.extensionId);
@@ -1574,7 +1719,7 @@ export default function Home() {
   function retryAwareChunks(items:PipelineItem[]) {
     const groups = new Map<string,PipelineItem[]>();
     for (const item of items) {
-      const key = `${String(item.routeConversationUrl || "__NEW__")}|A${Math.max(1, Number(item.tentativaAtual || 1))}`;
+      const key = `${String(item.routeConversationUrl || "__NEW__")}|A${Math.max(1, Number(item.tentativaAtual || 1))}|P:${item.preset || "SINGLE"}`;
       const group = groups.get(key) || [];
       group.push(item);
       groups.set(key, group);
@@ -1628,18 +1773,31 @@ export default function Home() {
       if (!response.ok) throw Object.assign(new Error(status?.message || "Não foi possível acompanhar o trabalho em lote."), { corvoStatus:status });
       for (const itemId of itemIds) updatePipelineItem(projectId, itemId, { status:status.status || "PROCESSANDO" });
       if (status.status === "WAITING_FILE" && captureType) {
-        const expectedFiles = Array.isArray(status.expectedFiles) && status.expectedFiles.length ? status.expectedFiles : [status.expectedFile].filter(Boolean);
-        for (const expectedFileRaw of expectedFiles) {
+        let expectedFiles = Array.isArray(status.expectedFiles) && status.expectedFiles.length ? status.expectedFiles : [status.expectedFile].filter(Boolean);
+        const liveBeforeCapture = latestProject(projectId);
+        const orderedBatchItems = itemIds.map((id) => (liveBeforeCapture?.pipelineItems || []).find((item) => String(item.id) === String(id))).filter(Boolean) as PipelineItem[];
+        const comparisonBatchOrdered = orderedBatchItems.length === itemIds.length && orderedBatchItems.length > 1 && orderedBatchItems.every((item) => item.preset === "QUAL_VOCE_PREFERE" && (item.slot === "A" || item.slot === "B"));
+        if (comparisonBatchOrdered) {
+          const serverSet = new Set(expectedFiles.map((file:any) => String(file || "").toLowerCase()));
+          const orderedFiles = orderedBatchItems.map((item) => String(item.finalFile || item.outputFile || "")).filter(Boolean);
+          if (orderedFiles.length === expectedFiles.length && orderedFiles.every((file) => serverSet.has(file.toLowerCase()))) expectedFiles = orderedFiles;
+        }
+        for (let expectedIndex = 0; expectedIndex < expectedFiles.length; expectedIndex += 1) {
+          const expectedFileRaw = expectedFiles[expectedIndex];
           const expectedFile = String(expectedFileRaw || "");
           if (!expectedFile) continue;
           if (Array.isArray(status.files) && status.files.some((file:any) => String(file?.name || "").toLowerCase() === expectedFile.toLowerCase())) continue;
           const attempts = (captureAttempts.get(expectedFile) || 0) + 1;
           captureAttempts.set(expectedFile, attempts);
           for (const itemId of itemIds) updatePipelineItem(projectId, itemId, { status:`CAPTURANDO_LOTE_${captureType === "REFINED_IMAGE" ? "REFINADOR" : "GERADOR"}` });
-          try { await captureCorvoBridgeFile(jobId, expectedFile, captureType, 180000); }
+          const officialFiles = expectedFiles.map((value:any) => String(value || "")).filter(Boolean);
+          const liveCaptureProject = latestProject(projectId);
+          const batchItems = (liveCaptureProject?.pipelineItems || []).filter((item) => officialFiles.some((file:string) => file.toLowerCase() === String(item.finalFile || item.outputFile || "").toLowerCase()));
+          const comparisonGrid = officialFiles.length > 1 && batchItems.length === officialFiles.length && batchItems.every((item) => item.preset === "QUAL_VOCE_PREFERE" && (item.slot === "A" || item.slot === "B"));
+          try { await captureCorvoBridgeFile(jobId, expectedFile, captureType, 180000, { expectedFiles:officialFiles, expectedIndex, compositeSplitMode:comparisonGrid ? "GRID" : "ROWS", compositeColumns:comparisonGrid ? 2 : undefined }); }
           catch (error) {
             const captureMessage = bridgeErrorMessage(error);
-            if (/BATCH_COMPOSITE_IMAGE_DETECTED/i.test(captureMessage) || attempts >= 3) {
+            if (attempts >= 3) {
               throw Object.assign(error instanceof Error ? error : new Error(String(error)), { corvoStatus:status });
             }
             await wait(5000);
@@ -1678,9 +1836,17 @@ export default function Home() {
       "- não adicionar títulos, legendas, logos ou marca-d'água;",
       `- ARQUIVO_IMUTAVEL=${lockedSource || "N/A"}; não trocar por outra candidata.`,
     ].join("\n");
+    const slotMetadata = item.preset === "QUAL_VOCE_PREFERE" ? [
+      `CENA_BASE=${item.sceneId || item.id}`,
+      `PRESET_FORMA=QUAL_VOCE_PREFERE`,
+      `SLOT_COMPARACAO=${item.slot || ""}`,
+      `CAMPO_FORMA=${item.formaField || ""}`,
+      `REGRA_SLOT=Este ID representa UM SLOT físico da comparação. Produza somente ${item.formaField || item.slot || "este slot"}; NÃO mostre nem componha a opção oposta no mesmo asset.`,
+    ] : [];
     return isRefiner
       ? [
           `[ID:${item.id}]`,
+          ...slotMetadata,
           `ARQUIVO_ORIGINAL=${lockedSource}`,
           `ARQUIVO_SELECIONADO_IMUTAVEL=${lockedSource}`,
           `STATUS_ORIGEM=${item.refinement === "FORTE" ? "PASSOU_COM_RESSALVAS" : "PASSOU"}`,
@@ -1691,6 +1857,7 @@ export default function Home() {
         ].join("\n")
       : [
           `[ID:${item.id}]`,
+          ...slotMetadata,
           `PROMPT_GERACAO=${item.retryPrompt || item.generationPrompt || "Gerar uma imagem clara e reconhecível para o quiz, sem texto e sem marca-d'água."}`,
           `CONTEXTO=${project.topic}. Imagem final para o CorvoQuiz.`,
           `IDENTIDADE_ESPERADA=${item.reason || project.topic}`,
@@ -2049,13 +2216,26 @@ export default function Home() {
     const finalItems = new Map<string,PipelineItem>();
     const completedIds = new Set<string>();
     const total = items.length;
-    const normalizedItems:PipelineItem[] = items.map((item) => ({
-      ...item,
-      selectedFile:item.route === "REFINADOR" ? String(item.selectedFile || item.sourceFile || "") : item.selectedFile,
-      sourceFile:item.route === "REFINADOR" ? String(item.selectedFile || item.sourceFile || "") : item.sourceFile,
-      logicalJobId:item.logicalJobId || `${project.id}:ITEM:${item.id}`,
-      tentativaAtual:Math.max(1, Number(item.tentativaAtual || 1)),
-    }));
+    const normalizedItems:PipelineItem[] = items.map((item) => {
+      const legacyCompositeCapture = Boolean(
+        item.jobId
+        && /BATCH_COMPOSITE_IMAGE/i.test(`${String(item.errorCode || "")} ${String(item.error || "")}`)
+        && !item.outputUrl
+      );
+      return {
+        ...item,
+        selectedFile:item.route === "REFINADOR" ? String(item.selectedFile || item.sourceFile || "") : item.selectedFile,
+        sourceFile:item.route === "REFINADOR" ? String(item.selectedFile || item.sourceFile || "") : item.sourceFile,
+        logicalJobId:item.logicalJobId || `${project.id}:ITEM:${item.id}`,
+        tentativaAtual:Math.max(1, Number(item.tentativaAtual || 1)),
+        ...(legacyCompositeCapture ? {
+          status:"WAITING_FILE",
+          error:undefined,
+          errorCode:undefined,
+          finalFailure:false,
+        } : {}),
+      } as PipelineItem;
+    });
 
     for (const item of normalizedItems) {
       if (item.status === "CONCLUIDO" && item.outputUrl) {
@@ -2630,9 +2810,12 @@ export default function Home() {
       const statusName = String(manifestItem.status || "").toUpperCase();
       const sourceFile = String(manifestItem.file || "").trim();
       const sourceRecord = sourceFile ? collectorFiles.find((file:any) => String(file?.name || "").toLowerCase() === sourceFile.toLowerCase()) : null;
-      const finalFile = sourceFile ? sourceFile.replace(/_c\d+(?=\.[^.]+$)/i, "").replace(/\.[^.]+$/, ".png") : `video1_${String(id).padStart(2,"0")}.png`;
+      const comparisonSlot = comparisonSlotForItem(project, id);
+      const finalFile = comparisonSlot?.fileName || (sourceFile ? sourceFile.replace(/_c\d+(?=\.[^.]+$)/i, "").replace(/\.[^.]+$/, ".png") : `video1_${String(id).padStart(2,"0")}.png`);
+      const slotMeta = comparisonSlot ? { sceneId:comparisonSlot.sceneId, slot:comparisonSlot.slot, formaField:comparisonSlot.formaField, preset:comparisonSlot.preset } : {};
       if (statusName === "PASSOU" || statusName === "PASSOU_COM_RESSALVAS") return [{
         id,
+        ...slotMeta,
         route:"REFINADOR" as const,
         sourceFile,
         selectedFile:sourceFile,
@@ -2645,11 +2828,12 @@ export default function Home() {
       }];
       if (statusName === "NAO_PASSOU") return [{
         id,
+        ...slotMeta,
         route:"GERADOR" as const,
         sourceFile:"",
-        generationPrompt:String(manifestItem.generationPrompt || ""),
+        generationPrompt:comparisonSlot ? comparisonSlotPrompt(project, comparisonSlot, String(manifestItem.generationPrompt || "")) : String(manifestItem.generationPrompt || ""),
         reason:String(manifestItem.reason || ""),
-        finalFile:`video1_${String(id).padStart(2,"0")}.png`,
+        finalFile,
         status:"PENDENTE",
         tentativaAtual:1,
       }];
@@ -3021,7 +3205,7 @@ export default function Home() {
     const liveProject = latestProject(project.id) || project;
     const summary = consolidationState(liveProject);
     if (!summary.ready || consolidationBusy) {
-      setConsolidationMessage(summary.missingIds.length ? `Ainda faltam os IDs: ${summary.missingIds.join(", ")}.` : "A consolidação ainda possui pendências de IDs ou nomes.");
+      setConsolidationMessage(summary.missingIds.length ? `Ainda faltam os IDs: ${summary.missingIds.join(", ")}.` : summary.missingFormaSlots.length ? `O preset OU ainda está sem os slots: ${summary.missingFormaSlots.join(", ")}.` : "A consolidação ainda possui pendências de IDs ou nomes.");
       return false;
     }
     setConsolidationBusy(true);
@@ -3040,7 +3224,7 @@ export default function Home() {
         if (!blob.size) throw new Error(`O arquivo final do ID ${item.id} está vazio.`);
         const fileName = item.finalFile || item.outputFile || `video1_${String(item.id).padStart(2,"0")}.png`;
         imagesFolder?.file(fileName, blob);
-        manifestItems.push({ id:item.id, arquivo:fileName, origem:item.route, tentativaFinal:item.tentativaAtual || 1, historico:item.history || [] });
+        manifestItems.push({ id:item.id, cena:item.sceneId || item.id, slot:item.slot || "SINGLE", preset:item.preset || null, campoForma:item.formaField || null, arquivo:fileName, origem:item.route, tentativaFinal:item.tentativaAtual || 1, historico:item.history || [] });
       }
 
       const thumbFolder = zip.folder("thumbnail");
@@ -3050,6 +3234,7 @@ export default function Home() {
         else thumbFolder?.file("STATUS.txt", `STATUS=FALHOU_AO_BAIXAR\\nURL=${project.thumbUrl}`);
       } else thumbFolder?.file("STATUS.txt", `STATUS=${project.thumbStatus || "PENDENTE"}\\n${project.thumbError ? `ERRO=${project.thumbError}` : ""}`);
 
+      zip.file("ROTEIRO.txt", project.scriptText || "");
       zip.folder("youtube")?.file("METADADOS.txt", project.youtubeMetadata || `STATUS=${project.youtubeStatus || "PENDENTE"}\\n${project.youtubeError ? `ERRO=${project.youtubeError}` : ""}`);
       zip.folder("analise")?.file("CORVO_IMAGE_ANALYSIS.txt", project.analysisManifest || "STATUS=NAO_DISPONIVEL");
       zip.file("CORVO_FINAL_MANIFEST.json", JSON.stringify({
@@ -3058,7 +3243,7 @@ export default function Home() {
       }, null, 2));
       zip.file("LEIA-ME.txt", [
         "CORVOQUIZ — PACOTE FINAL", `PROJETO=${project.id}`, `TOTAL_IMAGENS=${summary.items.length}`,
-        "", "imagens/ = imagens finais ordenadas por ID", "thumbnail/ = thumbnail real quando disponível", "youtube/ = metadados editoriais", "analise/ = manifesto do Corvo Analista",
+        "", "ROTEIRO.txt = roteiro compatível com o Forma", "imagens/ = imagens finais; QUAL_VOCE_PREFERE usa IMAGEM_A + IMAGEM_B como dois arquivos físicos separados", "thumbnail/ = thumbnail real quando disponível", "youtube/ = metadados editoriais", "analise/ = manifesto do Corvo Analista",
       ].join("\\n"));
       const blob = await zip.generateAsync({ type:"blob", compression:"DEFLATE", compressionOptions:{ level:6 } });
       const url = URL.createObjectURL(blob);
@@ -3212,8 +3397,8 @@ export default function Home() {
         <div className="downloads-head"><div><span>INSTALAÇÃO E SUPORTE</span><h3 id="downloads-title">ARQUIVOS PARA BAIXAR</h3></div><small>SE PRECISAR REINSTALAR</small></div>
         <div className="download-grid">
           <a className="download-card" href="/downloads/CORVO_COLLECTOR_V080_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.8.0</small></div><i>↓</i></a>
-          <a className="download-card" href="/downloads/CORVO_BRIDGE_V0630_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.30 · AUTO-FECHAMENTO CONFIRMADO</small></div><i>↓</i></a>
-          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0645.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
+          <a className="download-card" href="/downloads/CORVO_BRIDGE_V0632_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.32 · PRESET OU A/B + GRID 2 COLUNAS</small></div><i>↓</i></a>
+          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0647.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
         </div>
       </section>
       <details className="advanced-settings"><summary>CONFIGURAÇÕES AVANÇADAS</summary><div className="settings-grid"><label>CANDIDATAS COLETADAS/ID<input type="number" min="1" max="20" value={settings.maxCandidates} onChange={(event)=>setSettings({...settings,maxCandidates:Math.max(1,Math.min(20,Number(event.target.value)||20))})}/></label><label>CANDIDATAS/ID → ANALISTA<input type="number" min="1" max="30" value={settings.analystCandidatesPerId} onChange={(event)=>setSettings({...settings,analystCandidatesPerId:Math.max(1,Math.min(30,Number(event.target.value)||10))})}/></label><label>VARREDURA<input type="number" value={settings.scrollSteps} onChange={(event)=>setSettings({...settings,scrollSteps:Number(event.target.value)})}/></label><label>QUALIDADE JPEG<input type="number" step=".01" value={settings.jpegQuality} onChange={(event)=>setSettings({...settings,jpegQuality:Number(event.target.value)})}/></label><label>PREFIXO<input value={settings.prefix} onChange={(event)=>setSettings({...settings,prefix:event.target.value})}/></label></div><p>A busca coleta no máximo 20 candidatas únicas por ID. No modo Mesclado, a meta é dividida entre Google e Pinterest. Depois, o limite do Analista reduz apenas o transporte; o app não escolhe a vencedora.</p><label className="batch-label">COMANDOS EM LOTE — OPCIONAL<textarea value={settings.batchText} onChange={(event)=>setSettings({...settings,batchText:event.target.value})} placeholder={"01|primeira busca\n02|segunda busca"} /></label></details>

@@ -1,0 +1,10 @@
+CORVOQUIZ V0.6.46 + CORVO BRIDGE V0.6.31
+
+CORREÇÃO: CAPTURA DE SAÍDAS COMPOSTAS DO GERADOR/REFINADOR
+
+- O app envia ao Bridge a lista oficial expectedFiles e expectedIndex.
+- O Bridge não depende mais do DOM do manifesto para descobrir quantos arquivos o lote espera.
+- Se o ChatGPT renderizar um único contact sheet para N arquivos, o Bridge recorta N faixas horizontais e associa uma a cada ARQUIVO.
+- Exemplo: 4 ARQUIVO= + 1 imagem com 4 linhas -> gera video1_01.png ... video1_04.png a partir das quatro linhas.
+- Thumb continua usando captura única/preview principal.
+- Retry persiste expectedFiles/index no chrome.storage.local.

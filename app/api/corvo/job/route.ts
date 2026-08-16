@@ -43,6 +43,7 @@ function buildScriptPrompt(request: CorvoJobRequest) {
     "Não volte para descoberta de ideias. Preserve o conceito aprovado.",
     "Entregue o roteiro final completo em texto, pronto para ser salvo como ROTEIRO.TXT e importado no Forma.",
     "Consulte e respeite o contrato técnico do Forma disponível no seu Knowledge.",
+    "REGRA DO PRESET OU: quando houver comparação A/B, use exatamente TIPO: QUAL_VOCE_PREFERE e informe dois arquivos físicos distintos, IMAGEM_A e IMAGEM_B. Nunca faça A e B apontarem para a mesma imagem e nunca transforme as duas opções em uma única colagem/painel.",
     "Textos destinados ao vídeo devem ser curtos, diretos e em MAIÚSCULAS.",
     "Valide respostas factuais e evite perguntas ambíguas.",
     "",
@@ -60,11 +61,13 @@ function buildScriptPrompt(request: CorvoJobRequest) {
 
 function buildPromptImagesRequest(request: CorvoJobRequest) {
   return [
-    "Leia o roteiro completo abaixo e determine todas as imagens que precisam ser procuradas para produzi-lo.",
+    "Leia o roteiro completo abaixo e determine todas as imagens físicas que precisam ser procuradas para produzi-lo.",
     "Crie prompts de busca objetivos, visuais e sem texto na imagem.",
-    "Respeite cada campo de imagem e cada cena do roteiro, incluindo duas imagens quando o preset exigir IMAGEM_A e IMAGEM_B.",
-    "Retorne somente um TXT limpo, com uma busca por linha, exatamente no formato ID|PROMPT.",
-    "Use IDs únicos e sequenciais como 01, 02, 03. Não use tabela, comentários ou bloco Markdown.",
+    "REGRA CRÍTICA DO PRESET OU / QUAL_VOCE_PREFERE: cada cena possui DOIS assets independentes. IMAGEM_A e IMAGEM_B jamais podem virar uma única imagem comparativa, colagem, split-screen ou painel.",
+    "Para QUAL_VOCE_PREFERE devolva DUAS linhas por cena no formato <ID>_A|IMAGEM_A|NOME_EXATO_DO_ARQUIVO|PROMPT e <ID>_B|IMAGEM_B|NOME_EXATO_DO_ARQUIVO|PROMPT. Exemplo: 01_A|IMAGEM_A|q001-urso-real.jpg|urso polar real sozinho; 01_B|IMAGEM_B|q001-urso-ia.jpg|urso polar artificial sozinho.",
+    "Para campos simples, mantenha compatibilidade com ID|PROMPT. Não transforme os sufixos _A e _B em novas perguntas: eles são slots de mídia da mesma cena.",
+    "O prompt de cada slot deve descrever SOMENTE aquela opção e proibir a presença da opção oposta.",
+    "Retorne somente TXT limpo, uma linha por asset físico. Não use tabela, comentários ou bloco Markdown.",
     "Esse TXT será enviado diretamente ao Corvo Collector na etapa seguinte.",
     "",
     `PROJETO: ${request.projetoId || "NÃO INFORMADO"}`,
@@ -89,8 +92,8 @@ function buildPipelinePrompt(request: CorvoJobRequest) {
     ],
     REFINADOR: [
       "Este trabalho pode conter um LOTE de até 10 IDs/imagens. Processe TODOS os IDs recebidos na mesma conversa; não crie uma conversa separada por imagem.",
-      "REGRA FÍSICA OBRIGATÓRIA: cada ID deve resultar em UMA imagem/asset separado na conversa. Nunca reúna dois ou mais IDs em uma única imagem, grade, colagem, mosaico, contact sheet, storyboard ou painel.",
-      "Mesmo trabalhando em lote na mesma conversa, faça a edição/refinamento de cada ID como geração visual independente. Se a ferramenta oferecer variantes do mesmo ID, mantenha apenas uma opção final para aquele ID antes do manifesto.",
+      "REGRA FÍSICA OBRIGATÓRIA: cada ID/SLOT deve resultar em UMA imagem/asset separado na conversa. IDs como 01_A e 01_B pertencem à mesma cena do preset QUAL_VOCE_PREFERE, mas são DOIS arquivos distintos para IMAGEM_A e IMAGEM_B.",
+      "Nunca funda 01_A + 01_B numa única imagem, split-screen, grade, colagem, mosaico, contact sheet, storyboard ou painel. Refine cada slot visualmente como asset independente. Se a ferramenta exibir um contact sheet técnico, o manifesto ainda deve declarar os nomes físicos separados de cada slot.",
       "Refine somente as imagens aprovadas recebidas, preservando identidade, personagem, jogo, objeto e conceito.",
       "Quando ARQUIVO_SELECIONADO_IMUTAVEL estiver informado, use exatamente essa candidata e jamais a substitua por outro arquivo do mesmo ID.",
       "REFINAMENTO=LEVE pede melhoria técnica; REFINAMENTO=FORTE também pode reenquadrar para 16:9.",
@@ -99,8 +102,8 @@ function buildPipelinePrompt(request: CorvoJobRequest) {
     ],
     GERADOR: [
       "Este trabalho pode conter um LOTE de até 10 IDs. Processe TODOS os IDs recebidos na mesma conversa; não abra ou peça uma conversa separada por item.",
-      "REGRA FÍSICA OBRIGATÓRIA: cada ID deve resultar em UMA imagem/asset separado na conversa. Nunca reúna dois ou mais IDs em uma única imagem, grade, colagem, mosaico, contact sheet, storyboard ou painel.",
-      "Mesmo trabalhando em lote na mesma conversa, faça uma geração visual independente por ID. Se a ferramenta oferecer variantes do mesmo ID, mantenha apenas uma opção final para aquele ID antes do manifesto.",
+      "REGRA FÍSICA OBRIGATÓRIA: cada ID/SLOT deve resultar em UMA imagem/asset separado na conversa. IDs como 01_A e 01_B são os dois slots físicos da mesma cena QUAL_VOCE_PREFERE e correspondem a IMAGEM_A e IMAGEM_B.",
+      "Nunca gere A+B como uma única comparação, split-screen, grade, colagem, mosaico, contact sheet, storyboard ou painel final. Gere cada slot de forma independente. Se a interface agrupar visualmente as saídas em uma grade, mantenha a ordem dos slots e declare cada PADRAO_ARQUIVO_FINAL separadamente.",
       "Gere somente os IDs reprovados recebidos, respeitando PROMPT_GERACAO, identidade esperada e nome final.",
       "Cada imagem gerada com sucesso é FINAL e não deve voltar ao Refinador.",
       "Para cada ID devolva um bloco [ID:...] próprio. Se um item falhar, informe ERROR_CODE e MOTIVO naquele ID e continue os demais.",
@@ -109,7 +112,7 @@ function buildPipelinePrompt(request: CorvoJobRequest) {
     FALLBACK: [
       "Este trabalho pode conter um LOTE de até 10 falhas. Analise TODAS na mesma conversa, sem gerar ou editar imagens e sem tentar burlar políticas.",
       "Para cada ID decida RETRY ou NAO_RECUPERAVEL em seu próprio bloco [ID:...]. Em RETRY, informe DESTINO e PROMPT_RETRY completo.",
-      "Se ERROR_CODE=BATCH_COMPOSITE_IMAGE, a falha é recuperável: use RETRY para a ORIGEM (GERADOR ou REFINADOR) e determine no PROMPT_RETRY que cada ID seja produzido como asset físico separado, nunca em grade, mosaico, colagem, contact sheet, storyboard ou painel conjunto.",
+      "Se ERROR_CODE=BATCH_COMPOSITE_IMAGE, a falha é recuperável. Para preset QUAL_VOCE_PREFERE preserve os slots A/B: 01_A=IMAGEM_A e 01_B=IMAGEM_B. Use RETRY para a ORIGEM e proíba fundir os dois slots em um único asset final.",
       "ARQUIVO_SELECIONADO_IMUTAVEL, quando presente, é uma trava: o retry não pode trocar a candidata escolhida pelo Analista.",
       "Uma falha de um ID não deve impedir decisões para os demais IDs do lote.",
       "Entregue o manifesto [CORVO_IMAGE_FALLBACK] VERSION=1.0.",

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Corvo Bridge",
-  "version": "0.6.30",
+  "version": "0.6.32",
   "description": "Encaminha especialistas do CorvoQuiz com checkpoints persistentes, Cleaner resiliente, captura recuperável e fechamento confirmado das abas automáticas.",
   "permissions": [
     "storage",

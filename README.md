@@ -1,3 +1,21 @@
+# CORVOQUIZ V0.6.47 + BRIDGE V0.6.32 — PRESET OU COM 2 SLOTS FÍSICOS
+
+## V0.6.47 / V0.6.32
+- O preset Forma `QUAL_VOCE_PREFERE` (OU/comparação) agora é modelado como **dois assets físicos por cena**: `IMAGEM_A` e `IMAGEM_B`.
+- IDs internos viram slots `01_A`, `01_B`, `02_A`, `02_B` etc.; eles continuam pertencendo à mesma cena.
+- O roteiro preserva os nomes exatos de `IMAGEM_A`/`IMAGEM_B`; o ZIP final usa esses nomes e inclui `ROTEIRO.txt`.
+- Prompts antigos com uma linha por cena são expandidos automaticamente para dois slots quando o roteiro é `QUAL_VOCE_PREFERE`.
+- Checkpoint V3 migra projetos antigos que tinham 1 asset por comparação para dois slots A/B, sem refazer roteiro.
+- Bridge V0.6.32 recebe `expectedFiles`, `expectedIndex`, `compositeSplitMode` e `compositeColumns` em todas as fatias MV3.
+- Se o ChatGPT renderizar 8 slots num contact sheet 4x2, o Bridge recorta célula a célula na ordem A/B de cada cena.
+
+# CORVOQUIZ V0.6.46 + BRIDGE V0.6.31
+
+## V0.6.31 — captura composta por lote
+- `expectedFiles` e `expectedIndex` passam do app ao Bridge como fonte oficial.
+- Um contact sheet único pode ser dividido em uma faixa por ID sem reenviar o lote ao especialista.
+- Mantém checkpoint, Cleaner, STOP persistente, captura MV3 e auto-fechamento anteriores.
+
 # CorvoQuiz Produção V0.6.45
 
 

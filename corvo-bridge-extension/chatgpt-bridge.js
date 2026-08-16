@@ -1034,6 +1034,10 @@
   function manifestOutputFileNames(payload = {}) {
     const supplied = Array.isArray(payload?.expectedFiles) ? payload.expectedFiles : [];
     const names = supplied.map((value) => String(value || '').trim()).filter(Boolean);
+    // Quando o app fornece expectedFiles, esta lista é o contrato oficial. Não
+    // misturamos ARQUIVO= antigos/errados lidos do DOM, porque isso altera índices
+    // A/B do preset OU e pode transformar 8 slots em uma contagem incorreta.
+    if (names.length) return [...new Map(names.map((name) => [name.toLocaleLowerCase('pt-BR'), name])).values()];
     const scopes = assistantLikeScopes();
     // Em retries semânticos a mesma conversa pode conter manifestos antigos.
     // Só o manifesto mais recente pertence às imagens após a última mensagem
@@ -1259,6 +1263,102 @@
     return { dataUrl: await blobToDataUrl(blob), contentType: blob.type || "image/png", size: blob.size };
   }
 
+  async function cropCompositeCandidate(candidate, payload = {}, expectedNames = []) {
+    const count = Math.max(1, expectedNames.length || Number(payload?.expectedCount || 0) || 1);
+    if (count <= 1) return null;
+    const requestedName = String(payload?.name || '').trim();
+    let index = Number.isInteger(payload?.expectedIndex) ? Number(payload.expectedIndex) : -1;
+    if (index < 0 && requestedName) {
+      const key = requestedName.toLocaleLowerCase('pt-BR');
+      index = expectedNames.findIndex((name) => String(name || '').toLocaleLowerCase('pt-BR') === key);
+    }
+    if (index < 0 || index >= count) throw new Error('COMPOSITE_EXPECTED_INDEX_UNKNOWN');
+
+    const src = String(candidate?.src || candidate?.image?.currentSrc || candidate?.image?.src || '');
+    let bitmap = null;
+    let revoke = '';
+    try {
+      // Preferimos o blob real: evita canvas contaminado por CORS e permite
+      // recortar o contact sheet mesmo quando o <img> visível é só um preview.
+      try {
+        const blob = await fetchImageBlob(src, 9000);
+        bitmap = await createImageBitmap(blob);
+      } catch (_) {
+        const image = candidate?.image;
+        if (!image) throw new Error('COMPOSITE_IMAGE_MISSING');
+        const width = image.naturalWidth || image.width || 0;
+        const height = image.naturalHeight || image.height || 0;
+        if (!width || !height) throw new Error('COMPOSITE_DIMENSIONS_MISSING');
+        const canvasSource = document.createElement('canvas');
+        canvasSource.width = width;
+        canvasSource.height = height;
+        const sourceCtx = canvasSource.getContext('2d');
+        if (!sourceCtx) throw new Error('CANVAS_UNAVAILABLE');
+        sourceCtx.drawImage(image, 0, 0, width, height);
+        const blob = await new Promise((resolve, reject) => canvasSource.toBlob((value) => value ? resolve(value) : reject(new Error('COMPOSITE_SOURCE_EXPORT_FAILED')), 'image/png'));
+        revoke = URL.createObjectURL(blob);
+        bitmap = await createImageBitmap(blob);
+      }
+
+      const width = bitmap.width || 0;
+      const height = bitmap.height || 0;
+      if (!width || !height) throw new Error('COMPOSITE_DIMENSIONS_MISSING');
+
+      // Modo ROWS: uma faixa horizontal por asset.
+      // Modo GRID: usado pelo preset Forma QUAL_VOCE_PREFERE. A ordem oficial é
+      // 01_A,01_B,02_A,02_B...; portanto 8 slots viram grade 4x2 e cada célula
+      // é um arquivo físico independente para IMAGEM_A/IMAGEM_B.
+      const mode = String(payload?.compositeSplitMode || 'AUTO').toUpperCase();
+      let sx = 0, sy = 0, sw = width, sh = height;
+      let gridRow = null, gridColumn = null, gridRows = null, gridColumns = null;
+      if (mode === 'GRID') {
+        const columns = Math.max(1, Math.min(count, Number(payload?.compositeColumns || 2)));
+        const rows = Math.max(1, Math.ceil(count / columns));
+        const row = Math.floor(index / columns);
+        const column = index % columns;
+        const x0 = Math.round((width * column) / columns);
+        const x1 = Math.round((width * (column + 1)) / columns);
+        const y0 = Math.round((height * row) / rows);
+        const y1 = Math.round((height * (row + 1)) / rows);
+        sx = Math.max(0, x0); sw = Math.max(1, Math.min(width - sx, x1 - x0));
+        sy = Math.max(0, y0); sh = Math.max(1, Math.min(height - sy, y1 - y0));
+        gridRow = row; gridColumn = column; gridRows = rows; gridColumns = columns;
+      } else if (mode === 'ROWS' || mode === 'AUTO') {
+        const y0 = Math.round((height * index) / count);
+        const y1 = Math.round((height * (index + 1)) / count);
+        sy = Math.max(0, y0);
+        sh = Math.max(1, Math.min(height - sy, y1 - y0));
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = sw;
+      canvas.height = sh;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('CANVAS_UNAVAILABLE');
+      ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, sw, sh);
+      const outBlob = await new Promise((resolve, reject) => canvas.toBlob((value) => value ? resolve(value) : reject(new Error('COMPOSITE_CROP_EXPORT_FAILED')), 'image/png'));
+      if (!outBlob.size) throw new Error('COMPOSITE_CROP_EMPTY');
+      if (outBlob.size > 8 * 1024 * 1024) throw new Error('IMAGE_TOO_LARGE');
+      return {
+        ok:true,
+        dataUrl:await blobToDataUrl(outBlob),
+        src,
+        contentType:outBlob.type || 'image/png',
+        size:outBlob.size,
+        width:sw,
+        height:sh,
+        composite:true,
+        compositeIndex:index,
+        compositeCount:count,
+        compositeMode:mode,
+        gridRow, gridColumn, gridRows, gridColumns
+      };
+    } finally {
+      try { bitmap?.close?.(); } catch {}
+      if (revoke) try { URL.revokeObjectURL(revoke); } catch {}
+    }
+  }
+
   async function captureGeneratedImage(payload = {}, timeout = 30000) {
     const deadline = Date.now() + Math.max(3000, Number(payload?.timeout || timeout));
     let lastError = "GENERATED_IMAGE_NOT_FOUND";
@@ -1271,23 +1371,52 @@
       const candidates = generatedImageCandidates(payload);
       const layout = logicalGeneratedImageSlots(candidates, payload);
 
-      // Um manifesto de lote com vários ARQUIVO= precisa ter vários assets físicos.
-      // Se existe apenas uma imagem grande por tempo suficiente, o especialista
-      // consolidou o lote em mosaico/contact sheet. Não anexamos esse mosaico como
-      // se fosse o primeiro ID e depois ficamos esperando arquivos inexistentes.
-      if (layout.expectedNames.length > 1 && candidates.length > 0 && candidates.length < layout.expectedNames.length) {
+      // Novo fallback V0.6.32: se o lote declara N arquivos mas a UI contém
+      // um único contact sheet, usamos a lista OFICIAL recebida do CorvoQuiz e
+      // recortamos uma faixa por ID. Assim uma resposta 4-em-1 continua utilizável.
+      const maxRenderedArea = candidates.reduce((max, item) => Math.max(max, Number(item?.renderedArea || 0)), 0);
+      const meaningfulCompositeCandidates = maxRenderedArea > 0
+        ? candidates.filter((item) => Number(item?.renderedArea || 0) >= maxRenderedArea * 0.28)
+        : candidates;
+      if (layout.expectedNames.length > 1 && meaningfulCompositeCandidates.length === 1) {
+        const compositeCandidate = meaningfulCompositeCandidates[0];
         if (!singleCompositeSince) singleCompositeSince = Date.now();
-        if (Date.now() - singleCompositeSince >= 1600) {
-          const code = `BATCH_COMPOSITE_IMAGE_DETECTED:${layout.expectedNames.length}:${candidates.length}`;
-          reportDiagnostic(jobId, 'BATCH_COMPOSITE_IMAGE_DETECTED', {
-            requestedName,
-            expectedFiles:layout.expectedNames,
-            candidateCount:candidates.length,
-            candidateNatural:[candidates[0]?.naturalWidth || 0, candidates[0]?.naturalHeight || 0],
-            candidateRendered:[candidates[0]?.renderedWidth || 0, candidates[0]?.renderedHeight || 0]
-          }).catch(() => {});
-          if (requestedName) assignments.delete(requestedName);
-          throw new Error(code);
+        if (Date.now() - singleCompositeSince >= 700) {
+          try {
+            const cropped = await cropCompositeCandidate(compositeCandidate, payload, layout.expectedNames);
+            reportDiagnostic(jobId, 'BATCH_COMPOSITE_IMAGE_SPLIT', {
+              requestedName,
+              expectedFiles:layout.expectedNames,
+              expectedIndex:Number.isInteger(payload?.expectedIndex) ? payload.expectedIndex : null,
+              candidateCount:candidates.length,
+              meaningfulCount:meaningfulCompositeCandidates.length,
+              candidateNatural:[compositeCandidate?.naturalWidth || 0, compositeCandidate?.naturalHeight || 0],
+              outputSize:[cropped?.width || 0, cropped?.height || 0],
+              splitMode:String(payload?.compositeSplitMode || 'AUTO'),
+              compositeColumns:Number(payload?.compositeColumns || 0) || null,
+              grid:[cropped?.gridRow, cropped?.gridColumn, cropped?.gridRows, cropped?.gridColumns]
+            }).catch(() => {});
+            return cropped;
+          } catch (splitError) {
+            const src = String(compositeCandidate?.src || compositeCandidate?.image?.currentSrc || compositeCandidate?.image?.src || '');
+            const expectedIndex = Number.isInteger(payload?.expectedIndex)
+              ? Number(payload.expectedIndex)
+              : layout.expectedNames.findIndex((name) => String(name || '').toLocaleLowerCase('pt-BR') === requestedName.toLocaleLowerCase('pt-BR'));
+            // Se o contexto isolado da página não conseguir ler pixels por CORS,
+            // delegamos o download + crop ao service worker, que possui host_permissions.
+            if (/^https:\/\//i.test(src) && expectedIndex >= 0) {
+              reportDiagnostic(jobId, 'BATCH_COMPOSITE_SPLIT_BACKGROUND_FALLBACK', {
+                requestedName, expectedIndex, expectedCount:layout.expectedNames.length,
+                error:String(splitError?.message || splitError || 'UNKNOWN')
+              }).catch(() => {});
+              return {
+                ok:true, src,
+                crop:{ mode:String(payload?.compositeSplitMode || 'ROWS').toUpperCase(), index:expectedIndex, count:layout.expectedNames.length, columns:Number(payload?.compositeColumns || 0) || undefined },
+                composite:true
+              };
+            }
+            lastError = `COMPOSITE_SPLIT_FAILED:${splitError?.message || splitError || 'UNKNOWN'}`;
+          }
         }
       } else {
         singleCompositeSince = 0;
@@ -1514,7 +1643,7 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "CORVO_BRIDGE_PING") {
       chrome.runtime.sendMessage({ type: "CORVO_GPT_READY" }).catch(() => {});
-      sendResponse({ ok: true, version:"0.6.30", page:pageDiagnostic() });
+      sendResponse({ ok: true, version:"0.6.32", page:pageDiagnostic() });
       return;
     }
     if (message?.type === "CORVO_SEND_PROMPT") {

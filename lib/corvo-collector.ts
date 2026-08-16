@@ -2,7 +2,14 @@ export const CORVO_COLLECTOR_EXTENSION_ID = "eaekknadnghlpncgbhnmldofajelmlbo";
 
 export type SourceMode = "PINTEREST" | "GOOGLE" | "MIXED";
 export type SelectionMode = "AUTO" | "MANUAL";
-export type GuideItem = { id: string; query: string };
+export type GuideItem = {
+  id: string;
+  query: string;
+  formaField?: string;
+  targetFile?: string;
+  sceneId?: string;
+  slot?: "A" | "B" | string;
+};
 
 export type Candidate = {
   previewUrl: string;
@@ -52,8 +59,32 @@ export function parseGuideText(text: string): GuideItem[] {
   const source = pipeLines.length ? pipeLines : lines.filter((line) => !/^(prompts?|buscas?|imagens?)\s*:?s*$/i.test(line));
   return source.map((line, index) => {
     const cleaned = line.replace(/^[#>*\-\s]+/, "").trim();
-    const parts = cleaned.split("|");
-    if (parts.length > 1) return { id: String(parts.shift()).trim(), query: parts.join("|").trim() };
+    const parts = cleaned.split("|").map((value) => value.trim());
+    if (parts.length > 1) {
+      const rawId = String(parts.shift() || "").trim();
+      const slotMatch = rawId.match(/^(.+?)[_-](A|B)$/i);
+      const normalizedScene = slotMatch && /^\d+$/.test(slotMatch[1]) ? slotMatch[1].padStart(2, "0") : slotMatch?.[1];
+      const id = slotMatch ? `${normalizedScene}_${slotMatch[2].toUpperCase()}` : (/^\d+$/.test(rawId) ? rawId.padStart(2, "0") : rawId);
+      const formaField = String(parts[0] || "").toUpperCase();
+      if (parts.length >= 3 && /^IMAGEM(?:_[AB]|\d+|_RESULTADO)?$/.test(formaField)) {
+        const targetFile = String(parts.shift() || "").trim();
+        const fileName = String(parts.shift() || "").trim();
+        return {
+          id,
+          formaField:targetFile,
+          targetFile:fileName,
+          sceneId:slotMatch ? normalizedScene : undefined,
+          slot:slotMatch ? slotMatch[2].toUpperCase() : undefined,
+          query:parts.join("|").trim(),
+        };
+      }
+      return {
+        id,
+        query:parts.join("|").trim(),
+        sceneId:slotMatch ? normalizedScene : undefined,
+        slot:slotMatch ? slotMatch[2].toUpperCase() : undefined,
+      };
+    }
     const numbered = cleaned.match(/^(\d{1,4})\s*[.):\-]\s*(.+)$/);
     return numbered
       ? { id: numbered[1].padStart(2, "0"), query: numbered[2].trim() }

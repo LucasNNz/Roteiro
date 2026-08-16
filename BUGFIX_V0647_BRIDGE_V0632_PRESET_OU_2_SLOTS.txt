@@ -1,0 +1,12 @@
+CORVOQUIZ V0.6.47 + CORVO BRIDGE V0.6.32
+
+CORREÇÃO: PRESET OU / QUAL_VOCE_PREFERE
+
+1. Cada cena de comparação passa a exigir DOIS arquivos físicos: IMAGEM_A e IMAGEM_B.
+2. IDs internos de mídia: 01_A, 01_B, 02_A, 02_B...
+3. O nome final de cada arquivo é o nome exato declarado no ROTEIRO.txt.
+4. Prompts/Collector/Analista/Gerador/Refinador/checkpoint passam a operar por slot físico.
+5. Bridge V0.6.32 corrige um bug crítico da V0.6.31: expectedFiles/expectedIndex eram recebidos pelo background, mas não eram repassados ao content script em cada fatia de captura.
+6. Captura composta GRID: 8 slots + 2 colunas => 4 linhas x 2 colunas; cada célula é recortada e enviada como um arquivo A/B independente.
+7. Checkpoint V3 converte pipeline legado de comparação para dois slots e reinicia somente as imagens afetadas.
+8. ZIP final inclui ROTEIRO.txt e manifesto com cena, slot, campoForma e arquivo.
