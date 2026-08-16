@@ -39,6 +39,7 @@ type PipelineItem = {
   retryPrompt?:string; finalFile:string; jobId?:string; fallbackJobId?:string; status?:string; outputUrl?:string; outputFile?:string;
   error?:string; errorCode?:string; tentativaAtual?:number; finalFailure?:boolean; history?:PipelineHistoryEvent[];
   logicalJobId?:string; batchId?:string; batchIndex?:number; batchSize?:number; routeConversationUrl?:string; fallbackConversationUrl?:string;
+  jobPrompt?:string; jobUploadToken?:string;
 };
 type Project = {
   id:string; title:string; topic:string; format:Format; quantity:Quantity; mode:Mode;
@@ -51,7 +52,7 @@ type Project = {
   analysisExpectedCandidates?:number; analysisStoredCandidates?:number; analysisStoredIds?:number; analysisBatchTotal?:number; analysisBatchesUploaded?:number;
   analysisCollectorPackageId?:string; analysisCollectorPackageCode?:string; analysisPackageFileName?:string; analysisSelectionMode?:"AUTO"|"MANUAL";
   analysisPreparationRetryAt?:string; analysisPreparationRetryCount?:number; analysisPreparationError?:string;
-  pipelineStatus?:string; pipelineItems?:PipelineItem[];
+  pipelineStatus?:string; pipelineItems?:PipelineItem[]; pipelineCheckpointVersion?:number;
   youtubeJobId?:string; youtubeStatus?:string; youtubeMetadata?:string; youtubeError?:string;
   finalZipStatus?:string; finalZipError?:string; finalZipGeneratedAt?:string;
   autoRunStatus?:AutoRunStatus; autoRunStep?:AutoRunStep; autoRunMessage?:string; autoRunError?:string; autoRunStartedAt?:string; autoRunCompletedAt?:string;
@@ -157,9 +158,16 @@ function elapsedLabel(rawDate?:string) {
     : minutes ? `${minutes}MIN ${String(seconds).padStart(2,"0")}S` : `${seconds}S`;
 }
 
+const PROJECTS_STORAGE_KEY = "corvoquiz-projects-v02";
+
 function safeLoad<T>(key:string, fallback:T):T {
   if (typeof window === "undefined") return fallback;
   try { return JSON.parse(localStorage.getItem(key) || "") as T; } catch { return fallback; }
+}
+
+function persistProjectsSnapshot(projects:Project[]) {
+  if (typeof window === "undefined") return;
+  try { localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(projects)); } catch {}
 }
 function loadCollectorSettings():CollectorSettings {
   const saved = safeLoad<Partial<CollectorSettings>>("corvo-collector-settings-v02", {});
@@ -224,8 +232,40 @@ function ideaSection(resultText:string, idea:CorvoIdea) {
   return text.slice(start, end).trim() || fallback;
 }
 
+function migratePipelineCheckpoint(project:Project):Project {
+  if (Number(project.pipelineCheckpointVersion || 0) >= 2) return project;
+  let recovered = 0;
+  const items = (project.pipelineItems || []).map((item) => {
+    if (item.outputUrl) return item;
+    const historyFileFailure = (item.history || []).some((event) => event.specialist === "REFINADOR" && String(event.errorCode || "").toUpperCase() === "FILE_ERROR");
+    const text = `${item.errorCode || ""} ${item.error || ""}`.toUpperCase();
+    const knownAttachmentBug = historyFileFailure || /FILE_ERROR|ARQUIVO.*(AUSENTE|INACESS|DISPON)|IMAGEM.*(AUSENTE|INACESS|DISPON)/.test(text);
+    if (!knownAttachmentBug || !item.selectedFile || !item.sourceUrl) return item;
+    recovered += 1;
+    return {
+      ...item,
+      route:"REFINADOR" as const,
+      sourceFile:item.selectedFile,
+      status:"PENDENTE",
+      tentativaAtual:1,
+      finalFailure:false,
+      error:undefined, errorCode:undefined, retryPrompt:undefined,
+      jobId:undefined, fallbackJobId:undefined, jobPrompt:undefined, jobUploadToken:undefined,
+      batchId:undefined, batchIndex:undefined, batchSize:undefined,
+      routeConversationUrl:undefined, fallbackConversationUrl:undefined,
+    };
+  });
+  return {
+    ...project,
+    pipelineCheckpointVersion:2,
+    pipelineItems:items,
+    ...(recovered ? { pipelineStatus:`CHECKPOINT V2 · ${recovered} REFINO(S) REABERTO(S) COM ARQUIVO DE ORIGEM` } : {}),
+  };
+}
+
 function loadProjects() {
-  return safeLoad<Project[]>("corvoquiz-projects-v02", initialProjects).map((project) => {
+  return safeLoad<Project[]>(PROJECTS_STORAGE_KEY, initialProjects).map((rawProject) => {
+    const project = migratePipelineCheckpoint(rawProject);
     const withIdea = project.ideaText ? project : { ...project, ideaText:`TÍTULO: ${project.title}\nTEMA: ${project.topic}` };
     if (withIdea.stage >= 3 && !withIdea.scriptText) return { ...withIdea, stage:2 };
     if (withIdea.stage >= 4 && !withIdea.promptText) return { ...withIdea, stage:3 };
@@ -341,7 +381,7 @@ export default function Home() {
     }
   }
 
-  useEffect(() => { projectsRef.current = projects; localStorage.setItem("corvoquiz-projects-v02", JSON.stringify(projects)); }, [projects]);
+  useEffect(() => { projectsRef.current = projects; persistProjectsSnapshot(projects); }, [projects]);
   useEffect(() => { localStorage.setItem("corvo-collector-settings-v02", JSON.stringify(settings)); }, [settings]);
   useEffect(() => {
     if (!activityOpen) return;
@@ -518,6 +558,7 @@ export default function Home() {
     setProjects((current) => {
       const next = current.map((project) => project.id === projectId ? { ...project, ...patch } : project);
       projectsRef.current = next;
+      persistProjectsSnapshot(next);
       return next;
     });
   }
@@ -1077,8 +1118,10 @@ export default function Home() {
 
   async function downloadProject(project:Project) {
     const zip = new JSZip();
-    const { analysisUploadToken: _privateAnalysisToken, ...safeProject } = project;
-    void _privateAnalysisToken;
+    const safePipelineItems = (project.pipelineItems || []).map(({ jobUploadToken: _privateJobToken, ...item }) => { void _privateJobToken; return item; });
+    const { analysisUploadToken: _privateAnalysisToken, pipelineItems: _privatePipelineItems, ...safeProjectBase } = project;
+    void _privateAnalysisToken; void _privatePipelineItems;
+    const safeProject = { ...safeProjectBase, pipelineItems:safePipelineItems };
     zip.file("projeto.json", JSON.stringify(safeProject, null, 2));
     zip.folder("ideia")?.file(`IDEIA_${project.id}.txt`, project.ideaText || `TÍTULO: ${project.title}\nTEMA: ${project.topic}`);
     zip.folder("roteiro")?.file(`${project.id}.txt`, project.scriptText || `PROJETO: ${project.id}\nROTEIRO AINDA NÃO CONCLUÍDO\n`);
@@ -1086,7 +1129,7 @@ export default function Home() {
     zip.folder("forma")?.file("PACOTE.txt", project.packageCode ? `PACOTE_CODE=${project.packageCode}` : "O pacote de imagens ainda não foi concluído.");
     zip.folder("thumbnail")?.file("THUMBNAIL.txt", project.thumbUrl ? `ARQUIVO=${project.thumbFileName || "thumbnail.png"}\nURL=${project.thumbUrl}` : `STATUS=${project.thumbStatus || "PENDENTE"}\n${project.thumbError ? `ERRO=${project.thumbError}` : ""}`);
     zip.folder("analise")?.file("CORVO_IMAGE_ANALYSIS.txt", project.analysisManifest || `STATUS=${project.analysisStatus || "PENDENTE"}\n`);
-    zip.folder("pipeline")?.file("IMAGENS_FINAIS.json", JSON.stringify(project.pipelineItems || [], null, 2));
+    zip.folder("pipeline")?.file("IMAGENS_FINAIS.json", JSON.stringify(safePipelineItems, null, 2));
     zip.folder("youtube")?.file("METADADOS.txt", project.youtubeMetadata || `STATUS=${project.youtubeStatus || "PENDENTE"}\n${project.youtubeError ? `ERRO=${project.youtubeError}` : ""}`);
     zip.folder("consolidacao")?.file("STATUS.txt", `STATUS=${project.finalZipStatus || "PENDENTE"}\nGERADO_EM=${project.finalZipGeneratedAt || ""}\n${project.finalZipError ? `ERRO=${project.finalZipError}` : ""}`);
     const blob = await zip.generateAsync({ type:"blob" }); const url = URL.createObjectURL(blob);
@@ -1438,6 +1481,7 @@ export default function Home() {
           }) }
         : project);
       projectsRef.current = next;
+      persistProjectsSnapshot(next);
       return next;
     });
   }
@@ -1448,6 +1492,7 @@ export default function Home() {
         ? { ...project, pipelineItems:(project.pipelineItems || []).map((item) => item.id === itemId ? { ...item, history:[...(item.history || []), event] } : item) }
         : project);
       projectsRef.current = next;
+      persistProjectsSnapshot(next);
       return next;
     });
   }
@@ -1671,9 +1716,39 @@ export default function Home() {
     const attempt = Math.max(1, ...batch.map((item) => Number(item.tentativaAtual || 1)));
     if (!jobId || !route) return null;
     try {
+      const activity = await getCorvoBridgeJobActivity().catch(() => ({ jobs:[] as CorvoBridgeJobActivity[] }));
+      const bridgeJob = (activity.jobs || []).find((entry) => String(entry.jobId || "") === jobId);
+      const bridgeState = String(bridgeJob?.state || "").toUpperCase();
+      const committed = /WAITING_ACTION|USER_MESSAGE_COMMITTED|MESSAGE_CONFIRMED/.test(bridgeState);
+      const prompt = String(batch[0]?.jobPrompt || "");
+      const uploadToken = String(batch[0]?.jobUploadToken || "");
+
+      if (!committed && prompt && uploadToken) {
+        const attachments = route === "REFINADOR"
+          ? batch.map((item) => ({
+              url:String(item.sourceUrl || ""),
+              name:String(item.selectedFile || item.sourceFile || `entrada_${item.id}.jpg`),
+              contentType:"image/jpeg",
+              sourceJobId:String(project.analysisJobId || ""),
+              sourceUploadToken:String(project.analysisUploadToken || ""),
+            })).filter((item) => item.url)
+          : [];
+        if (route === "REFINADOR" && attachments.length !== batch.length) throw new Error("REFINER_BATCH_SOURCE_MISSING");
+        for (const item of batch) updatePipelineItem(project.id, item.id, { status:"RETOMANDO_ENVIO_PERSISTIDO" });
+        await dispatchPipelineJobResilient({
+          jobId, prompt, specialist:route,
+          meta:{
+            projectId:project.id, uploadToken, appOrigin:window.location.origin, attachments,
+            batchId, batchSize:batch.length, logicalBatch:true,
+            preferredConversationUrl:String(batch[0]?.routeConversationUrl || bridgeJob?.conversationUrl || ""),
+            forceNewConversation:false,
+          },
+        }, project.id, batch.map((item) => item.id));
+      }
+
       for (const item of batch) updatePipelineItem(project.id, item.id, { status:"RETOMANDO_JOB_EXISTENTE" });
       const status = await pollPipelineBatchJob(jobId, project.id, batch.map((item) => item.id), route === "REFINADOR" ? "REFINED_IMAGE" : "GENERATED_IMAGE");
-      return resolveRoutedBatchStatus(project, batch, jobId, batchId, attempt, status, String(batch[0]?.routeConversationUrl || ""));
+      return resolveRoutedBatchStatus(project, batch, jobId, batchId, attempt, status, String(batch[0]?.routeConversationUrl || bridgeJob?.conversationUrl || ""));
     } catch (error) {
       const status = (error as any)?.corvoStatus;
       const failures = batch.map((item) => {
@@ -1739,6 +1814,8 @@ export default function Home() {
             url:String(item.sourceUrl || ""),
             name:String(item.selectedFile || item.sourceFile || `entrada_${item.id}.jpg`),
             contentType:"image/jpeg",
+            sourceJobId:String(project.analysisJobId || ""),
+            sourceUploadToken:String(project.analysisUploadToken || ""),
           })).filter((item) => item.url)
         : [];
       if (route === "REFINADOR" && attachments.length !== batch.length) throw new Error("REFINER_BATCH_SOURCE_MISSING");
@@ -1746,7 +1823,8 @@ export default function Home() {
       for (const item of batch) {
         const logicalJobId = item.logicalJobId || `${project.id}:ITEM:${item.id}`;
         updatePipelineItem(project.id, item.id, {
-          jobId:job.jobId, status:"ENVIANDO_LOTE", tentativaAtual:attempt, error:undefined, errorCode:undefined,
+          jobId:job.jobId, jobPrompt:job.prompt, jobUploadToken:job.uploadToken,
+          status:"ENVIANDO_LOTE", tentativaAtual:attempt, error:undefined, errorCode:undefined,
           logicalJobId, batchId, batchIndex:ids.indexOf(item.id) + 1, batchSize:batch.length,
         });
         appendPipelineHistory(project.id, item.id, { at:new Date().toISOString(), attempt, specialist:route, status:"ENVIANDO_LOTE", jobId:job.jobId, batchId, logicalJobId });
@@ -2005,9 +2083,16 @@ export default function Home() {
     // 2) Retoma Refinador/Gerador que já estavam PROCESSANDO no mesmo JOB. Em vez de
     // despachar uma nova conversa, só fazemos polling/captura do job que já existe.
     const activeRouteGroups = new Map<string,PipelineItem[]>();
+    const activeCheckpointStatuses = new Set([
+      "ENVIANDO_LOTE", "PROCESSANDO_LOTE", "RETOMANDO_JOB_EXISTENTE",
+      "PENDING", "SENT", "PROCESSING", "WAITING_ACTION", "RESULT_RECEIVED", "WAITING_FILE",
+      "CAPTURANDO_LOTE_REFINADOR", "CAPTURANDO_LOTE_GERADOR",
+    ]);
     for (const item of pending) {
       const lastRoute = latestPipelineHistory(item, item.route);
-      if (item.jobId && lastRoute?.status === "ENVIANDO_LOTE") {
+      const itemStatus = String(item.status || "").toUpperCase();
+      const checkpointLooksActive = activeCheckpointStatuses.has(itemStatus) || lastRoute?.status === "ENVIANDO_LOTE";
+      if (item.jobId && checkpointLooksActive) {
         const key = `${item.route}:${item.jobId}`;
         const group = activeRouteGroups.get(key) || [];
         group.push(item);
@@ -3050,7 +3135,7 @@ export default function Home() {
         <div className="downloads-head"><div><span>INSTALAÇÃO E SUPORTE</span><h3 id="downloads-title">ARQUIVOS PARA BAIXAR</h3></div><small>SE PRECISAR REINSTALAR</small></div>
         <div className="download-grid">
           <a className="download-card" href="/downloads/CORVO_COLLECTOR_V080_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.8.0</small></div><i>↓</i></a>
-          <a className="download-card" href="/downloads/CORVO_BRIDGE_V0624_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.24 · BATCHING + CLEANER RESILIENTE</small></div><i>↓</i></a>
+          <a className="download-card" href="/downloads/CORVO_BRIDGE_V0626_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.26 · CLEANER ATUALIZÁVEL + PARADA MANUAL</small></div><i>↓</i></a>
           <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0641.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
         </div>
       </section>

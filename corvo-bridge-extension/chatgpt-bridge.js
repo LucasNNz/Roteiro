@@ -351,8 +351,11 @@
 
   async function fetchAttachmentThroughApp(job, attachment) {
     const appOrigin = String(job?.meta?.appOrigin || "").trim().replace(/\/$/, "");
-    const uploadToken = String(job?.meta?.uploadToken || "").trim();
-    const jobId = String(job?.jobId || "").trim();
+    // A imagem do Refinador pertence ao JOB do Analista, não ao JOB do Refinador.
+    // Preserve a origem do objeto para que o proxy continue funcionando após reload
+    // ou expiração da URL assinada do R2.
+    const uploadToken = String(attachment?.sourceUploadToken || job?.meta?.uploadToken || "").trim();
+    const jobId = String(attachment?.sourceJobId || job?.jobId || "").trim();
     const url = String(attachment?.url || "").trim();
     const name = String(attachment?.name || "arquivo").trim() || "arquivo";
     if (!appOrigin || !/^https:\/\//i.test(appOrigin) || !uploadToken || !jobId || !url) throw new Error("ATTACHMENT_PROXY_CONTEXT_MISSING");
@@ -423,7 +426,9 @@
             type: "CORVO_FETCH_ATTACHMENT",
             payload: {
               url, name, contentType: String(attachment?.contentType || ""),
-              jobId:String(job?.jobId || ""), uploadToken:String(job?.meta?.uploadToken || ""), appOrigin:String(job?.meta?.appOrigin || "")
+              jobId:String(attachment?.sourceJobId || job?.jobId || ""),
+              uploadToken:String(attachment?.sourceUploadToken || job?.meta?.uploadToken || ""),
+              appOrigin:String(job?.meta?.appOrigin || "")
             }
           });
           if (!fetched?.ok || !fetched?.dataUrl) throw new Error(fetched?.error || proxyError?.message || directError?.message || "ATTACHMENT_FETCH_FAILED");
@@ -891,6 +896,23 @@
     return document.querySelectorAll('[data-message-author-role="user"], [data-message-author-role="assistant"]').length > 0;
   }
 
+  async function checkCurrentConversationExists(payload = {}) {
+    const expected = String(payload?.conversationId || '').trim();
+    if (!expected) return { ok:false, error:'CONVERSATION_ID_REQUIRED' };
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const current = conversationIdFromPath();
+      if (current && current !== expected) return { ok:true, exists:false, reason:'ROUTE_CHANGED' };
+      if (!current && location.pathname === '/') return { ok:true, exists:false, reason:'HOME_REDIRECT' };
+      if (conversationMissingNotice()) return { ok:true, exists:false, reason:'MISSING_NOTICE' };
+      if (current === expected && conversationTurnsExist()) return { ok:true, exists:true, reason:'CONVERSATION_LOADED' };
+      await sleep(180);
+    }
+    const current = conversationIdFromPath();
+    if (current === expected) return { ok:true, exists:null, reason:'CONVERSATION_NOT_READY' };
+    return { ok:true, exists:false, reason:'ROUTE_NOT_PRESENT' };
+  }
+
   async function verifyCurrentConversationDeleted(payload = {}) {
     const expected = String(payload?.conversationId || '').trim();
     if (!expected) return { ok: false, error: 'CONVERSATION_ID_REQUIRED' };
@@ -1311,7 +1333,7 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "CORVO_BRIDGE_PING") {
       chrome.runtime.sendMessage({ type: "CORVO_GPT_READY" }).catch(() => {});
-      sendResponse({ ok: true, version:"0.6.24", page:pageDiagnostic() });
+      sendResponse({ ok: true, version:"0.6.26", page:pageDiagnostic() });
       return;
     }
     if (message?.type === "CORVO_SEND_PROMPT") {
@@ -1324,6 +1346,12 @@
       deleteCurrentChat(message.payload)
         .then(sendResponse)
         .catch((error) => sendResponse({ ok: false, error: error.message || "DELETE_FAILED" }));
+      return true;
+    }
+    if (message?.type === "CORVO_CHECK_CHAT_EXISTS") {
+      checkCurrentConversationExists(message.payload || {})
+        .then(sendResponse)
+        .catch((error) => sendResponse({ ok:false, error:error.message || "CONVERSATION_CHECK_FAILED" }));
       return true;
     }
     if (message?.type === "CORVO_VERIFY_CHAT_DELETED") {

@@ -44,18 +44,32 @@ async function refresh(){
       const today=new Set(eligible.filter(r=>r.day===new Date().toLocaleDateString("en-CA")&&r.conversationId).map(r=>r.conversationId)).size;
       document.querySelector("#cleaner").textContent=`🧹 Cleaner: ${c.config.cleanerEnabled?"ATIVO":"DESATIVADO"} • ${c.config.cleanerHour||"22:00"}\nHoje: ${today} conversas próprias • Pendentes: ${mappedPending}${failedReady?` • Falhas liberadas: ${failedReady}`:""}${c.config.cleanerDryRun!==false?" • MODO TESTE":""}`;
       const deleteButton=document.querySelector("#deleteMapped");
+      const refreshButton=document.querySelector("#refreshCleaner");
+      const stopButton=document.querySelector("#stopCleaner");
       const cleanerStatus=c.status||null;
-      deleteButton.disabled=mappedPending===0||Boolean(cleanerStatus?.running);
+      const refreshStatus=c.refreshStatus||null;
+      const busy=Boolean(cleanerStatus?.running||refreshStatus?.running);
+      deleteButton.disabled=mappedPending===0||busy;
+      refreshButton.disabled=busy;
+      refreshButton.textContent=refreshStatus?.running?`Atualizando ${refreshStatus.current||refreshStatus.checked||0}/${refreshStatus.candidates||mappedPending}...`:"Atualizar lista";
+      stopButton.disabled=!busy;
+      stopButton.textContent=(cleanerStatus?.stopping||refreshStatus?.stopping)?"Parando...":"Parar limpeza";
       deleteButton.textContent=cleanerStatus?.running
         ?`Limpando ${cleanerStatus.current||0}/${cleanerStatus.candidates||mappedPending}...`
         :(mappedPending>0?`Apagar/tentar ${mappedPending} conversa${mappedPending===1?"":"s"} agora`:"Nenhuma conversa para apagar");
       const output=document.querySelector("#cleanerAction");
-      if(cleanerStatus?.running){
+      if(refreshStatus?.running){
+        output.textContent=`Atualizando lista ${refreshStatus.current||refreshStatus.checked||0}/${refreshStatus.candidates||0} • Encontradas: ${refreshStatus.available||0} • Já removidas: ${refreshStatus.removed||0}`;
+      }else if(cleanerStatus?.running){
         const firstError=cleanerStatus?.errors?.[0]?.error;
-        output.textContent=`Limpando ${cleanerStatus.current||0}/${cleanerStatus.candidates||0} • Excluídas: ${cleanerStatus.deleted||0} • Falhas: ${cleanerStatus.failed||0}${firstError?` • ${firstError}`:""}`;
+        output.textContent=`${cleanerStatus.stopping?"Parando":"Limpando"} ${cleanerStatus.current||0}/${cleanerStatus.candidates||0} • Excluídas: ${cleanerStatus.deleted||0} • Já removidas: ${cleanerStatus.alreadyMissing||0} • Falhas: ${cleanerStatus.failed||0}${firstError?` • ${firstError}`:""}`;
+      }else if(cleanerStatus?.stopped){
+        output.textContent=`Limpeza parada • Excluídas: ${cleanerStatus.deleted||0} • Já removidas: ${cleanerStatus.alreadyMissing||0} • Falhas: ${cleanerStatus.failed||0}`;
+      }else if(refreshStatus?.at&&refreshStatus.removed>0){
+        output.textContent=`Lista atualizada • Disponíveis: ${refreshStatus.available||0} • Removidas manualmente: ${refreshStatus.removed||0} • Indeterminadas: ${refreshStatus.unknown||0}`;
       }else if(cleanerStatus?.at){
         const firstError=cleanerStatus?.fatalError||cleanerStatus?.errors?.[0]?.error;
-        output.textContent=`Última limpeza: Excluídas: ${cleanerStatus.deleted||0} • Falhas: ${cleanerStatus.failed||0}${firstError?` • ${firstError}`:""}`;
+        output.textContent=`Última limpeza: Excluídas: ${cleanerStatus.deleted||0} • Já removidas: ${cleanerStatus.alreadyMissing||0} • Falhas: ${cleanerStatus.failed||0}${firstError?` • ${firstError}`:""}`;
       }
     }
   }finally{refreshing=false;}
@@ -81,6 +95,22 @@ document.querySelector("#deleteMapped").addEventListener("click",async(e)=>{
   }finally{
     await refresh().catch(()=>{});
   }
+});
+
+document.querySelector("#refreshCleaner").addEventListener("click",async(e)=>{
+  const b=e.currentTarget,output=document.querySelector("#cleanerAction");
+  b.disabled=true;b.textContent="Atualizando...";output.textContent="Conferindo quais conversas mapeadas ainda existem no ChatGPT...";
+  try{
+    const r=await chrome.runtime.sendMessage({type:"CORVO_CLEANER_REFRESH_LIST"});
+    if(!r?.ok&&!r?.stopped)throw new Error(r?.error||"Falha ao atualizar");
+    output.textContent=r?.stopped?"Atualização interrompida.":`Lista atualizada • Disponíveis: ${r?.available||0} • Removidas manualmente: ${r?.removed||0} • Indeterminadas: ${r?.unknown||0}`;
+  }catch(err){output.textContent=`Erro ao atualizar: ${err?.message||"falha"}`;}finally{await refresh().catch(()=>{});}
+});
+
+document.querySelector("#stopCleaner").addEventListener("click",async(e)=>{
+  const b=e.currentTarget,output=document.querySelector("#cleanerAction");
+  b.disabled=true;b.textContent="Parando...";output.textContent="Interrompendo a limpeza e fechando a aba de manutenção...";
+  try{const r=await chrome.runtime.sendMessage({type:"CORVO_CLEANER_STOP"});if(!r?.ok)throw new Error(r?.error||"Falha ao parar");output.textContent="Comando de parada enviado. A fila não continuará para a próxima conversa.";}catch(err){output.textContent=`Erro ao parar: ${err?.message||"falha"}`;}finally{setTimeout(()=>refresh().catch(()=>{}),300);}
 });
 
 document.querySelector("#copyDiagnostic").addEventListener("click",async(e)=>{

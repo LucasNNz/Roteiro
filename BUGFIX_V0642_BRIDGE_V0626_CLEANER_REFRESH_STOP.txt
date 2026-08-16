@@ -1,0 +1,26 @@
+CORVOQUIZ V0.6.42 + CORVO BRIDGE V0.6.26
+
+NOVO CONTROLE DA LIMPEZA
+
+1. NOVO BOTÃO: ATUALIZAR LISTA
+- Reconfere as conversas mapeadas pelo Cleaner diretamente no ChatGPT.
+- Se uma conversa foi excluída manualmente, o Bridge confirma a ausência duas vezes e marca o registro local como REMOVED_EXTERNALLY/deleted=true.
+- A conversa desaparece da fila e não volta a ser tentada.
+
+2. PRÉ-CHECAGEM AUTOMÁTICA
+- Mesmo sem apertar Atualizar lista, antes de cada exclusão o Cleaner verifica se a conversa ainda existe.
+- Se ela já foi apagada manualmente, não tenta clicar em Excluir e não registra falha; apenas reconcilia o estado e segue para a próxima.
+
+3. NOVO BOTÃO: PARAR LIMPEZA
+- Interrompe a fila atual.
+- Fecha a aba oculta de manutenção do Cleaner.
+- Não avança para a próxima conversa.
+- Funciona também durante Atualizar lista.
+
+4. INTERFACE
+- Popup do Bridge mostra Atualizar lista e Parar limpeza.
+- Configurações do Bridge também possuem os dois controles.
+- O status separa Excluídas, Já removidas e Falhas.
+
+IMPORTANTE
+Recarregue a extensão V0.6.26 em chrome://extensions após substituir a pasta.

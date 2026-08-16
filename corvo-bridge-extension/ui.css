@@ -5,3 +5,5 @@
 button.danger{width:100%;background:#b42318;color:#fff;margin:0 0 10px}button.danger:hover{background:#981b12}button:disabled{opacity:.5;cursor:not-allowed}.cleaner-result{min-height:0;font-size:12px;color:#555;line-height:1.35;margin:0 2px 10px}
 
 .diag-summary{font-size:11px;line-height:1.35;color:#5c5c66;margin:-4px 2px 8px;white-space:pre-wrap}.diag-button{margin:0 0 12px;background:#e8ecff!important;color:#263a8b!important}.diag-button.ready{background:#dff6e7!important;color:#176438!important}.diag-button.error{background:#ffe7e3!important;color:#8d2017!important}
+
+.cleaner-toolbar{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:0 0 10px}.cleaner-toolbar button{width:100%;margin:0}.cleaner-toolbar .stop-cleaner:not(:disabled){border-color:#d92d20;color:#b42318;background:#fff}

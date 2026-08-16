@@ -20,6 +20,7 @@ const pendingByTab = new Map();
 const sendingTabs = new Set();
 const deliveryByJob = new Map();
 const JOB_TABS_KEY = "corvoBridgeJobTabs";
+const JOB_PAYLOADS_KEY = "corvoBridgeJobPayloads";
 const OWNED_TABS_KEY = "corvoBridgeOwnedTabs";
 const CLEANER_RECORDS_KEY = "corvoBridgeCleanerRecords";
 const CLEANER_LOG_KEY = "corvoBridgeCleanerLog";
@@ -30,6 +31,9 @@ const DIAGNOSTIC_MAX_JOBS = 12;
 const DIAGNOSTIC_MAX_EVENTS = 180;
 const captureByJob = new Map();
 let cleanerRunning = false;
+let cleanerStopRequested = false;
+let activeCleanerTabId = null;
+let cleanerOperation = null;
 let lastStatus = {
   state: "IDLE",
   jobId: null,
@@ -91,7 +95,7 @@ async function getDiagnostic(jobId) {
   const start = events[0]?.at || job.createdAt || Date.now();
   const lines = [
     "CORVO BRIDGE DIAGNÓSTICO V1",
-    `Bridge: V0.6.24`,
+    `Bridge: V0.6.26`,
     `JOB_ID: ${id}`,
     `Eventos: ${events.length}`,
     `Status atual: ${data.corvoBridgeStatus?.state || ""} | ${data.corvoBridgeStatus?.message || ""}`,
@@ -194,6 +198,7 @@ async function scheduleCleaner() {
 async function waitTabReady(tabId, timeout = 30000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
+    if (cleanerStopRequested) throw new Error("CLEANER_STOPPED");
     try {
       const tab = await chrome.tabs.get(tabId);
       if (tab.status === "complete") {
@@ -207,6 +212,7 @@ async function waitTabReady(tabId, timeout = 30000) {
 }
 
 async function navigateCleanerTab(tabId, url, timeout = 18000) {
+  if (cleanerStopRequested) throw new Error("CLEANER_STOPPED");
   await chrome.tabs.update(tabId, { url, active: false });
   await waitTabReady(tabId, timeout);
   // document.complete não significa que a SPA do ChatGPT já hidratou.
@@ -214,6 +220,7 @@ async function navigateCleanerTab(tabId, url, timeout = 18000) {
   // para o content script e a interface principal ficarem disponíveis.
   const deadline = Date.now() + 6000;
   while (Date.now() < deadline) {
+    if (cleanerStopRequested) throw new Error("CLEANER_STOPPED");
     try {
       const pong = await chrome.tabs.sendMessage(tabId, { type: "CORVO_BRIDGE_PING" });
       if (pong?.ok !== false) return;
@@ -226,8 +233,18 @@ async function deleteConversationInTab(tabId, record, dryRun) {
   if (!record.conversationUrl || !record.conversationId) throw new Error("CONVERSATION_URL_MISSING");
   if (dryRun) return { ok: true, dryRun: true };
 
-  // 1) Abre a conversa exata e pede a exclusão pelo menu da linha exata.
+  // 1) Abre a conversa exata. Antes de clicar em Excluir, confirma se ela
+  // ainda existe. Isso reconcilia exclusões feitas manualmente pelo usuário e
+  // evita que o Cleaner tente apagar eternamente um ID que já sumiu.
   await navigateCleanerTab(tabId, record.conversationUrl);
+  const precheck = await chrome.tabs.sendMessage(tabId, {
+    type: "CORVO_CHECK_CHAT_EXISTS",
+    payload: { conversationId: record.conversationId }
+  }).catch(() => null);
+  if (precheck?.ok && precheck.exists === false) {
+    return { ok:true, deleted:true, alreadyDeleted:true, verifiedBy:precheck.reason || "PRECHECK_MISSING" };
+  }
+  if (cleanerStopRequested) throw new Error("CLEANER_STOPPED");
   const requested = await chrome.tabs.sendMessage(tabId, {
     type: "CORVO_DELETE_CURRENT_CHAT",
     payload: { conversationUrl: record.conversationUrl, conversationId: record.conversationId }
@@ -265,9 +282,152 @@ async function deleteConversationInTab(tabId, record, dryRun) {
   throw new Error(`DELETE_VERIFICATION_UNKNOWN:${requested.applyReason || lastVerified?.reason || 'UNKNOWN'}`);
 }
 
+async function requestCleanerStop() {
+  if (!cleanerRunning) return { ok:true, running:false, stopped:true };
+  cleanerStopRequested = true;
+  const operation = cleanerOperation || "clean";
+  if (operation === "refresh") {
+    const data = await chrome.storage.local.get("corvoBridgeCleanerRefreshStatus");
+    const previous = data.corvoBridgeCleanerRefreshStatus || {};
+    await chrome.storage.local.set({ corvoBridgeCleanerRefreshStatus: { ...previous, at:Date.now(), running:true, stopping:true } });
+  } else {
+    const data = await chrome.storage.local.get("corvoBridgeCleanerStatus");
+    const previous = data.corvoBridgeCleanerStatus || {};
+    await chrome.storage.local.set({ corvoBridgeCleanerStatus: { ...previous, at:Date.now(), running:true, stopping:true } });
+  }
+  const tabId = activeCleanerTabId;
+  if (tabId) {
+    await chrome.tabs.remove(tabId).catch(() => {});
+    if (activeCleanerTabId === tabId) activeCleanerTabId = null;
+  }
+  return { ok:true, running:true, stopping:true, operation };
+}
+
+function cleanerCandidateRecords(records = [], openJobs = {}) {
+  const nowTs = Date.now();
+  const staleErrorMs = 15 * 60 * 1000;
+  const activeConversationIds = new Set(records.filter((r) => {
+    if (!(r.eligible === true && !r.done && !r.deleted && r.conversationId)) return false;
+    const live = openJobs[r.jobId] || {};
+    const bridgeState = String(r.lastBridgeState || live.lastState || "").toUpperCase();
+    if (!bridgeState) return false;
+    return !["ERROR", "COMPLETED"].includes(bridgeState);
+  }).map((r) => r.conversationId));
+  const rawCandidates = records.filter((r) => {
+    if (!(r.eligible === true && !r.deleted && r.conversationUrl && r.conversationId)) return false;
+    if (activeConversationIds.has(r.conversationId)) return false;
+    if (r.done) return true;
+    const live = openJobs[r.jobId] || {};
+    const errorState = String(r.lastBridgeState || live.lastState || r.cleanerState || "").toUpperCase() === "ERROR";
+    const errorAt = Number(r.lastBridgeErrorAt || live.lastUpdatedAt || r.updatedAt || 0);
+    return errorState && errorAt > 0 && nowTs - errorAt >= staleErrorMs;
+  });
+  const grouped = new Map();
+  for (const record of rawCandidates) {
+    const key = record.conversationId || record.conversationUrl;
+    const current = grouped.get(key);
+    if (current) {
+      current.jobIds.push(record.jobId);
+      if ((record.updatedAt || 0) > (current.updatedAt || 0)) Object.assign(current, { ...record, jobIds:current.jobIds });
+    } else grouped.set(key, { ...record, jobIds:[record.jobId] });
+  }
+  return [...grouped.values()];
+}
+
+async function refreshCleanerAvailability() {
+  if (cleanerRunning) return { ok:false, error:"CLEANER_BUSY" };
+  cleanerRunning = true;
+  cleanerOperation = "refresh";
+  cleanerStopRequested = false;
+  let tabId = null;
+  let checked = 0, available = 0, removed = 0, unknown = 0;
+  const errors = [];
+  try {
+    const records = await repairCleanerRecords();
+    const jobData = await chrome.storage.local.get(JOB_TABS_KEY);
+    const candidates = cleanerCandidateRecords(records, jobData[JOB_TABS_KEY] || {});
+    await chrome.storage.local.set({ corvoBridgeCleanerRefreshStatus: { at:Date.now(), running:true, checked:0, candidates:candidates.length, available:0, removed:0, unknown:0, errors:[] } });
+    if (!candidates.length) {
+      const result = { ok:true, checked:0, candidates:0, available:0, removed:0, unknown:0, errors:[] };
+      await chrome.storage.local.set({ corvoBridgeCleanerRefreshStatus: { at:Date.now(), running:false, ...result } });
+      return result;
+    }
+    const tab = await chrome.tabs.create({ url:"https://chatgpt.com/", active:false });
+    tabId = tab.id || null;
+    activeCleanerTabId = tabId;
+    if (!tabId) throw new Error("CLEANER_TAB_CREATE_FAILED");
+    await waitTabReady(tabId, 18000).catch((error) => { if (String(error?.message || error) === "CLEANER_STOPPED") throw error; });
+
+    for (let i = 0; i < candidates.length; i++) {
+      if (cleanerStopRequested) break;
+      const record = candidates[i];
+      await chrome.storage.local.set({ corvoBridgeCleanerRefreshStatus: { at:Date.now(), running:true, checked, current:i+1, candidates:candidates.length, available, removed, unknown, currentConversationId:record.conversationId, errors:errors.slice(0,10) } });
+      try {
+        let verdict = null;
+        // Duas confirmações para ausências; uma conversa existente costuma ser
+        // reconhecida imediatamente assim que as mensagens aparecem.
+        for (let attempt = 0; attempt < 2; attempt++) {
+          if (cleanerStopRequested) throw new Error("CLEANER_STOPPED");
+          await navigateCleanerTab(tabId, record.conversationUrl, 18000);
+          verdict = await chrome.tabs.sendMessage(tabId, { type:"CORVO_CHECK_CHAT_EXISTS", payload:{ conversationId:record.conversationId } });
+          if (!verdict?.ok) throw new Error(verdict?.error || "CONVERSATION_CHECK_FAILED");
+          if (verdict.exists === true) break;
+          if (verdict.exists === null) break;
+          if (attempt === 0) {
+            await navigateCleanerTab(tabId, "https://chatgpt.com/", 14000).catch((error) => { if (String(error?.message || error) === "CLEANER_STOPPED") throw error; });
+            await new Promise((resolve) => setTimeout(resolve, 500));
+          }
+        }
+        checked++;
+        const jobIds = Array.isArray(record.jobIds) && record.jobIds.length ? record.jobIds : [record.jobId];
+        if (verdict?.exists === false) {
+          removed++;
+          for (const mappedJobId of jobIds) await upsertCleanerRecord(mappedJobId, {
+            deleted:true,
+            deletedExternally:true,
+            externallyRemovedAt:Date.now(),
+            lastCleanerAt:Date.now(),
+            lastCleanerResult:"ALREADY_REMOVED",
+            cleanerError:"",
+            cleanerState:"REMOVED_EXTERNALLY"
+          });
+          await appendCleanerLog({ jobId:record.jobId, jobIds, conversationId:record.conversationId, result:"ALREADY_REMOVED", source:"REFRESH" });
+        } else if (verdict?.exists === true) {
+          available++;
+          for (const mappedJobId of jobIds) await upsertCleanerRecord(mappedJobId, { lastAvailabilityCheckAt:Date.now(), lastAvailabilityResult:"AVAILABLE" });
+        } else {
+          unknown++;
+        }
+      } catch (error) {
+        if (cleanerStopRequested || String(error?.message || error) === "CLEANER_STOPPED") break;
+        checked++; unknown++;
+        errors.push({ conversationId:record.conversationId, error:String(error?.message || error || "CONVERSATION_CHECK_FAILED") });
+      }
+    }
+    const stopped = cleanerStopRequested;
+    const result = { ok:!stopped, stopped, checked, candidates:candidates.length, available, removed, unknown, errors:errors.slice(0,10) };
+    await chrome.storage.local.set({ corvoBridgeCleanerRefreshStatus: { at:Date.now(), running:false, stopping:false, ...result } });
+    return result;
+  } catch (error) {
+    const stopped = cleanerStopRequested || String(error?.message || error) === "CLEANER_STOPPED";
+    const result = { ok:stopped, stopped, checked, available, removed, unknown, error:stopped?"":String(error?.message || error || "CLEANER_REFRESH_FAILED"), errors:errors.slice(0,10) };
+    await chrome.storage.local.set({ corvoBridgeCleanerRefreshStatus: { at:Date.now(), running:false, stopping:false, ...result } });
+    if (stopped) return result;
+    throw error;
+  } finally {
+    if (tabId) await chrome.tabs.remove(tabId).catch(() => {});
+    activeCleanerTabId = null;
+    cleanerRunning = false;
+    cleanerOperation = null;
+    cleanerStopRequested = false;
+  }
+}
+
 async function runCleaner({ manual = false, forceDelete = false } = {}) {
   if (cleanerRunning) return { ok: false, error: "CLEANER_BUSY" };
   cleanerRunning = true;
+  cleanerOperation = "clean";
+  cleanerStopRequested = false;
   let cleanerTabId = null;
   try {
     const config = await getConfig();
@@ -275,58 +435,31 @@ async function runCleaner({ manual = false, forceDelete = false } = {}) {
     const records = await repairCleanerRecords();
     const jobData = await chrome.storage.local.get(JOB_TABS_KEY);
     const openJobs = jobData[JOB_TABS_KEY] || {};
-    const nowTs = Date.now();
-    const staleErrorMs = 15 * 60 * 1000;
-    const activeConversationIds = new Set(records.filter((r) => {
-      if (!(r.eligible === true && !r.done && !r.deleted && r.conversationId)) return false;
-      const live = openJobs[r.jobId] || {};
-      const bridgeState = String(r.lastBridgeState || live.lastState || "").toUpperCase();
-      if (!bridgeState) return false;
-      return !["ERROR", "COMPLETED"].includes(bridgeState);
-    }).map((r) => r.conversationId));
-    const rawCandidates = records.filter((r) => {
-      if (!(r.eligible === true && !r.deleted && r.conversationUrl && r.conversationId)) return false;
-      if (activeConversationIds.has(r.conversationId)) return false;
-      if (r.done) return true;
-      const live = openJobs[r.jobId] || {};
-      const errorState = String(r.lastBridgeState || live.lastState || r.cleanerState || "").toUpperCase() === "ERROR";
-      const errorAt = Number(r.lastBridgeErrorAt || live.lastUpdatedAt || r.updatedAt || 0);
-      return errorState && errorAt > 0 && nowTs - errorAt >= staleErrorMs;
-    });
-    // Uma mesma conversa pode ter sido associada a mais de um JOB em versões antigas.
-    // O Cleaner trabalha por CONVERSA, não por registro, para não tentar excluir a
-    // mesma URL várias vezes e não contaminar a fila com falhas duplicadas.
-    const groupedCandidates = new Map();
-    for (const record of rawCandidates) {
-      const key = record.conversationId || record.conversationUrl;
-      const current = groupedCandidates.get(key);
-      if (current) {
-        current.jobIds.push(record.jobId);
-        if ((record.updatedAt || 0) > (current.updatedAt || 0)) Object.assign(current, { ...record, jobIds:current.jobIds });
-      } else groupedCandidates.set(key, { ...record, jobIds:[record.jobId] });
-    }
-    const candidates = [...groupedCandidates.values()];
+    const candidates = cleanerCandidateRecords(records, openJobs);
     const dryRun = forceDelete ? false : config.cleanerDryRun !== false;
-    let deleted = 0, failed = 0;
+    let deleted = 0, failed = 0, alreadyMissing = 0, processed = 0;
+    let stopped = false;
     const errors = [];
 
     await chrome.storage.local.set({ corvoBridgeCleanerStatus: {
       at: Date.now(), running: true, current: 0, candidates: candidates.length,
-      deleted: 0, failed: 0, dryRun, manual, forceDelete, errors: []
+      deleted: 0, failed: 0, alreadyMissing:0, dryRun, manual, forceDelete, stopping:false, stopped:false, errors: []
     }});
 
     if (!dryRun && candidates.length) {
       const tab = await chrome.tabs.create({ url: "https://chatgpt.com/", active: false });
       cleanerTabId = tab.id || null;
+      activeCleanerTabId = cleanerTabId;
       if (!cleanerTabId) throw new Error("CLEANER_TAB_CREATE_FAILED");
       await waitTabReady(cleanerTabId, 18000).catch(() => {});
     }
 
     for (let index = 0; index < candidates.length; index++) {
+      if (cleanerStopRequested) { stopped = true; break; }
       const record = candidates[index];
       await chrome.storage.local.set({ corvoBridgeCleanerStatus: {
         at: Date.now(), running: true, current: index + 1, candidates: candidates.length,
-        deleted, failed, dryRun, manual, forceDelete, errors: errors.slice(0, 10),
+        deleted, failed, alreadyMissing, dryRun, manual, forceDelete, stopping:false, stopped:false, errors: errors.slice(0, 10),
         currentJobId: record.jobId, currentConversationId: record.conversationId
       }});
       try {
@@ -341,6 +474,7 @@ async function runCleaner({ manual = false, forceDelete = false } = {}) {
               break;
             } catch (error) {
               lastDeleteError = error;
+              if (cleanerStopRequested || String(error?.message || error) === "CLEANER_STOPPED") { stopped = true; break; }
               // Uma conversa com menu/modal quebrado não pode contaminar a próxima.
               // Na primeira falha, reseta a aba de manutenção e tenta ESTE alvo mais
               // uma vez. Se continuar falhando, registra e segue a fila normalmente.
@@ -351,24 +485,30 @@ async function runCleaner({ manual = false, forceDelete = false } = {}) {
               }
             }
           }
+          if (stopped || cleanerStopRequested) throw new Error("CLEANER_STOPPED");
           if (!result) throw lastDeleteError || new Error("DELETE_FAILED");
         }
         const jobIds = Array.isArray(record.jobIds) && record.jobIds.length ? record.jobIds : [record.jobId];
+        const cleanerResult = result.dryRun ? "DRY_RUN" : (result.alreadyDeleted ? "ALREADY_REMOVED" : "DELETED");
         for (const mappedJobId of jobIds) {
           await upsertCleanerRecord(mappedJobId, {
             deleted: !result.dryRun,
             ...(result.dryRun ? {} : { done:true }),
+            ...(result.alreadyDeleted ? { deletedExternally:true, externallyRemovedAt:Date.now() } : {}),
             lastCleanerAt: Date.now(),
-            lastCleanerResult: result.dryRun ? "DRY_RUN" : "DELETED",
+            lastCleanerResult: cleanerResult,
             cleanerError: "",
-            cleanerState: result.dryRun ? "DRY_RUN" : "DELETED"
+            cleanerState: result.dryRun ? "DRY_RUN" : (result.alreadyDeleted ? "REMOVED_EXTERNALLY" : "DELETED")
           });
         }
-        await appendCleanerLog({ jobId: record.jobId, jobIds, conversationId: record.conversationId, result: result.dryRun ? "DRY_RUN" : "DELETED" });
-        if (!result.dryRun) deleted++;
+        await appendCleanerLog({ jobId: record.jobId, jobIds, conversationId: record.conversationId, result: cleanerResult });
+        if (!result.dryRun && result.alreadyDeleted) alreadyMissing++;
+        else if (!result.dryRun) deleted++;
+        processed = index + 1;
       } catch (error) {
-        failed++;
         const errorCode = String(error?.message || "DELETE_FAILED");
+        if (cleanerStopRequested || errorCode === "CLEANER_STOPPED") { stopped = true; break; }
+        failed++;
         const jobIds = Array.isArray(record.jobIds) && record.jobIds.length ? record.jobIds : [record.jobId];
         for (const mappedJobId of jobIds) {
           await upsertCleanerRecord(mappedJobId, {
@@ -385,28 +525,60 @@ async function runCleaner({ manual = false, forceDelete = false } = {}) {
         // Falha de uma conversa NÃO encerra a fila. A próxima conversa é
         // independente e deve ser tentada normalmente. As falhas permanecem
         // mapeadas para um retry posterior do Cleaner.
+        processed = index + 1;
       }
+      if (cleanerStopRequested) { stopped = true; break; }
       // Dá tempo para o histórico estabilizar, especialmente após uma falha,
       // mas nunca bloqueia todas as conversas restantes.
       if (index < candidates.length - 1) await new Promise((r) => setTimeout(r, failed ? 700 : 350));
     }
 
+    stopped = stopped || cleanerStopRequested;
     const finalStatus = {
-      at: Date.now(), running: false, current: candidates.length, candidates: candidates.length,
-      deleted, failed, dryRun, manual, forceDelete, errors: errors.slice(0, 10)
+      at: Date.now(), running: false, current: stopped ? processed : candidates.length, candidates: candidates.length,
+      deleted, failed, alreadyMissing, dryRun, manual, forceDelete, stopping:false, stopped, errors: errors.slice(0, 10)
     };
     await chrome.storage.local.set({ corvoBridgeCleanerStatus: finalStatus });
-    return { ok: failed === 0, candidates: candidates.length, deleted, failed, dryRun, forceDelete, errors: errors.slice(0, 10) };
+    return { ok: failed === 0, stopped, candidates: candidates.length, deleted, alreadyMissing, failed, dryRun, forceDelete, errors: errors.slice(0, 10) };
   } catch (error) {
+    const stopped = cleanerStopRequested || String(error?.message || error) === "CLEANER_STOPPED";
     const existing = (await chrome.storage.local.get("corvoBridgeCleanerStatus")).corvoBridgeCleanerStatus || {};
     await chrome.storage.local.set({ corvoBridgeCleanerStatus: {
-      ...existing, at: Date.now(), running: false, fatalError: String(error?.message || "CLEANER_FAILED")
+      ...existing, at: Date.now(), running: false, stopping:false, stopped, ...(stopped ? { fatalError:"" } : { fatalError:String(error?.message || "CLEANER_FAILED") })
     }});
+    if (stopped) return { ok:true, stopped:true, deleted:Number(existing.deleted || 0), failed:Number(existing.failed || 0), alreadyMissing:Number(existing.alreadyMissing || 0), candidates:Number(existing.candidates || 0) };
     throw error;
   } finally {
     if (cleanerTabId) await chrome.tabs.remove(cleanerTabId).catch(() => {});
+    activeCleanerTabId = null;
     cleanerRunning = false;
+    cleanerOperation = null;
+    cleanerStopRequested = false;
   }
+}
+
+
+async function rememberJobPayload(payload = {}) {
+  const jobId = String(payload?.jobId || "").trim();
+  if (!jobId) return;
+  const data = await chrome.storage.local.get(JOB_PAYLOADS_KEY);
+  const payloads = data[JOB_PAYLOADS_KEY] || {};
+  payloads[jobId] = { ...payload, savedAt:Date.now() };
+  await chrome.storage.local.set({ [JOB_PAYLOADS_KEY]:payloads });
+}
+
+async function getRememberedJobPayload(jobId) {
+  const data = await chrome.storage.local.get(JOB_PAYLOADS_KEY);
+  return (data[JOB_PAYLOADS_KEY] || {})[jobId] || null;
+}
+
+async function clearRememberedJobPayload(jobId) {
+  if (!jobId) return;
+  const data = await chrome.storage.local.get(JOB_PAYLOADS_KEY);
+  const payloads = data[JOB_PAYLOADS_KEY] || {};
+  if (!(jobId in payloads)) return;
+  delete payloads[jobId];
+  await chrome.storage.local.set({ [JOB_PAYLOADS_KEY]:payloads });
 }
 
 async function getConfig() {
@@ -894,6 +1066,10 @@ async function dispatchToGpt(job, sourceTabId) {
     createdAt: Date.now()
   };
   if (!payload.prompt) throw new Error("EMPTY_PROMPT");
+  // Persistimos o payload completo até a mensagem ser confirmada. Assim, se o
+  // service worker/aba do app reiniciar no meio do anexo, o mesmo JOB volta
+  // com o mesmo prompt e os mesmos arquivos, sem criar outro lote.
+  await rememberJobPayload(payload);
   await appendDiagnostic(payload.jobId, "DISPATCH_START", {
     specialist:target.key, gptUrl:diagnosticUrl(gptUrl), promptLength:payload.prompt.length,
     attachments:Array.isArray(payload.meta?.attachments) ? payload.meta.attachments.map((item) => ({ name:item?.name || "", contentType:item?.contentType || "", url:diagnosticUrl(item?.url || "") })) : [],
@@ -1000,23 +1176,44 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "CORVO_GPT_READY") {
     const tabId = sender.tab?.id;
     if (!tabId) return;
-    const pending = pendingByTab.get(tabId);
-    if (!pending) { sendResponse({ ok: true, pending: false }); return; }
-    appendDiagnostic(pending.jobId, "CONTENT_READY_SIGNAL", { tabId, senderUrl:diagnosticUrl(sender.tab?.url || "") }, "background").catch(() => {});
-    if (sendingTabs.has(tabId)) { sendResponse({ ok: true, pending: true, sending: true }); return; }
+    (async () => {
+      let pending = pendingByTab.get(tabId);
+      if (!pending) {
+        // O service worker do Manifest V3 pode ser descarregado enquanto a aba do
+        // ChatGPT continua aberta. Recupera o payload pendente pelo mapeamento do
+        // job/aba e continua exatamente o mesmo envio.
+        const data = await chrome.storage.local.get(JOB_TABS_KEY);
+        const jobs = data[JOB_TABS_KEY] || {};
+        const recordEntry = Object.entries(jobs).find(([,record]) => Number(record?.tabId || 0) === Number(tabId));
+        if (recordEntry) {
+          const [rememberedJobId, record] = recordEntry;
+          const committed = /WAITING_ACTION|USER_MESSAGE_COMMITTED|MESSAGE_CONFIRMED/i.test(String(record?.lastState || ""));
+          if (!committed) {
+            pending = await getRememberedJobPayload(rememberedJobId);
+            if (pending) {
+              pendingByTab.set(tabId, pending);
+              await appendDiagnostic(rememberedJobId, "PENDING_PAYLOAD_RECOVERED", { tabId, lastState:String(record?.lastState || "") }, "background").catch(() => {});
+            }
+          }
+        }
+      }
+      if (!pending) { sendResponse({ ok: true, pending: false }); return; }
+      appendDiagnostic(pending.jobId, "CONTENT_READY_SIGNAL", { tabId, senderUrl:diagnosticUrl(sender.tab?.url || "") }, "background").catch(() => {});
+      if (sendingTabs.has(tabId)) { sendResponse({ ok: true, pending: true, sending: true }); return; }
 
-    sendingTabs.add(tabId);
-    setStatus("SENDING_TO_GPT", pending.jobId, "GPT carregado. Enviando solicitação...").catch(() => {});
-    sendWithBackgroundRetry(tabId, pending)
-      .then((result) => {
-        sendResponse({ ok: true, pending: true, confirmed: result.confirmed === true });
-      })
-      .catch((error) => {
-        sendingTabs.delete(tabId);
-        rejectDelivery(pending.jobId, new Error(error.message || "GPT_SEND_FAILED"));
-        setStatus("ERROR", pending.jobId, error.message || "GPT_SEND_FAILED").catch(() => {});
-        sendResponse({ ok: false, error: error.message || "GPT_SEND_FAILED" });
-      });
+      sendingTabs.add(tabId);
+      setStatus("SENDING_TO_GPT", pending.jobId, "GPT carregado. Enviando solicitação...").catch(() => {});
+      sendWithBackgroundRetry(tabId, pending)
+        .then((result) => {
+          sendResponse({ ok: true, pending: true, confirmed: result.confirmed === true });
+        })
+        .catch((error) => {
+          sendingTabs.delete(tabId);
+          rejectDelivery(pending.jobId, new Error(error.message || "GPT_SEND_FAILED"));
+          setStatus("ERROR", pending.jobId, error.message || "GPT_SEND_FAILED").catch(() => {});
+          sendResponse({ ok: false, error: error.message || "GPT_SEND_FAILED" });
+        });
+    })().catch((error) => sendResponse({ ok:false, error:String(error?.message || error || "PENDING_RECOVERY_FAILED") }));
     return true;
   }
 
@@ -1052,6 +1249,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }).catch(() => {});
     }
     if (tabId) { pendingByTab.delete(tabId); sendingTabs.delete(tabId); }
+    if (jobId) clearRememberedJobPayload(jobId).catch(() => {});
     setStatus("WAITING_ACTION", jobId, "Solicitação enviada. Aguardando o GPT concluir e devolver pela Action.").catch(() => {});
     resolveDelivery(jobId, { ok: true, tabId, jobId, confirmed: true });
     sendResponse({ ok: true });
@@ -1140,7 +1338,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "CORVO_CLEANER_GET_STATE") {
-    Promise.all([repairCleanerRecords(), chrome.storage.local.get([CLEANER_LOG_KEY, "corvoBridgeCleanerStatus", JOB_TABS_KEY]), getConfig()])
+    Promise.all([repairCleanerRecords(), chrome.storage.local.get([CLEANER_LOG_KEY, "corvoBridgeCleanerStatus", "corvoBridgeCleanerRefreshStatus", JOB_TABS_KEY]), getConfig()])
       .then(([records, data, config]) => {
         const jobs = data[JOB_TABS_KEY] || {};
         const hydrated = records.map((record) => {
@@ -1152,7 +1350,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             lastBridgeErrorAt:record.lastBridgeErrorAt || (String(live.lastState || "").toUpperCase() === "ERROR" ? live.lastUpdatedAt : 0),
           };
         });
-        sendResponse({ ok: true, records:hydrated, log: data[CLEANER_LOG_KEY] || [], status: data.corvoBridgeCleanerStatus || null, config });
+        sendResponse({ ok: true, records:hydrated, log: data[CLEANER_LOG_KEY] || [], status: data.corvoBridgeCleanerStatus || null, refreshStatus:data.corvoBridgeCleanerRefreshStatus || null, config });
       })
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
@@ -1190,6 +1388,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === "CORVO_CLEANER_REFRESH_LIST") {
+    refreshCleanerAvailability().then(sendResponse).catch((error) => sendResponse({ ok:false, error:error.message || "CLEANER_REFRESH_FAILED" }));
+    return true;
+  }
+
+  if (message.type === "CORVO_CLEANER_STOP") {
+    requestCleanerStop().then(sendResponse).catch((error) => sendResponse({ ok:false, error:error.message || "CLEANER_STOP_FAILED" }));
+    return true;
+  }
+
   if (message.type === "CORVO_CLEANER_RUN_NOW") {
     runCleaner({ manual: true }).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
@@ -1211,6 +1419,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     patchEligibleCleanerRecord(jobId, { done: true, completedAt: Date.now() })
       .then(() => completeJobTab(jobId))
       .then(async (result) => {
+        await clearRememberedJobPayload(jobId).catch(() => {});
         await setStatus("COMPLETED", jobId, result.closed ? "Resultado recebido. Aba do GPT fechada." : "Resultado recebido.");
         sendResponse(result);
       })

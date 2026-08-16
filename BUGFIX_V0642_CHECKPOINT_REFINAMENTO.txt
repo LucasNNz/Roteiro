@@ -1,0 +1,30 @@
+CORVOQUIZ PRODUÇÃO V0.6.42 — BUGFIX DE CHECKPOINT / REFINADOR
+CORVO BRIDGE V0.6.25
+
+PROBLEMA CORRIGIDO
+- O arquivo escolhido pelo Analista é salvo no R2 dentro do JOB do Analista.
+- O lote do Refinador estava tentando usar o proxy com JOB/token do Refinador.
+- Em reload, falha de leitura direta ou URL assinada expirada, o texto do lote podia continuar sem o arquivo correto.
+- O estado batchId/jobId era persistido pelo ciclo React, deixando uma janela pequena entre atualização e localStorage.
+- O Bridge mantinha payload/anexos pendentes somente em memória durante parte do envio.
+
+CORREÇÕES
+1. Cada anexo de Refinador agora leva sourceJobId/sourceUploadToken do Analista.
+2. O proxy de download usa a origem real do arquivo, permitindo recuperar o objeto R2 mesmo quando a URL assinada antiga não serve diretamente.
+3. batchId/jobId/status/histórico críticos são gravados imediatamente no localStorage.
+4. jobPrompt/jobUploadToken do lote são checkpointados localmente para poder redespachar o MESMO job após reload sem criar lote duplicado.
+5. O Bridge V0.6.25 persiste o payload pendente (prompt + anexos) em chrome.storage.local até o envio ser confirmado.
+6. Se o service worker reiniciar, o Bridge recupera o payload pendente da mesma aba/job.
+7. Retomada reconhece mais estados intermediários de lote, não apenas ENVIANDO_LOTE.
+8. Migração CHECKPOINT V2: projetos existentes com falha FILE_ERROR de Refinador e candidata original preservada são reabertos automaticamente para refino, em vez de manter o estado contaminado.
+9. Tokens novos de job são removidos dos ZIPs de exportação do projeto.
+
+PARA PROJETOS JÁ ABERTOS/BUGADOS
+- Ao abrir esta versão, itens do Refinador sem saída final que tenham histórico/erro FILE_ERROR e ainda possuam selectedFile + sourceUrl são resetados para PENDENTE no CHECKPOINT V2.
+- Gerados já concluídos continuam concluídos.
+- Refinos já concluídos continuam concluídos.
+- A divisão lógica dos lotes é refeita somente para os itens afetados; jobs antigos contaminados não são reutilizados para esses itens.
+
+IMPORTANTE
+- Atualize/recarregue também a extensão Corvo Bridge para V0.6.25 no chrome://extensions.
+- A correção do app sem atualizar a extensão resolve a origem do proxy, mas não entrega a retomada persistente completa do payload da extensão.

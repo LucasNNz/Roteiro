@@ -1,0 +1,9 @@
+CORVO BRIDGE V0.6.26
+
+CORREÇÕES DO CLEANER
+1. Botão Atualizar lista no popup e nas configurações.
+2. A atualização abre as conversas mapeadas em uma aba oculta e reconcilia quais ainda existem.
+3. Conversas apagadas manualmente são marcadas como REMOVED_EXTERNALLY/deleted=true e deixam de voltar à fila.
+4. Antes de excluir, o Cleaner também faz uma pré-checagem automática; portanto não depende do botão Atualizar.
+5. Botão Parar limpeza interrompe a fila e fecha a aba oculta de manutenção.
+6. A limpeza registra separadamente conversas realmente excluídas e conversas que já estavam removidas.

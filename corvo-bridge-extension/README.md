@@ -1,4 +1,11 @@
-# CORVO BRIDGE V0.6.24 — BATCHING + CLEANER RESILIENTE
+# CORVO BRIDGE V0.6.26 — CLEANER SINCRONIZÁVEL + PARADA MANUAL
+
+- **Atualizar lista** reconcilia as conversas mapeadas com o ChatGPT e remove da fila registros de conversas apagadas manualmente.
+- Antes de cada exclusão, o Cleaner faz uma pré-checagem: se a conversa já não existir, marca `REMOVED_EXTERNALLY` e segue sem repetir a tentativa.
+- **Parar limpeza** cancela a fila atual, fecha a aba oculta de manutenção e impede que o Cleaner avance para a próxima conversa.
+- O popup e as Configurações exibem o estado de atualização/parada.
+
+# HISTÓRICO — V0.6.24 — BATCHING + CLEANER RESILIENTE
 
 - Suporta jobs com até 10 anexos/imagens no mesmo lote.
 - `forceNewConversation=true` cria exatamente uma conversa nova por lote; retries técnicos do mesmo job usam a mesma aba/conversa quando possível.
