@@ -42,6 +42,29 @@ export type CorvoJobRequest = {
   origem?: "GERADOR" | "REFINADOR";
 };
 
+export type CorvoAnalysisPreparationStage =
+  | "JOB_CREATED"
+  | "CANDIDATES_PREPARING"
+  | "CANDIDATES_STORED"
+  | "ZIP_BUILDING"
+  | "ZIP_SAVED";
+
+export type CorvoAnalysisPreparation = {
+  stage: CorvoAnalysisPreparationStage;
+  expectedCandidates?: number;
+  storedCandidates?: number;
+  storedIds?: number;
+  expectedIds?: number;
+  batchesUploaded?: number;
+  batchTotal?: number;
+  packageFileName?: string;
+  collectorPackageId?: string;
+  collectorPackageCode?: string;
+  selectionMode?: "AUTO" | "MANUAL";
+  error?: string;
+  updatedAt: string;
+};
+
 export type CorvoJob = {
   id: string;
   status: CorvoJobStatus;
@@ -57,6 +80,7 @@ export type CorvoJob = {
   tentativaAtual?: number;
   uploadToken?: string;
   files?: CorvoJobFile[];
+  analysisPreparation?: CorvoAnalysisPreparation;
   createdAt: string;
   updatedAt: string;
 };
@@ -161,6 +185,32 @@ export async function createCorvoJob(request: CorvoJobRequest) {
   return job;
 }
 
+
+export async function updateCorvoAnalysisPreparation(
+  jobId: string,
+  uploadToken: string,
+  patch: Partial<CorvoAnalysisPreparation> & { stage?: CorvoAnalysisPreparationStage },
+) {
+  const current = await getCorvoJob(jobId);
+  if (!current || current.uploadToken !== uploadToken || current.request.specialist !== "ANALISTA") return null;
+  const now = new Date().toISOString();
+  const stageOrder: Record<CorvoAnalysisPreparationStage, number> = {
+    JOB_CREATED:0, CANDIDATES_PREPARING:1, CANDIDATES_STORED:2, ZIP_BUILDING:3, ZIP_SAVED:4,
+  };
+  const currentStage = current.analysisPreparation?.stage || "JOB_CREATED";
+  const requestedStage = patch.stage || currentStage;
+  const stage = stageOrder[requestedStage] >= stageOrder[currentStage] ? requestedStage : currentStage;
+  const next: CorvoAnalysisPreparation = {
+    ...current.analysisPreparation,
+    ...patch,
+    stage,
+    updatedAt: now,
+  };
+  const updated: CorvoJob = { ...current, analysisPreparation: next, updatedAt: now };
+  await writeJob(updated);
+  return updated;
+}
+
 export async function attachCorvoFile(jobId: string, uploadToken: string, file: CorvoJobFile) {
   const current = await getCorvoJob(jobId);
   if (!current || !current.uploadToken || current.uploadToken !== uploadToken) return null;
@@ -243,6 +293,22 @@ export async function getCollectorCandidatesByName(jobId: string, uploadToken: s
   if (!candidates) return null;
   const wanted = new Set(names.map((name) => name.toLocaleLowerCase("pt-BR")));
   return candidates.filter((candidate) => wanted.has(candidate.name.toLocaleLowerCase("pt-BR")));
+}
+
+export async function resetCorvoJobForRetry(jobId: string, uploadToken: string) {
+  const current = await getCorvoJob(jobId);
+  if (!current || !current.uploadToken || current.uploadToken !== uploadToken) return null;
+  const updated: CorvoJob = {
+    ...current,
+    status: "PENDING",
+    resultado: undefined,
+    error: undefined,
+    resultadoRecebido: false,
+    manifest: undefined,
+    updatedAt: new Date().toISOString(),
+  };
+  await writeJob(updated);
+  return updated;
 }
 
 export async function getCorvoJob(jobId: string) {

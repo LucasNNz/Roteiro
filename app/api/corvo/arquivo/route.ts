@@ -1,6 +1,6 @@
 import { put } from "@vercel/blob";
 import { NextRequest, NextResponse } from "next/server";
-import { attachCollectorCandidate, attachCorvoFile, getCorvoJob } from "../../../../lib/corvo-jobs";
+import { attachCollectorCandidate, attachCorvoFile, getCorvoJob, listCollectorCandidates, updateCorvoAnalysisPreparation } from "../../../../lib/corvo-jobs";
 import { storageFailure } from "../../../../lib/corvo-api";
 
 export const runtime = "nodejs";
@@ -76,7 +76,14 @@ export async function POST(request: NextRequest) {
         createdAt:new Date().toISOString(),
       });
       if (!candidate) return NextResponse.json({ ok: false, message: "Trabalho não encontrado, expirado ou incompatível com o Collector." }, { status: 404 });
-      return NextResponse.json({ ok: true, jobId, status: job.status, file:candidate });
+      const allCandidates = await listCollectorCandidates(jobId, token) || [];
+      await updateCorvoAnalysisPreparation(jobId, token, {
+        stage:"CANDIDATES_PREPARING",
+        storedCandidates:allCandidates.length,
+        storedIds:new Set(allCandidates.map((item) => String(item.id))).size,
+        error:undefined,
+      });
+      return NextResponse.json({ ok: true, jobId, status: job.status, file:candidate, storedCandidates:allCandidates.length });
     }
     const updated = await attachCorvoFile(jobId, token, {
       type,

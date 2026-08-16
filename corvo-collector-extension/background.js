@@ -1,4 +1,10 @@
 const BRIDGE_PROTOCOL = 'corvo-collector/1';
+const SEARCH_CANDIDATE_LIMIT = 20;
+
+function normalizeSearchCandidateLimit(value) {
+  const parsed = Number(value);
+  return Math.max(1, Math.min(SEARCH_CANDIDATE_LIMIT, Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : SEARCH_CANDIDATE_LIMIT));
+}
 const DEFAULT_ALLOWED_ORIGINS = ['http://localhost:3000', 'http://127.0.0.1:3000'];
 const JOB_KEY = 'bridgeCurrentJob';
 const PACKAGE_KEY = 'bridgePackageStatus';
@@ -287,7 +293,7 @@ function searchUrlForProvider(query, mode) {
   return mode === 'GOOGLE' ? googleImagesSearchUrl(query) : pinterestSearchUrl(query);
 }
 
-function mergeCollectedItems(groups = [], maxCandidates = 200) {
+function mergeCollectedItems(groups = [], maxCandidates = SEARCH_CANDIDATE_LIMIT) {
   const map = new Map();
   for (const group of groups) {
     for (const item of (group?.items || [])) {
@@ -428,11 +434,14 @@ async function collectDeepFromPage(settings) {
 
       const collect=()=>{
         for(const img of Array.from(document.images)){
+          if(map.size>=settings.maxCandidates) break;
           const datasetValues=Object.values(img.dataset||{}).filter(v=>typeof v==='string' && /^https?:/i.test(v));
           const candidates=[img.currentSrc,img.src,...parseSrcset(img.srcset),...parseSrcset(img.getAttribute('data-srcset')||''),img.getAttribute('data-src'),img.getAttribute('data-lazy-src'),img.getAttribute('data-pin-media'),img.getAttribute('data-media'),...datasetValues].filter(Boolean);
           add({previewUrl:img.currentSrc||img.src,urls:candidates,width:img.naturalWidth||img.width,height:img.naturalHeight||img.height,source:'IMG',title:img.alt||img.getAttribute('aria-label')||'imagem'});
         }
+        if(map.size>=settings.maxCandidates) return;
         for(const el of Array.from(document.querySelectorAll('[style*="background-image"]'))){
+          if(map.size>=settings.maxCandidates) break;
           try{
             const bg=getComputedStyle(el).backgroundImage||'';
             const urls=[...bg.matchAll(/url\\(["']?([^"')]+)["']?\\)/g)].map(m=>m[1]);
@@ -476,7 +485,7 @@ async function collectDeepFromPage(settings) {
 async function collectForQuery(query, options = {}) {
   const mode = normalizeSourceMode(options.sourceMode || 'PINTEREST');
   const providers = mode === 'MIXED' ? ['PINTEREST', 'GOOGLE'] : [mode];
-  const maxCandidates = Math.max(1, Math.min(500, Number(options.maxCandidates || 200)));
+  const maxCandidates = normalizeSearchCandidateLimit(options.maxCandidates);
   const scrollSteps = Math.max(1, Math.min(60, Number(options.scrollSteps || 24)));
   const stepDelay = Math.max(150, Number(options.stepDelay || 350));
   const initialWaitMs = Math.max(500, Number(options.initialWaitMs || 1800));
@@ -704,7 +713,7 @@ async function handleExternal(message, sender) {
       ok: true, protocol: BRIDGE_PROTOCOL, name: manifest.name, version: manifest.version,
       extensionId: chrome.runtime.id, authorized: auth.allowed, origin: auth.origin,
       capabilities: ['PING','START_JOB','GET_STATUS','GET_RESULT','CANCEL_JOB','BUILD_FORMA_PACKAGE','GET_PACKAGE_STATUS','OPEN_LAST_PACKAGE','SHOW_LAST_PACKAGE','SAVE_PACKAGE_AS','SEARCH_MORE_GROUP'],
-      executionMode: 'BACKGROUND_TAB', closesSearchTabOnFinish: true, supportsMultiItemQueue: true, supportsAutoSelection: false, supportsManualSelectionUi: true, supportsFormaPackage: true, supportsPostDownloadActions: true, supportsPackageCode: true, supportsSourceSelector: true, supportsSearchMoreGroup: true, sourceModes: ['PINTEREST','GOOGLE','MIXED']
+      executionMode: 'BACKGROUND_TAB', closesSearchTabOnFinish: true, supportsMultiItemQueue: true, supportsAutoSelection: false, supportsManualSelectionUi: true, supportsFormaPackage: true, supportsPostDownloadActions: true, supportsPackageCode: true, supportsSourceSelector: true, supportsSearchMoreGroup: true, maxSearchCandidatesPerId: SEARCH_CANDIDATE_LIMIT, sourceModes: ['PINTEREST','GOOGLE','MIXED']
     };
   }
   if (!auth.allowed) return { ok:false, error:'ORIGIN_NOT_AUTHORIZED', origin:auth.origin };
@@ -721,7 +730,7 @@ async function handleExternal(message, sender) {
       progress:{current:0,total:items.length,query:'',phase:'QUEUED'},
       settings:{
         minWidth:Number(payload.minWidth||120), minHeight:Number(payload.minHeight||120),
-        maxCandidates:Math.max(1,Math.min(500,Number(payload.maxCandidates||200))),
+        maxCandidates:normalizeSearchCandidateLimit(payload.maxCandidates),
         scrollSteps:Math.max(1,Math.min(60,Number(payload.scrollSteps||24))),
         stepDelay:Math.max(150,Number(payload.stepDelay||350)),
         initialWaitMs:Math.max(500,Number(payload.initialWaitMs||1800)),

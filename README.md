@@ -1,6 +1,99 @@
-# CorvoQuiz Produção — V0.6.16
+# CorvoQuiz Produção — V0.6.27
+
+
+
+
+## V0.6.27 — checkpoint fino da preparação do Analista
+
+- A preparação do Analista agora possui estados persistidos: `JOB_CREATED` → `CANDIDATES_PREPARING` → `CANDIDATES_STORED` → `ZIP_BUILDING` → `ZIP_SAVED`.
+- O checkpoint é salvo no projeto e também no job persistente do servidor/Redis.
+- Assim que todos os IDs possuem candidatas persistidas no Blob/Redis, o app grava `CANDIDATES_STORED` **antes** de montar o ZIP final do Analista.
+- Se a montagem do ZIP falhar depois desse ponto, o retry reutiliza os lotes já armazenados e chama apenas `/api/corvo/pacote`; o Collector não é reaberto e as imagens não são recomprimidas.
+- Se a página for recarregada em `CANDIDATES_STORED`, `ZIP_BUILDING` ou `ZIP_SAVED`, o Automático Total recupera o checkpoint e continua da etapa correta.
+- `ZIP_SAVED` continua usando o comportamento da V0.6.26: falha do Analista gera somente retry do Analista com o mesmo ZIP.
+- A interface distingue `CHECKPOINT DO ANALISTA SALVO` de `PACOTE DO ANALISTA SALVO` e oferece retomada manual imediata.
+- A nova rota `GET/POST /api/corvo/checkpoint` reconcilia o estado local com candidatos e ZIP existentes no servidor.
+- Mantém Corvo Bridge V0.6.14 e Corvo Collector V0.8.0.
+
+## V0.6.26 — pacote do Analista persistente e retry automático
+
+- Depois que o Collector termina a preparação em lotes e o app consolida o ZIP do Analista, esse ZIP passa a ser tratado como artefato persistente do projeto.
+- O projeto salva JOB_ID, URL/nome do ZIP, IDs esperados, prompt do Analista, token do job e horários de preparação/último envio.
+- Se o Corvo Analista/Bridge estiver indisponível, retornar erro ou devolver manifesto inválido, o app **não volta ao Collector** e não recomprime as imagens.
+- O app agenda retry automático com backoff de 1 min → 2 min → 5 min → 10 min e mantém o projeto em `AGUARDANDO ANALISTA`.
+- A etapa **PACOTE DO ANALISTA SALVO** aparece na interface e pode ser clicada para `REENVIAR AGORA`.
+- Ao recarregar a página durante essa espera, o pacote continua salvo e o timer é retomado.
+- Um job do Analista em erro é resetado mantendo o `COLLECTOR_ZIP` anexado; a nova tentativa usa o mesmo pacote físico.
+- O Automático Total fica pausado em `ANALISTA`, sem virar falha final, e continua sozinho quando a análise finalmente terminar.
+- Mantém Bridge V0.6.14 e Collector V0.8.0.
+
+## V0.6.25 — Cleaner: clique robusto no item Excluir
+
+- Bridge V0.6.14 espera a conversa e o menu ficarem estáveis, reconhece popovers atuais mesmo sem role=menu e procura especificamente o item Excluir no menu do cabeçalho.
+- Espera o menu de conversa e o item Excluir estabilizarem antes do primeiro clique destrutivo.
+- Espera o modal/alertdialog de confirmação ficar visível e estável antes de clicar no botão vermelho Excluir.
+- Mantém verificação forte após a exclusão; não marca conversa como excluída apenas por ter clicado.
+
+## V0.6.23 — Hotfix de confirmação real do Cleaner
+
+- Bridge V0.6.12 reconhece corretamente o modal de confirmação como `alertdialog`.
+- Após clicar em Excluir, aguarda o modal fechar de verdade e espera a mutação ser aplicada antes de navegar.
+- A verificação forte reabre a conversa até duas vezes antes de concluir que a exclusão falhou.
+- Erros agora incluem o estágio observado, como `DELETE_DID_NOT_HAPPEN:DELETE_APPLY_TIMEOUT`.
+
+
+## V0.6.22 — Cleaner usa o menu do cabeçalho da conversa
+
+- Bridge V0.6.11 executa a exclusão pelo botão `...` do canto superior direito da conversa atual.
+- O menu só é aceito quando contém ações características de chat, como Arquivar/Fixar/Mover e Excluir.
+- Depois de clicar em Excluir, o Bridge aguarda o modal e clica no Excluir de confirmação.
+- A conversa só recebe `deleted=true` depois da verificação forte de que a mesma URL não carrega mais.
+
+
+## V0.6.21 — Cleaner confirma exclusão sem depender da URL
+
+- Bridge V0.6.9 corrige `DELETE_NOT_CONFIRMED`: o ChatGPT pode remover a conversa do histórico sem trocar a rota imediatamente.
+- A exclusão agora é confirmada por três sinais independentes: mudança da rota, aviso visual de exclusão ou desaparecimento persistente da conversa da barra lateral após fechar o diálogo.
+- O Cleaner continua usando uma única aba oculta, com diagnóstico persistente e somente conversas próprias mapeadas.
+- Mantém Collector V0.8.0 e todo o pipeline automático da V0.6.20.
 
 Painel de produção do CorvoQuiz com orquestração multiespecialista via **Corvo Bridge**, coleta pelo **Corvo Collector**, seleção visual delegada ao **Corvo Analista**, roteamento por ID, Fallback e ZIP final.
+
+
+## V0.6.20 — Cleaner rápido e observável
+
+- Bridge V0.6.8 reutiliza uma única aba oculta para excluir as conversas mapeadas.
+- Remove o custo de abrir/fechar uma aba por conversa.
+- A exclusão procura o menu da conversa na sidebar e no header atual do ChatGPT.
+- O popup mostra progresso em tempo real e preserva o último resultado/erro.
+- O restante do pipeline permanece igual à V0.6.19.
+
+
+## V0.6.19 — Cleaner realmente exclui GPTs personalizados
+
+- Bridge V0.6.8 corrige o segundo parser usado durante a exclusão.
+- Conversas `/g/<gpt>/c/<id>` não são mais rejeitadas como `CONVERSATION_ID_MISMATCH`.
+- Menu, item Excluir e confirmação têm seletores mais tolerantes à UI atual.
+- Popup mostra o primeiro código de erro se uma exclusão ainda falhar.
+- Collector permanece V0.8.0.
+
+
+## V0.6.18 — Cleaner do Bridge corrigido para GPTs personalizados
+
+- Bridge V0.6.8 reconhece conversas em `/c/<id>` e também `/g/<gpt>/c/<id>`.
+- Reprocessa registros antigos do Cleaner que já possuam `conversationUrl`, preenchendo o `conversationId` ausente.
+- Acompanha mudanças de URL da aba durante o job e captura a URL final antes de fechar a conversa.
+- Conversas próprias concluídas passam a aparecer em **Pendentes** assim que o ID puder ser resolvido.
+- Mantém Collector V0.8.0 e o automático real da Ideia ao ZIP.
+
+## V0.6.17 — busca rápida com teto 20/ID
+
+- Collector V0.8.0 impõe teto real de 20 candidatas únicas por ID.
+- GOOGLE: até 20; PINTEREST: até 20; MESCLADO: até 10 + 10.
+- A leitura do DOM e a rolagem param assim que a cota do provedor é atingida.
+- Configurações antigas acima de 20 são automaticamente normalizadas para 20.
+- A shortlist padrão para o Analista continua em até 10 candidatas por ID.
+
 
 ## V0.6.16 — hotfix de retomada do pacote do Collector
 
@@ -38,7 +131,8 @@ O Roteirista agora recebe também o texto completo da ideia escolhida, preservan
 
 - Corrige a inferência `string | undefined` do `autoWorkflowJobId`.
 - O polling usa `activeJobId:string` antes de `encodeURIComponent`.
-- Mantém shortlist 10/ID, batch upload, Collector V0.7.9 e Bridge V0.6.5.
+- Limita a busca a 20 candidatas únicas por ID (10+10 no modo Mesclado).
+- Mantém shortlist 10/ID, batch upload, Collector V0.8.0 e Bridge V0.6.8.
 
 ## V0.6.12 — Automático do projeto atual (substituído na V0.6.15)
 
@@ -50,7 +144,7 @@ No modo automático, o app **não escolhe mais uma candidata por ID**. O fluxo a
 
 `COLLECTOR → TODAS AS CANDIDATAS → ZIP BRUTO → ANALISTA → ARQUIVO ESCOLHIDO POR ID → REFINADOR / GERADOR`
 
-O Collector V0.7.9 envia todas as candidatas disponíveis de cada ID ao armazenamento do trabalho do Analista. Cada candidata recebe nome único, por exemplo:
+O Collector V0.8.0 envia todas as candidatas disponíveis de cada ID ao armazenamento do trabalho do Analista. Cada candidata recebe nome único, por exemplo:
 
 - `video1_001_c001.jpg`
 - `video1_001_c002.jpg`
@@ -110,7 +204,7 @@ A Consolidação só libera o ZIP quando todos os IDs possuem arquivo final real
 
 Antes do empacotamento, o app verifica Redis + Vercel Blob. O Collector preserva o primeiro erro real de upload e interrompe repetição inútil quando detecta erro fatal de armazenamento.
 
-### Bridge V0.6.3/V0.6.5 — captura e anexos grandes
+### Bridge V0.6.3/V0.6.7 — captura e anexos grandes
 
 Timeout real, busca mais robusta no DOM, fallback de captura, atualização automática do popup e repetição de captura presa. Na V0.6.5, anexos do Blob são buscados diretamente pela aba do ChatGPT antes do fallback legado, removendo o gargalo interno de 40 MB para o ZIP bruto do Analista.
 
@@ -135,19 +229,19 @@ Configure no projeto:
 
 ## Instalação
 
-### Corvo Bridge V0.6.5
+### Corvo Bridge V0.6.14
 
-Use `public/downloads/CORVO_BRIDGE_V065_EXTENSION.zip` ou carregue a pasta `corvo-bridge-extension` em `chrome://extensions`.
+Use `public/downloads/CORVO_BRIDGE_V0614_EXTENSION.zip` ou carregue a pasta `corvo-bridge-extension` em `chrome://extensions`.
 
-### Corvo Collector V0.7.9
+### Corvo Collector V0.8.0
 
 Use `public/downloads/CORVO_COLLECTOR_V077_EXTENSION.zip` ou carregue a pasta `corvo-collector-extension`. Autorize a origem exata do deploy no popup.
 
 ## Downloads dentro do app
 
-- Corvo Collector V0.7.9;
-- Corvo Bridge V0.6.5;
-- Kit completo CorvoQuiz V0.6.16.
+- Corvo Collector V0.8.0;
+- Corvo Bridge V0.6.14;
+- Kit completo CorvoQuiz V0.6.27.
 
 ## Fora do escopo atual
 
@@ -157,7 +251,7 @@ Publicação automática no YouTube continua futura: upload do vídeo final, apl
 
 - O modo automático envia por padrão até 10 candidatas técnicas por ID ao Analista; esse limite é configurável de 1 a 30.
 - O app não escolhe a imagem vencedora. O corte é apenas uma shortlist técnica para reduzir transporte; a decisão visual final continua sendo do Corvo Analista.
-- Collector V0.7.9 prepara as cópias de análise com 8 workers e envia lotes ZIP de até 36 candidatas.
+- Collector V0.8.0 prepara as cópias de análise com 8 workers e envia lotes ZIP de até 36 candidatas.
 - Novo endpoint `POST /api/corvo/candidatos-lote` grava um ZIP por lote no Blob e registra todas as entradas em uma única operação no Redis.
 - A consolidação do pacote do Analista baixa cada lote uma única vez, mantendo compatibilidade com candidatas antigas armazenadas individualmente.
 - Lotes usam retry automático em falhas temporárias de rede, 429 e 5xx.

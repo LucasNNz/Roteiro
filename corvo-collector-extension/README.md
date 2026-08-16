@@ -1,6 +1,6 @@
-# Corvo Collector Bridge V0.7.9
+# Corvo Collector Bridge V0.8.0
 
-Mantém o modo manual e, no automático, envia até 10 candidatas técnicas por ID (configurável no app) ao Corvo Analista sem escolher uma vencedora no app.
+Limita a pesquisa a no máximo 20 candidatas únicas por ID. No modo Mesclado, busca até 10 no Pinterest + 10 no Google. Depois, no automático, envia até 10 candidatas técnicas por ID ao Corvo Analista sem escolher uma vencedora no app.
 
 ## ID fixo desta extensão
 `eaekknadnghlpncgbhnmldofajelmlbo`
@@ -70,6 +70,14 @@ A extensão usa um documento offscreen para:
 Corrige `provider is not defined` durante a varredura Google Imagens/Pinterest.
 O seletor Vercel V0.7.3 continua compatível; basta atualizar a extensão.
 
+
+## V0.8.0 — teto de busca 20/ID
+
+- cada busca para assim que atingir até 20 candidatas únicas por ID;
+- Google: até 20; Pinterest: até 20; Mesclado: até 10 + 10;
+- a varredura interrompe a leitura/rolagem assim que a cota do provedor é atingida;
+- `SEARCH_MORE_GROUP` também traz no máximo 20 novas candidatas por busca;
+- o limite de 10 candidatas/ID para o Analista continua independente do teto de coleta.
 
 ## V0.7.9 — retomada segura de pacote
 

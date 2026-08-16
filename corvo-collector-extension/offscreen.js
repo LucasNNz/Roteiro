@@ -272,7 +272,7 @@ async function buildPackage(payload) {
     zip.file('CORVO_PACKAGE.json',JSON.stringify({protocol:'corvo-package/1',packageMode,packageCode:packageCode||'',packageId,fileName,generatedAt:new Date().toISOString(),total:selections.length,success,failed,pipelineUploaded,pipelineUploadFailed,pipelineErrors,files:packageFiles.filter(Boolean)},null,2));
   }
   if(!pipelineOnly) zip.file('README.txt',[
-    'CORVO COLLECTOR V0.7.9 — PACOTE FORMA / PIPELINE',
+    'CORVO COLLECTOR V0.8.0 — PACOTE FORMA / PIPELINE',
     '',
     `Código do pacote: ${packageCode || ''}`,
     `ID técnico: ${packageId}`,

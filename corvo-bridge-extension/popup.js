@@ -17,8 +17,19 @@ async function refresh(){
       const today=eligible.filter(r=>r.day===new Date().toLocaleDateString("en-CA")).length;
       document.querySelector("#cleaner").textContent=`🧹 Cleaner: ${c.config.cleanerEnabled?"ATIVO":"DESATIVADO"} • ${c.config.cleanerHour||"22:00"}\nHoje: ${today} próprias • Pendentes: ${mappedPending}${c.config.cleanerDryRun!==false?" • MODO TESTE":""}`;
       const deleteButton=document.querySelector("#deleteMapped");
-      deleteButton.disabled=mappedPending===0;
-      deleteButton.textContent=mappedPending>0?`Apagar ${mappedPending} mapeada${mappedPending===1?"":"s"} agora`:"Nenhuma conversa para apagar";
+      const cleanerStatus=c.status||null;
+      deleteButton.disabled=mappedPending===0||Boolean(cleanerStatus?.running);
+      deleteButton.textContent=cleanerStatus?.running
+        ?`Limpando ${cleanerStatus.current||0}/${cleanerStatus.candidates||mappedPending}...`
+        :(mappedPending>0?`Apagar ${mappedPending} mapeada${mappedPending===1?"":"s"} agora`:"Nenhuma conversa para apagar");
+      const output=document.querySelector("#cleanerAction");
+      if(cleanerStatus?.running){
+        const firstError=cleanerStatus?.errors?.[0]?.error;
+        output.textContent=`Limpando ${cleanerStatus.current||0}/${cleanerStatus.candidates||0} • Excluídas: ${cleanerStatus.deleted||0} • Falhas: ${cleanerStatus.failed||0}${firstError?` • ${firstError}`:""}`;
+      }else if(cleanerStatus?.at){
+        const firstError=cleanerStatus?.fatalError||cleanerStatus?.errors?.[0]?.error;
+        output.textContent=`Última limpeza: Excluídas: ${cleanerStatus.deleted||0} • Falhas: ${cleanerStatus.failed||0}${firstError?` • ${firstError}`:""}`;
+      }
     }
   }finally{refreshing=false;}
 }
@@ -36,12 +47,12 @@ document.querySelector("#deleteMapped").addEventListener("click",async(e)=>{
   try{
     const r=await chrome.runtime.sendMessage({type:"CORVO_CLEANER_DELETE_MAPPED_NOW"});
     if(!r?.ok&&r?.error)throw new Error(r.error);
-    output.textContent=`Excluídas: ${r?.deleted||0} • Falhas: ${r?.failed||0}`;
+    const firstError=r?.errors?.[0]?.error;
+    output.textContent=`Excluídas: ${r?.deleted||0} • Falhas: ${r?.failed||0}${firstError?` • ${firstError}`:""}`;
   }catch(err){
     output.textContent=`Erro: ${err?.message||"Falha na limpeza"}`;
   }finally{
     await refresh().catch(()=>{});
-    setTimeout(()=>{output.textContent="";},7000);
   }
 });
 refresh().catch(()=>{});setInterval(()=>refresh().catch(()=>{}),1000);

@@ -17,6 +17,30 @@ Bases: `CORVOQUIZ_ESPECIFICACAO_NOVO_FLUXO_APP_BRIDGE` e `CORVOQUIZ_MUDANCA_MODO
 
 ## Fase 3 — Collector → Analista → roteamento
 
+## Alteração V0.6.27 — checkpoint fino da preparação do Analista
+
+- [x] Persistir estágio `JOB_CREATED` ao criar o job do Analista.
+- [x] Persistir `CANDIDATES_PREPARING` durante preparo/upload dos lotes.
+- [x] Validar no servidor que todos os IDs possuem ao menos uma candidata antes do checkpoint reutilizável.
+- [x] Persistir `CANDIDATES_STORED` antes da montagem do ZIP.
+- [x] Persistir `ZIP_BUILDING` e `ZIP_SAVED`.
+- [x] Criar `GET/POST /api/corvo/checkpoint` para reconciliação após F5/reabertura.
+- [x] Falha em `CANDIDATES_STORED`/`ZIP_BUILDING` retoma somente `/api/corvo/pacote`, reutilizando os lotes no Blob/Redis.
+- [x] Falha após `ZIP_SAVED` continua retentando somente o Analista.
+- [x] Retry automático usa backoff 1 min → 2 min → 5 min → 10 min também para a montagem do pacote.
+- [x] UI expõe `CHECKPOINT DO ANALISTA SALVO` e permite retomada manual sem Collector.
+
+## Alteração V0.6.26 — checkpoint persistente antes do Analista
+
+- [x] Após a consolidação, o ZIP do Analista fica salvo no Vercel Blob e referenciado no projeto.
+- [x] Persistir `analysisJobId`, URL/nome do ZIP, IDs esperados, prompt, token e timestamps da tentativa.
+- [x] Falha de Bridge/Analista não volta ao Collector nem refaz compressão/lotes.
+- [x] Retry automático com backoff 1 min → 2 min → 5 min → 10 min.
+- [x] Botão `PACOTE DO ANALISTA SALVO` permite reenvio manual imediato.
+- [x] F5/reabertura preserva o checkpoint e retoma o timer do Analista.
+- [x] Job do Analista pode ser resetado para retry sem remover o `COLLECTOR_ZIP` já anexado.
+- [x] Automático Total permanece `RUNNING`/`ANALISTA` durante a espera e continua sozinho quando a análise terminar.
+
 - [x] Job do Analista criado antes do transporte das imagens.
 - [x] ZIP persistente anexado ao Corvo Analista.
 - [x] Validação de IDs do manifesto.
@@ -101,3 +125,10 @@ Bases: `CORVOQUIZ_ESPECIFICACAO_NOVO_FLUXO_APP_BRIDGE` e `CORVOQUIZ_MUDANCA_MODO
 - O loop de polling usa `activeJobId:string`, eliminando o erro de build em `encodeURIComponent(jobId)`.
 - Sem alteração funcional no pipeline ou nas extensões.
 
+
+
+## OTIMIZAÇÃO V0.6.17 / COLLECTOR V0.8.0
+- Busca limitada a 20 candidatas únicas por ID.
+- GOOGLE/PINTEREST: teto 20. MIXED: 10 + 10.
+- A rolagem para assim que a cota é atingida.
+- Shortlist para Analista continua padrão 10/ID.

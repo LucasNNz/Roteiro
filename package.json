@@ -1,6 +1,6 @@
 {
   "name": "corvoquiz-producao",
-  "version": "0.6.16",
+  "version": "0.6.27",
   "private": true,
   "scripts": {
     "dev": "next dev",

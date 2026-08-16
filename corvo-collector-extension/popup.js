@@ -82,7 +82,7 @@ async function scanCurrentTab() {
   const settings = {
     minWidth: Number(document.getElementById('minWidth').value || 0),
     minHeight: Number(document.getElementById('minHeight').value || 0),
-    maxCandidates: Number(document.getElementById('maxCandidates').value || 250),
+    maxCandidates: Math.max(1, Math.min(20, Number(document.getElementById('maxCandidates').value || 20))),
     scrollSteps: Number(document.getElementById('scrollSteps').value || 24),
     preferredMinSide: Number(document.getElementById('preferredMinSide').value || 700),
     includeLinks: document.getElementById('includeLinks').checked,
@@ -210,6 +210,7 @@ async function scanCurrentTab() {
 
       const collect = () => {
         for (const img of Array.from(document.images)) {
+          if (map.size >= settings.maxCandidates) break;
           const datasetValues = Object.values(img.dataset || {}).filter(Boolean);
           const candidates = [
             img.currentSrc,
@@ -232,7 +233,9 @@ async function scanCurrentTab() {
           });
         }
 
+        if (map.size >= settings.maxCandidates) return;
         for (const el of Array.from(document.querySelectorAll('[style*="background-image"]'))) {
+          if (map.size >= settings.maxCandidates) break;
           const urls = readBackgroundImage(el);
           if (!urls.length) continue;
           const rect = el.getBoundingClientRect();
@@ -246,9 +249,11 @@ async function scanCurrentTab() {
           });
         }
 
+        if (map.size >= settings.maxCandidates) return;
         if (settings.includeLinks) {
           const imageHrefRegex = /\.(png|jpe?g|webp|gif|svg)(\?|#|$)/i;
           for (const a of Array.from(document.querySelectorAll('a[href]'))) {
+            if (map.size >= settings.maxCandidates) break;
             const href = a.getAttribute('href');
             if (!href) continue;
             const dataPinMedia = a.getAttribute('data-pin-media');

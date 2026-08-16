@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Corvo Bridge",
-  "version": "0.6.5",
-  "description": "Encaminha especialistas do CorvoQuiz, anexa ZIPs grandes diretamente do Blob e captura imagens finais geradas no ChatGPT.",
+  "version": "0.6.14",
+  "description": "Encaminha especialistas do CorvoQuiz, captura arquivos e exclui conversas mapeadas com sincronização por estado da interface, confirmação estável e verificação forte de remoção real.",
   "permissions": [
     "storage",
     "tabs",

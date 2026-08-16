@@ -1,4 +1,4 @@
-# Integração com CorvoQuiz Produção — Collector V0.7.9
+# Integração com CorvoQuiz Produção — Collector V0.8.0
 
 O app usa o protocolo `corvo-collector/1` e os comandos existentes do Collector.
 
@@ -41,3 +41,8 @@ No modo `MANUAL`, permanece o fluxo anterior de uma candidata escolhida por ID. 
 ## Diagnóstico de armazenamento
 
 O app consulta `/api/corvo/diagnostico` antes do empacotamento. Redis e Vercel Blob precisam estar disponíveis. O Collector preserva `pipelineErrors[]` para mostrar a causa real quando um lote falhar.
+
+
+## V0.8.0 — limite de coleta
+
+O service worker limita cada ID a no máximo 20 candidatas únicas. Em `MIXED`, divide a meta em 10 Pinterest + 10 Google e encerra a rolagem de cada provedor assim que atinge a respectiva cota.

@@ -300,13 +300,18 @@
   }
 
 
+  function conversationIdFromPath(pathname = location.pathname) {
+    const match = String(pathname || "").match(/(?:^|\/)c\/([^/?#]+)/);
+    return match ? match[1] : "";
+  }
+
   async function currentConversationUrl(timeout = 10000) {
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
-      if (/^\/c\/[^/?#]+/.test(location.pathname)) return location.origin + location.pathname;
+      if (conversationIdFromPath()) return location.origin + location.pathname;
       await sleep(200);
     }
-    return /^\/c\/[^/?#]+/.test(location.pathname) ? location.origin + location.pathname : "";
+    return conversationIdFromPath() ? location.origin + location.pathname : "";
   }
 
   async function reportSent(jobId) {
@@ -318,50 +323,415 @@
   function visible(el) { if (!el) return false; const r=el.getBoundingClientRect(); const s=getComputedStyle(el); return r.width>0 && r.height>0 && s.visibility!=="hidden" && s.display!=="none"; }
   function clickEl(el) { el.scrollIntoView({block:"center"}); el.dispatchEvent(new MouseEvent("mouseover",{bubbles:true})); el.click(); }
 
-  async function deleteCurrentChat(payload) {
-    const expected = String(payload?.conversationId || "");
-    const actual = location.pathname.match(/^\/c\/([^/?#]+)/)?.[1] || "";
-    if (!expected || actual !== expected) throw new Error("CONVERSATION_ID_MISMATCH");
-    await sleep(1200);
+  async function waitUntil(fn, timeout = 5000, step = 120) {
+    const deadline = Date.now() + timeout;
+    let last = null;
+    while (Date.now() < deadline) {
+      try {
+        const value = fn();
+        if (value) return value;
+        last = value;
+      } catch (error) { last = error; }
+      await sleep(step);
+    }
+    return null;
+  }
 
-    const exactLink = [...document.querySelectorAll('a[href^="/c/"]')].find(a => a.getAttribute("href")?.includes(`/c/${expected}`));
-    let menuButton = null;
-    if (exactLink) {
-      let scope = exactLink;
-      for (let i=0;i<5 && scope;i++,scope=scope.parentElement) {
-        scope.dispatchEvent(new MouseEvent("mouseover",{bubbles:true}));
-        const buttons=[...scope.querySelectorAll("button")].filter(visible);
-        menuButton=buttons.find(b => /conversation.*(options|menu)|chat.*(options|menu)|opções.*conversa|mais.*conversa/.test(textOf(b)));
-        if (menuButton) break;
+
+  async function waitForStableElement(getter, { timeout = 10000, stableMs = 700, step = 120 } = {}) {
+    const deadline = Date.now() + timeout;
+    let candidate = null;
+    let stableSince = 0;
+    while (Date.now() < deadline) {
+      let next = null;
+      try { next = getter(); } catch {}
+      if (next && next.isConnected && visible(next)) {
+        if (next !== candidate) {
+          candidate = next;
+          stableSince = Date.now();
+        } else if (Date.now() - stableSince >= stableMs) {
+          return next;
+        }
+      } else {
+        candidate = null;
+        stableSince = 0;
+      }
+      await sleep(step);
+    }
+    return null;
+  }
+
+  function pageIsBusy() {
+    const main = document.querySelector('main');
+    if (!main) return true;
+    return [...main.querySelectorAll('[aria-busy="true"], [data-loading="true"]')].some(visible);
+  }
+
+  async function waitForConversationInteractive(expected, timeout = 22000) {
+    const deadline = Date.now() + timeout;
+    let stableSince = 0;
+    let lastMenu = null;
+    while (Date.now() < deadline) {
+      const onExpected = conversationIdFromPath() === expected;
+      const main = document.querySelector('main');
+      const hasContent = conversationTurnsExist() || String(main?.innerText || main?.textContent || '').trim().length > 80;
+      const menu = currentConversationHeaderMenuButton();
+      const ready = document.readyState === 'complete' && onExpected && main && visible(main) && hasContent && menu && !pageIsBusy();
+      if (ready) {
+        if (menu !== lastMenu) {
+          lastMenu = menu;
+          stableSince = Date.now();
+        } else if (Date.now() - stableSince >= 1000) {
+          return menu;
+        }
+      } else {
+        lastMenu = null;
+        stableSince = 0;
+      }
+      await sleep(150);
+    }
+    return null;
+  }
+
+  function sidebarConversationLink(expected) {
+    return [...document.querySelectorAll('a[href*="/c/"]')].find((a) => {
+      try {
+        return conversationIdFromPath(new URL(a.getAttribute("href") || "", location.origin).pathname) === expected;
+      } catch {
+        return false;
+      }
+    }) || null;
+  }
+
+  function deleteDialogIsVisible() {
+    return [...document.querySelectorAll(
+      '[role="dialog"], [role="alertdialog"], dialog, [data-radix-dialog-content], [data-radix-alert-dialog-content], [data-slot="alert-dialog-content"]'
+    )].some(visible);
+  }
+
+  function deletionSuccessNotice() {
+    const scopes = [
+      ...document.querySelectorAll('[role="status"], [role="alert"], [data-sonner-toast], [data-testid*="toast" i], [class*="toast" i]')
+    ].filter(visible);
+    return scopes.find((el) => {
+      const t = textOf(el);
+      return /(chat|conversation|conversa).*(deleted|removed|exclu[ií]d|apagad|removid)/.test(t)
+        || /(deleted|removed|exclu[ií]d|apagad|removid).*(chat|conversation|conversa)/.test(t);
+    }) || null;
+  }
+
+  async function ensureSidebarConversationLink(expected, timeout = 4500) {
+    let link = sidebarConversationLink(expected);
+    if (link) return link;
+
+    const toggles = [...document.querySelectorAll('button')].filter((button) => {
+      const label = [button.getAttribute('aria-label'), button.getAttribute('title'), button.textContent]
+        .filter(Boolean).join(' ').trim().toLowerCase();
+      return visible(button) && /(open|show|expand|abrir|mostrar|expandir).*(sidebar|side bar|barra lateral)|(?:sidebar|barra lateral).*(open|show|expand|abrir|mostrar|expandir)/.test(label);
+    });
+    if (toggles[0]) {
+      clickElRobust(toggles[0]);
+      await sleep(350);
+    }
+
+    link = await waitUntil(() => sidebarConversationLink(expected), timeout, 150);
+    return link || null;
+  }
+
+  function currentConversationHeaderMenuButton() {
+    const viewportW = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
+    const viewportH = Math.max(document.documentElement.clientHeight || 0, window.innerHeight || 0);
+    const candidates = [...document.querySelectorAll('button')].filter((button) => {
+      if (!visible(button) || button.disabled || button.getAttribute('aria-disabled') === 'true') return false;
+      const rect = button.getBoundingClientRect();
+      // Menu mostrado no print do ChatGPT: cabeçalho, canto superior direito.
+      if (rect.top > Math.min(170, viewportH * 0.25)) return false;
+      if (rect.left < viewportW * 0.68) return false;
+      const descriptor = [
+        button.getAttribute('aria-label'),
+        button.getAttribute('title'),
+        button.getAttribute('data-testid'),
+        button.textContent
+      ].filter(Boolean).join(' ').trim().toLowerCase();
+      if (/(share|compartilhar)/.test(descriptor)) return false;
+      return /(more|mais|options|opções|opcoes|actions|ações|acoes|menu)/.test(descriptor)
+        || /^(⋯|\.\.\.|•••)$/.test(String(button.textContent || '').trim());
+    });
+
+    // Preferir o botão mais à direita; em empate, o mais alto.
+    candidates.sort((a, b) => {
+      const ra = a.getBoundingClientRect();
+      const rb = b.getBoundingClientRect();
+      return (rb.right - ra.right) || (ra.top - rb.top);
+    });
+    return candidates[0] || null;
+  }
+
+  function menuActionElement(el) {
+    if (!el) return null;
+    return el.closest('button, [role="menuitem"], [role="option"], a, [data-radix-collection-item], [data-slot*="menu-item"], [data-testid*="delete" i]') || el;
+  }
+
+  function looksLikeConversationMenuContainer(el) {
+    if (!el || !visible(el)) return false;
+    const rect = el.getBoundingClientRect();
+    const viewportW = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
+    const viewportH = Math.max(document.documentElement.clientHeight || 0, window.innerHeight || 0);
+    // O popover do cabeçalho fica no quadrante superior direito. Evita casar texto da conversa.
+    if (rect.right < viewportW * 0.62 || rect.top > Math.min(520, viewportH * 0.65)) return false;
+    if (rect.width > 560 || rect.height > 700) return false;
+    const t = textOf(el);
+    const hasDelete = /(^|\n|\s)(delete|excluir|apagar)( chat| conversa)?($|\n|\s)/.test(t);
+    const hasArchive = /(^|\n|\s)(archive|arquivar)($|\n|\s)/.test(t);
+    const hasSecondarySignature = /(pin|fixar|move|mover|project|projeto|files|arquivos)/.test(t);
+    return hasDelete && hasArchive && hasSecondarySignature;
+  }
+
+  function currentConversationDeleteMenuItem() {
+    // Caminho 1: componentes semânticos conhecidos.
+    const scopes = [
+      ...document.querySelectorAll('[role="menu"], [data-radix-menu-content], [data-radix-popper-content-wrapper], [data-slot="dropdown-menu-content"], [data-slot*="dropdown-menu"], [data-radix-menu-content]')
+    ].filter(visible);
+
+    for (const scope of scopes.slice().reverse()) {
+      const items = [...scope.querySelectorAll('[role="menuitem"], [role="option"], button, a, [data-radix-collection-item], [data-slot*="menu-item"]')].filter(visible);
+      const texts = items.map(textOf);
+      const hasChatMenuSignature = texts.some((t) => /^(archive|arquivar)$/.test(t))
+        || texts.some((t) => /^(pin|fixar)( chat| conversa)?$/.test(t))
+        || texts.some((t) => /(move|mover).*(project|projeto)/.test(t))
+        || looksLikeConversationMenuContainer(scope);
+      const deleteItem = items.find((el) => {
+        const t = textOf(el);
+        return /^(delete|excluir|apagar)( chat| conversa)?$/.test(t)
+          || /delete (this )?(chat|conversation)|excluir (esta )?conversa|apagar (esta )?conversa/.test(t);
+      });
+      if (deleteItem && hasChatMenuSignature) return menuActionElement(deleteItem);
+    }
+
+    // Caminho 2: a UI atual pode renderizar o popover sem role=menu. Procuramos o
+    // item Excluir visível no quadrante superior direito e validamos seus ancestrais
+    // pelo conjunto Arquivar + Excluir + Fixar/Mover/Arquivos.
+    const viewportW = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
+    const viewportH = Math.max(document.documentElement.clientHeight || 0, window.innerHeight || 0);
+    const raw = [...document.querySelectorAll('button, [role="menuitem"], [role="option"], a, [tabindex], [data-radix-collection-item], [data-slot*="menu-item"], span, div')]
+      .filter((el) => {
+        if (!visible(el)) return false;
+        const t = textOf(el);
+        if (!/^(delete|excluir|apagar)( chat| conversa)?$/.test(t)) return false;
+        const r = el.getBoundingClientRect();
+        return r.right > viewportW * 0.62 && r.top < Math.min(520, viewportH * 0.65);
+      });
+
+    for (const rawItem of raw) {
+      const action = menuActionElement(rawItem);
+      let ancestor = action;
+      for (let depth = 0; ancestor && depth < 8; depth += 1, ancestor = ancestor.parentElement) {
+        if (looksLikeConversationMenuContainer(ancestor)) return action;
       }
     }
+    return null;
+  }
+
+  async function brieflyHighlight(el, ms = 900) {
+    if (!el || !el.isConnected) return;
+    const oldOutline = el.style.outline;
+    const oldOffset = el.style.outlineOffset;
+    const oldBg = el.style.backgroundColor;
+    try {
+      el.style.outline = '3px solid #ff3b30';
+      el.style.outlineOffset = '2px';
+      el.style.backgroundColor = 'rgba(255,59,48,.12)';
+      await sleep(ms);
+    } finally {
+      if (el.isConnected) {
+        el.style.outline = oldOutline;
+        el.style.outlineOffset = oldOffset;
+        el.style.backgroundColor = oldBg;
+      }
+    }
+  }
+
+  async function openConversationMenuAndFindDelete(expected, attempts = 3) {
+    let lastReason = 'DELETE_MENU_ITEM_NOT_READY';
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      const menuButton = await waitForStableElement(
+        () => conversationIdFromPath() === expected ? currentConversationHeaderMenuButton() : null,
+        { timeout: 6500, stableMs: 650, step: 120 }
+      );
+      if (!menuButton) {
+        lastReason = 'HEADER_MENU_BUTTON_NOT_READY';
+        continue;
+      }
+
+      clickElRobust(menuButton);
+      // Dar tempo para o portal/popover montar e animar.
+      await sleep(650);
+
+      const deleteItem = await waitForStableElement(
+        () => currentConversationDeleteMenuItem(),
+        { timeout: 6500, stableMs: 650, step: 120 }
+      );
+      if (deleteItem) return deleteItem;
+
+      lastReason = `DELETE_MENU_ITEM_NOT_READY_ATTEMPT_${attempt}`;
+      // Se o menu fechou sozinho ou abriu incompleto, resetar e tentar de novo.
+      try { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true })); } catch {}
+      await sleep(700);
+    }
+    throw new Error(lastReason);
+  }
+
+  function clickElRobust(el) {
+    if (!el) return;
+    try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch {}
+    const rect = el.getBoundingClientRect();
+    const init = { bubbles: true, cancelable: true, clientX: rect.left + Math.max(rect.width, 1) / 2, clientY: rect.top + Math.max(rect.height, 1) / 2 };
+    try { el.dispatchEvent(new PointerEvent('pointerdown', { ...init, pointerType: 'mouse', button: 0 })); } catch {}
+    try { el.dispatchEvent(new MouseEvent('mousedown', { ...init, button: 0 })); } catch {}
+    try { el.dispatchEvent(new PointerEvent('pointerup', { ...init, pointerType: 'mouse', button: 0 })); } catch {}
+    try { el.dispatchEvent(new MouseEvent('mouseup', { ...init, button: 0 })); } catch {}
+    // O click() nativo é o principal; eventos acima são apenas compatibilidade.
+    try { el.click(); } catch {}
+  }
+
+  function deletionDialogElement() {
+    const dialogs = [...document.querySelectorAll(
+      '[role="dialog"], [role="alertdialog"], dialog, [data-radix-dialog-content], [data-radix-alert-dialog-content], [data-slot="alert-dialog-content"]'
+    )].filter(visible);
+    return dialogs.slice().reverse().find((dialog) => {
+      const t = textOf(dialog);
+      return /(delete|excluir|apagar)/.test(t) && /(chat|conversation|conversa)/.test(t);
+    }) || null;
+  }
+
+  function deletionConfirmButton(dialog) {
+    if (!dialog || !visible(dialog)) return null;
+    const buttons = [...dialog.querySelectorAll('button')].filter((el) => {
+      return visible(el) && !el.disabled && el.getAttribute('aria-disabled') !== 'true';
+    });
+    const matches = buttons.filter((el) => {
+      const t = textOf(el);
+      const testid = String(el.getAttribute('data-testid') || '').toLowerCase();
+      return /^(delete|excluir|apagar)$/.test(t)
+        || /delete.*(chat|conversation)|excluir.*conversa|apagar.*conversa/.test(t)
+        || /(delete|confirm).*(chat|conversation)/.test(testid);
+    });
+    return matches.at(-1) || null;
+  }
+
+  function conversationMissingNotice() {
+    const t = String(document.body?.innerText || document.body?.textContent || '').toLowerCase();
+    return /(conversation|chat).*(not found|does not exist|unable to load|couldn.t load|deleted|removed)|(?:conversa|chat).*(não encontrada|nao encontrada|não existe|nao existe|não foi possível carregar|nao foi possivel carregar|excluída|excluida|removida)/.test(t);
+  }
+
+  function conversationTurnsExist() {
+    return document.querySelectorAll('[data-message-author-role="user"], [data-message-author-role="assistant"]').length > 0;
+  }
+
+  async function verifyCurrentConversationDeleted(payload = {}) {
+    const expected = String(payload?.conversationId || '').trim();
+    if (!expected) return { ok: false, error: 'CONVERSATION_ID_REQUIRED' };
+
+    // Não declarar "ainda existe" no primeiro frame carregado. A remoção do ChatGPT
+    // pode levar alguns segundos para se propagar depois da confirmação.
+    const startedAt = Date.now();
+    const deadline = startedAt + 10000;
+    let sawConversation = false;
+    while (Date.now() < deadline) {
+      const current = conversationIdFromPath();
+      if (current && current !== expected) return { ok: true, deleted: true, exists: false, reason: 'ROUTE_CHANGED' };
+      if (!current && location.pathname === '/') return { ok: true, deleted: true, exists: false, reason: 'HOME_REDIRECT' };
+      if (conversationMissingNotice()) return { ok: true, deleted: true, exists: false, reason: 'MISSING_NOTICE' };
+      if (current === expected && conversationTurnsExist()) sawConversation = true;
+      await sleep(220);
+    }
+    if (sawConversation) return { ok: true, deleted: false, exists: true, reason: 'CONVERSATION_STILL_LOADS' };
+    return { ok: true, deleted: false, exists: null, reason: 'VERIFY_UNKNOWN' };
+  }
+
+  async function waitForDeletionToApply(expected, timeout = 12000) {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      const current = conversationIdFromPath();
+      if (current && current !== expected) return { applied: true, reason: 'ROUTE_CHANGED_AFTER_CONFIRM' };
+      if (!current && location.pathname === '/') return { applied: true, reason: 'HOME_REDIRECT_AFTER_CONFIRM' };
+      if (deletionSuccessNotice()) return { applied: true, reason: 'SUCCESS_NOTICE' };
+
+      // Quando a sidebar está montada, o desaparecimento do link exato é um bom sinal
+      // de que a mutação já foi aplicada. Não usamos isso sozinho para marcar deleted=true;
+      // o background ainda fará a reabertura forte da URL.
+      if (!deleteDialogIsVisible()) {
+        const anySidebarChats = document.querySelectorAll('a[href*="/c/"]').length > 0;
+        if (anySidebarChats && !sidebarConversationLink(expected)) {
+          return { applied: true, reason: 'SIDEBAR_LINK_REMOVED' };
+        }
+      }
+      await sleep(180);
+    }
+    return { applied: false, reason: 'DELETE_APPLY_TIMEOUT' };
+  }
+
+  async function deleteCurrentChat(payload) {
+    const expected = String(payload?.conversationId || '').trim();
+    if (!expected) throw new Error('CONVERSATION_ID_REQUIRED');
+
+    // V0.6.14: a limpeza é guiada pelo ESTADO real da SPA. Não avançar apenas
+    // porque o document terminou de carregar ou porque passaram poucos ms.
+    const menuButton = await waitForConversationInteractive(expected, 22000);
     if (!menuButton) {
-      const buttons=[...document.querySelectorAll("button")].filter(visible);
-      menuButton=buttons.find(b => /conversation.*(options|menu)|opções.*conversa|mais.*conversa/.test(textOf(b)));
+      const current = conversationIdFromPath();
+      if (current !== expected) throw new Error(`CONVERSATION_ID_MISMATCH:${current || 'NONE'}`);
+      throw new Error('CONVERSATION_NOT_INTERACTIVE');
     }
-    if (!menuButton) throw new Error("CONVERSATION_MENU_NOT_FOUND");
-    clickEl(menuButton);
-    await sleep(500);
 
-    const menuItems=[...document.querySelectorAll('[role="menuitem"], [role="menu"] button, [data-radix-menu-content] button, button')].filter(visible);
-    const deleteItem=menuItems.find(el => /^(delete|excluir|apagar)( chat| conversa)?$/.test(textOf(el)) || /delete chat|excluir conversa|apagar conversa/.test(textOf(el)));
-    if (!deleteItem) throw new Error("DELETE_MENU_ITEM_NOT_FOUND");
-    clickEl(deleteItem);
-    await sleep(500);
+    // A conversa ficou estável. Agora abrir o menu e localizar Excluir com até
+    // três tentativas. A UI do ChatGPT pode montar o popover em um portal sem role=menu.
+    const deleteItem = await openConversationMenuAndFindDelete(expected, 3);
+    await brieflyHighlight(deleteItem, 950);
+    if (!deleteItem.isConnected || !visible(deleteItem)) throw new Error('DELETE_MENU_ITEM_BECAME_UNREADY');
+    clickElRobust(deleteItem);
 
-    const dialogs=[...document.querySelectorAll('[role="dialog"], dialog')].filter(visible);
-    const scope=dialogs.at(-1) || document;
-    const confirm=[...scope.querySelectorAll("button")].filter(visible).find(el => /^(delete|excluir|apagar)$/.test(textOf(el)) || /delete.*chat|excluir.*conversa/.test(textOf(el)));
-    if (!confirm) throw new Error("DELETE_CONFIRM_NOT_FOUND");
-    clickEl(confirm);
+    // Não procurar um botão "Excluir" global. O segundo clique só pode ocorrer
+    // depois que o modal de confirmação específico da exclusão existir e ficar
+    // estável. Isso evita clicar antes da animação/modal realmente aparecer.
+    const dialog = await waitForStableElement(
+      () => deletionDialogElement(),
+      { timeout: 12000, stableMs: 700, step: 120 }
+    );
+    if (!dialog) throw new Error('DELETE_CONFIRM_DIALOG_NOT_READY');
 
-    const deadline=Date.now()+8000;
-    while(Date.now()<deadline){
-      const nowId=location.pathname.match(/^\/c\/([^/?#]+)/)?.[1] || "";
-      if(nowId!==expected) return {ok:true, deleted:true};
-      await sleep(250);
+    const confirm = await waitForStableElement(
+      () => {
+        const liveDialog = deletionDialogElement();
+        return liveDialog ? deletionConfirmButton(liveDialog) : null;
+      },
+      { timeout: 9000, stableMs: 650, step: 120 }
+    );
+    if (!confirm) throw new Error('DELETE_CONFIRM_BUTTON_NOT_READY');
+
+    // Tornar o alvo visível para diagnóstico antes do clique destrutivo.
+    await brieflyHighlight(confirm, 950);
+    await sleep(250);
+    if (!confirm.isConnected || !visible(confirm) || confirm.disabled || confirm.getAttribute('aria-disabled') === 'true') {
+      throw new Error('DELETE_CONFIRM_BUTTON_BECAME_UNREADY');
     }
-    throw new Error("DELETE_NOT_CONFIRMED");
+    clickElRobust(confirm);
+
+    // Agora esperar o modal/alertdialog REAL desaparecer.
+    const dialogClosed = await waitUntil(() => !deletionDialogElement() && !deleteDialogIsVisible(), 12000, 150);
+    if (!dialogClosed) throw new Error('DELETE_CONFIRM_CLICK_NOT_APPLIED');
+
+    // A mutação pode levar alguns segundos para aparecer na SPA. Não navegar
+    // para fora enquanto ainda está aplicando. A prova final continua sendo a
+    // reabertura forte feita pelo background.
+    const applied = await waitForDeletionToApply(expected, 15000);
+    return {
+      ok: true,
+      deleteRequested: true,
+      conversationId: expected,
+      applyObserved: applied.applied === true,
+      applyReason: applied.reason
+    };
   }
 
   function generatedImageCandidates(payload = {}) {
@@ -576,6 +946,12 @@
       deleteCurrentChat(message.payload)
         .then(sendResponse)
         .catch((error) => sendResponse({ ok: false, error: error.message || "DELETE_FAILED" }));
+      return true;
+    }
+    if (message?.type === "CORVO_VERIFY_CHAT_DELETED") {
+      verifyCurrentConversationDeleted(message.payload || {})
+        .then(sendResponse)
+        .catch((error) => sendResponse({ ok: false, error: error.message || "DELETE_VERIFY_FAILED" }));
       return true;
     }
     if (message?.type === "CORVO_CAPTURE_GENERATED_IMAGE") {

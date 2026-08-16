@@ -42,7 +42,13 @@ type Project = {
   id:string; title:string; topic:string; format:Format; quantity:Quantity; mode:Mode;
   stage:number; createdAt:string; ideaText?:string; scriptText?:string; promptText?:string; packageCode?:string; imageCount?:number;
   thumbJobId?:string; thumbStatus?:string; thumbUrl?:string; thumbFileName?:string; thumbError?:string;
-  analysisJobId?:string; analysisStatus?:string; analysisZipUrl?:string; analysisManifest?:string; pipelineStatus?:string; pipelineItems?:PipelineItem[];
+  analysisJobId?:string; analysisStatus?:string; analysisZipUrl?:string; analysisZipName?:string; analysisManifest?:string; analysisExpectedIds?:string[];
+  analysisPrompt?:string; analysisUploadToken?:string; analysisPreparedAt?:string; analysisLastDispatchAt?:string; analysisRetryAt?:string; analysisRetryCount?:number; analysisLastError?:string;
+  analysisPreparationStage?:"JOB_CREATED"|"CANDIDATES_PREPARING"|"CANDIDATES_STORED"|"ZIP_BUILDING"|"ZIP_SAVED";
+  analysisExpectedCandidates?:number; analysisStoredCandidates?:number; analysisStoredIds?:number; analysisBatchTotal?:number; analysisBatchesUploaded?:number;
+  analysisCollectorPackageId?:string; analysisCollectorPackageCode?:string; analysisPackageFileName?:string; analysisSelectionMode?:"AUTO"|"MANUAL";
+  analysisPreparationRetryAt?:string; analysisPreparationRetryCount?:number; analysisPreparationError?:string;
+  pipelineStatus?:string; pipelineItems?:PipelineItem[];
   youtubeJobId?:string; youtubeStatus?:string; youtubeMetadata?:string; youtubeError?:string;
   finalZipStatus?:string; finalZipError?:string; finalZipGeneratedAt?:string;
   autoRunStatus?:AutoRunStatus; autoRunStep?:AutoRunStep; autoRunMessage?:string; autoRunError?:string; autoRunStartedAt?:string; autoRunCompletedAt?:string;
@@ -53,11 +59,22 @@ type CollectorSettings = {
   extensionId:string; prefix:string; jpegQuality:number; batchText:string; youtubeParallel:boolean;
 };
 
+const EMPTY_IMAGE_PIPELINE:Partial<Project> = {
+  packageCode:undefined, imageCount:undefined,
+  analysisJobId:undefined, analysisStatus:undefined, analysisZipUrl:undefined, analysisZipName:undefined, analysisManifest:undefined,
+  analysisExpectedIds:undefined, analysisPrompt:undefined, analysisUploadToken:undefined, analysisPreparedAt:undefined,
+  analysisLastDispatchAt:undefined, analysisRetryAt:undefined, analysisRetryCount:undefined, analysisLastError:undefined,
+  analysisPreparationStage:undefined, analysisExpectedCandidates:undefined, analysisStoredCandidates:undefined, analysisStoredIds:undefined,
+  analysisBatchTotal:undefined, analysisBatchesUploaded:undefined, analysisCollectorPackageId:undefined, analysisCollectorPackageCode:undefined,
+  analysisPackageFileName:undefined, analysisSelectionMode:undefined, analysisPreparationRetryAt:undefined, analysisPreparationRetryCount:undefined, analysisPreparationError:undefined,
+  pipelineStatus:undefined, pipelineItems:undefined, finalZipStatus:undefined, finalZipError:undefined, finalZipGeneratedAt:undefined,
+};
+
 const initialProjects:Project[] = [
   { id:"DESERTO_SOBREVIVENCIA_01", title:"VOCÊ SOBREVIVERIA NO DESERTO?", topic:"sobrevivência no deserto", format:"REELS", quantity:"1 VÍDEO", mode:"RÁPIDO", stage:4, createdAt:"HOJE, 10:42", ideaText:"TÍTULO: VOCÊ SOBREVIVERIA NO DESERTO?\nTEMA: SOBREVIVÊNCIA NO DESERTO", scriptText:"ROTEIRO DE EXEMPLO JÁ REVISADO", promptText:"01|deserto amplo com sol forte e composição para quiz sem texto\n02|mochila de sobrevivência isolada em fundo simples" },
   { id:"ANIMAIS_IMPOSSIVEIS_02", title:"QUAL ANIMAL FARIA ISSO?", topic:"animais curiosos", format:"REELS", quantity:"LOTE", mode:"PESQUISAR ANTES", stage:2, createdAt:"ONTEM, 18:15" },
 ];
-const defaultSettings:CollectorSettings = { selectionMode:"MANUAL", sourceMode:"MIXED", maxCandidates:120, analystCandidatesPerId:10, scrollSteps:20, extensionId:CORVO_COLLECTOR_EXTENSION_ID, prefix:"video1_", jpegQuality:.92, batchText:"", youtubeParallel:false };
+const defaultSettings:CollectorSettings = { selectionMode:"MANUAL", sourceMode:"MIXED", maxCandidates:20, analystCandidatesPerId:10, scrollSteps:20, extensionId:CORVO_COLLECTOR_EXTENSION_ID, prefix:"video1_", jpegQuality:.92, batchText:"", youtubeParallel:false };
 const collectorEngines:Record<SourceMode,{label:string;shortLabel:string;description:string;icon:string}> = {
   GOOGLE:{ label:"GOOGLE IMAGENS", shortLabel:"GOOGLE", description:"BUSCA SOMENTE NO GOOGLE IMAGENS", icon:"G" },
   PINTEREST:{ label:"PINTEREST", shortLabel:"PINTEREST", description:"BUSCA SOMENTE NO PINTEREST", icon:"P" },
@@ -66,6 +83,20 @@ const collectorEngines:Record<SourceMode,{label:string;shortLabel:string;descrip
 const steps = ["IDEIA", "ROTEIRO", "PROMPTS", "IMAGENS", "FORMA"];
 const wait = (ms:number) => new Promise((resolve) => setTimeout(resolve, ms));
 const MAX_PIPELINE_ATTEMPTS = 3;
+const ANALYSIS_RETRY_DELAYS = [60_000, 120_000, 300_000, 600_000];
+
+function analysisRetryDelay(retryCount:number) {
+  return ANALYSIS_RETRY_DELAYS[Math.min(Math.max(0, retryCount), ANALYSIS_RETRY_DELAYS.length - 1)];
+}
+
+function analysisRetryLabel(rawDate?:string) {
+  if (!rawDate) return "AGUARDANDO NOVA TENTATIVA";
+  const remaining = Math.max(0, new Date(rawDate).getTime() - Date.now());
+  if (remaining <= 0) return "NOVA TENTATIVA LIBERADA";
+  const seconds = Math.ceil(remaining / 1000);
+  if (seconds < 60) return `NOVA TENTATIVA EM ${seconds}S`;
+  return `NOVA TENTATIVA EM ${Math.ceil(seconds / 60)} MIN`;
+}
 
 function sameCollectorItems(jobItems:GuideItem[]|undefined, requestedItems:GuideItem[]) {
   if (!Array.isArray(jobItems) || jobItems.length !== requestedItems.length) return false;
@@ -95,7 +126,8 @@ function loadCollectorSettings():CollectorSettings {
   const saved = safeLoad<Partial<CollectorSettings>>("corvo-collector-settings-v02", {});
   const sourceMode = saved.sourceMode && ["GOOGLE","PINTEREST","MIXED"].includes(saved.sourceMode) ? saved.sourceMode : defaultSettings.sourceMode;
   const analystCandidatesPerId = Math.max(1, Math.min(30, Math.round(Number(saved.analystCandidatesPerId || defaultSettings.analystCandidatesPerId))));
-  return { ...defaultSettings, ...saved, sourceMode, analystCandidatesPerId };
+  const maxCandidates = Math.max(1, Math.min(20, Math.round(Number(saved.maxCandidates || defaultSettings.maxCandidates))));
+  return { ...defaultSettings, ...saved, sourceMode, maxCandidates, analystCandidatesPerId };
 }
 function slugify(value:string) {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 36);
@@ -200,12 +232,15 @@ export default function Home() {
   const [candidatePos, setCandidatePos] = useState(0);
   const [searchingMore, setSearchingMore] = useState(false);
   const [packageCode, setPackageCode] = useState("");
+  const [, setAnalysisTick] = useState(0);
   const runToken = useRef(0);
   const ideaRunToken = useRef(0);
   const workflowRunToken = useRef(0);
   const thumbRuns = useRef(new Set<string>());
   const generatorQueue = useRef<Promise<void>>(Promise.resolve());
   const packageRetryRef = useRef<RankedGroup[] | null>(null);
+  const analysisRetryLocks = useRef(new Set<string>());
+  const analysisPreparationLocks = useRef(new Set<string>());
   const autoRunLocks = useRef(new Set<string>());
   const projectsRef = useRef<Project[]>(projects);
 
@@ -213,7 +248,55 @@ export default function Home() {
   useEffect(() => { localStorage.setItem("corvo-collector-settings-v02", JSON.stringify(settings)); }, [settings]);
   useEffect(() => {
     const interrupted = projectsRef.current.filter((project) => project.autoRunStatus === "RUNNING");
-    for (const project of interrupted) patchProject(project.id, { autoRunStatus:"ERROR", autoRunStep:"ERRO", autoRunMessage:"A página foi recarregada durante o automático.", autoRunError:"A execução automática foi interrompida pela recarga. Use RETOMAR dentro deste projeto ou inicie uma nova produção automática pelo botão superior." });
+    for (const project of interrupted) {
+      if (hasPreparedAnalysis(project)) {
+        const retryAt = project.analysisRetryAt || new Date(Date.now() + 45_000).toISOString();
+        patchProject(project.id, {
+          autoRunStatus:"RUNNING",
+          autoRunStep:"ANALISTA",
+          autoRunMessage:`Pacote do Analista preservado após recarga. ${analysisRetryLabel(retryAt)}.`,
+          autoRunError:undefined,
+          analysisRetryAt:retryAt,
+          analysisStatus:"PACOTE SALVO · AGUARDANDO ANALISTA",
+          pipelineStatus:"AGUARDANDO ANALISTA",
+        });
+      } else if (hasAnalysisPreparationCheckpoint(project)) {
+        const retryAt = project.analysisPreparationRetryAt || new Date(Date.now() + 20_000).toISOString();
+        patchProject(project.id, {
+          autoRunStatus:"RUNNING",
+          autoRunStep:"ANALISTA",
+          autoRunMessage:`Preparação do Analista preservada após recarga. ${analysisRetryLabel(retryAt)}.`,
+          autoRunError:undefined,
+          analysisPreparationRetryAt:retryAt,
+          analysisStatus:"CHECKPOINT SALVO · RETOMANDO PREPARAÇÃO",
+          pipelineStatus:"CHECKPOINT DO ANALISTA SALVO",
+        });
+      } else {
+        patchProject(project.id, { autoRunStatus:"ERROR", autoRunStep:"ERRO", autoRunMessage:"A página foi recarregada durante o automático.", autoRunError:"A execução automática foi interrompida antes de existir um checkpoint reutilizável. Use RETOMAR dentro deste projeto ou inicie uma nova produção automática pelo botão superior." });
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setAnalysisTick((tick:number) => tick + 1);
+      const now = Date.now();
+      for (const project of projectsRef.current) {
+        if (hasPreparedAnalysis(project)) {
+          if (analysisRetryLocks.current.has(project.id)) continue;
+          const retryAt = project.analysisRetryAt ? new Date(project.analysisRetryAt).getTime() : 0;
+          const lastDispatch = project.analysisLastDispatchAt ? new Date(project.analysisLastDispatchAt).getTime() : 0;
+          const staleProcessing = !retryAt && lastDispatch > 0 && now - lastDispatch >= 30 * 60_000;
+          if ((retryAt > 0 && retryAt <= now) || staleProcessing) void resumePreparedAnalysis(project.id, false);
+          continue;
+        }
+        if (hasAnalysisPreparationCheckpoint(project) && !analysisPreparationLocks.current.has(project.id)) {
+          const retryAt = project.analysisPreparationRetryAt ? new Date(project.analysisPreparationRetryAt).getTime() : 0;
+          if (!retryAt || retryAt <= now) void resumeAnalysisPreparation(project.id, false);
+        }
+      }
+    }, 12_000);
+    return () => window.clearInterval(timer);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const active = useMemo(() => projects.find((project) => project.id === activeId) || projects[0], [projects, activeId]);
@@ -312,7 +395,7 @@ export default function Home() {
       const revised:Project = {
         ...previous,
         title:project.title, topic:project.topic, format:project.format, quantity:project.quantity, mode:project.mode,
-        ideaText:project.ideaText, stage:2, scriptText:undefined, promptText:undefined, packageCode:undefined, imageCount:undefined,
+        ideaText:project.ideaText, stage:2, scriptText:undefined, promptText:undefined, ...EMPTY_IMAGE_PIPELINE,
       };
       runToken.current += 1; setImageOpen(false); setGroups([]); setPackageCode("");
       setProjects((current) => current.map((item) => item.id === previous.id ? revised : item));
@@ -399,8 +482,8 @@ export default function Home() {
       return;
     }
     const workingProject:Project = kind === "ROTEIRO"
-      ? { ...project, stage:2, scriptText:undefined, promptText:undefined, packageCode:undefined, imageCount:undefined }
-      : { ...project, stage:3, promptText:undefined, packageCode:undefined, imageCount:undefined };
+      ? { ...project, stage:2, scriptText:undefined, promptText:undefined, ...EMPTY_IMAGE_PIPELINE }
+      : { ...project, stage:3, promptText:undefined, ...EMPTY_IMAGE_PIPELINE };
     runToken.current += 1; setImageOpen(false); setGroups([]); setPackageCode("");
     setProjects((current) => current.map((item) => item.id === workingProject.id ? workingProject : item));
     const token = ++workflowRunToken.current;
@@ -443,8 +526,8 @@ export default function Home() {
           if (!output) throw new Error("O especialista concluiu sem devolver conteúdo.");
           setProjects((current) => current.map((item) => item.id === workingProject.id
             ? kind === "ROTEIRO"
-              ? { ...item, stage:2, scriptText:output, promptText:undefined, packageCode:undefined, imageCount:undefined }
-              : { ...item, stage:3, promptText:output, packageCode:undefined, imageCount:undefined }
+              ? { ...item, stage:2, scriptText:output, promptText:undefined, ...EMPTY_IMAGE_PIPELINE }
+              : { ...item, stage:3, promptText:output, ...EMPTY_IMAGE_PIPELINE }
             : item));
           setWorkflowMessage("");
           return;
@@ -582,8 +665,8 @@ export default function Home() {
         if (!output) throw new Error(`${kind} concluiu sem devolver conteúdo.`);
         const current = latestProject(project.id) || project;
         const updated:Project = kind === "ROTEIRO"
-          ? { ...current, stage:3, scriptText:output, promptText:undefined, packageCode:undefined, imageCount:undefined, autoWorkflowJobId:undefined, autoWorkflowKind:undefined }
-          : { ...current, stage:4, promptText:output, packageCode:undefined, imageCount:undefined, autoWorkflowJobId:undefined, autoWorkflowKind:undefined };
+          ? { ...current, stage:3, scriptText:output, promptText:undefined, ...EMPTY_IMAGE_PIPELINE, autoWorkflowJobId:undefined, autoWorkflowKind:undefined }
+          : { ...current, stage:4, promptText:output, ...EMPTY_IMAGE_PIPELINE, autoWorkflowJobId:undefined, autoWorkflowKind:undefined };
         patchProject(project.id, updated);
         return updated;
       }
@@ -619,9 +702,15 @@ export default function Home() {
     setTimeout(() => setNotice(""), 2400);
     try {
       await ensurePipelineStorageReady();
-      const ping = await sendCollectorMessage<{ok?:boolean;authorized?:boolean;error?:string}>("PING", undefined, settings.extensionId);
-      if (!ping?.ok) throw new Error(ping?.error || "COLLECTOR_CONNECTION_ERROR");
-      if (ping.authorized === false) throw new Error("ORIGIN_NOT_AUTHORIZED");
+      const preflightProject = latestProject(projectId) || initial;
+      const needsCollectorNow = !(preflightProject.pipelineStatus === "IMAGENS FINAIS PRONTAS" && consolidationState(preflightProject).ready)
+        && !hasPreparedAnalysis(preflightProject)
+        && !hasAnalysisPreparationCheckpoint(preflightProject);
+      if (needsCollectorNow) {
+        const ping = await sendCollectorMessage<{ok?:boolean;authorized?:boolean;error?:string}>("PING", undefined, settings.extensionId);
+        if (!ping?.ok) throw new Error(ping?.error || "COLLECTOR_CONNECTION_ERROR");
+        if (ping.authorized === false) throw new Error("ORIGIN_NOT_AUTHORIZED");
+      }
 
       let project = latestProject(projectId) || initial;
       if (!project.ideaText?.trim()) {
@@ -642,7 +731,12 @@ export default function Home() {
       if (settings.youtubeParallel && !project.youtubeMetadata) void startYoutubeBranch(project);
       const imagesAlreadyReady = project.pipelineStatus === "IMAGENS FINAIS PRONTAS" && consolidationState(project).ready;
       const imageOk = imagesAlreadyReady ? true : await startImageFlow(project, { automaticRun:true, skipParallelBranches:true, selectionMode:"AUTO" });
-      if (!imageOk) throw new Error("O pipeline de imagens não chegou a um resultado final completo.");
+      if (!imageOk) {
+        const waitingProject = latestProject(projectId);
+        if (hasPreparedAnalysis(waitingProject) && waitingProject?.analysisRetryAt) throw new Error("ANALYST_RETRY_SCHEDULED");
+        if (hasAnalysisPreparationCheckpoint(waitingProject)) throw new Error("ANALYSIS_PREPARATION_RETRY_SCHEDULED");
+        throw new Error("O pipeline de imagens não chegou a um resultado final completo.");
+      }
 
       updateAutoRun(projectId, "THUMB", "Imagens finais prontas. Aguardando thumbnail e ramos paralelos...");
       project = await waitForAutomaticParallelAssets(projectId);
@@ -661,9 +755,30 @@ export default function Home() {
       setNotice("AUTOMÁTICO CONCLUÍDO · ZIP FINAL ENTREGUE.");
       setTimeout(() => setNotice(""), 5000);
     } catch (error) {
+      const rawMessage = String(error instanceof Error ? error.message : error);
       const message = friendlyError(error);
-      if (String(error instanceof Error ? error.message : error).includes("AUTOMATIC_CANCELLED")) {
+      if (rawMessage.includes("AUTOMATIC_CANCELLED")) {
         patchProject(projectId, { autoRunStatus:"CANCELLED", autoRunStep:"ERRO", autoRunMessage:"Automático interrompido.", autoRunError:undefined });
+      } else if (rawMessage.includes("ANALYST_RETRY_SCHEDULED")) {
+        const waiting = latestProject(projectId);
+        patchProject(projectId, {
+          autoRunStatus:"RUNNING",
+          autoRunStep:"ANALISTA",
+          autoRunMessage:`Pacote preservado. ${analysisRetryLabel(waiting?.analysisRetryAt)}. O automático continuará sozinho.`,
+          autoRunError:undefined,
+        });
+        setNotice("ANALISTA INDISPONÍVEL · PACOTE SALVO · O APP TENTARÁ NOVAMENTE.");
+        setTimeout(() => setNotice(""), 5200);
+      } else if (rawMessage.includes("ANALYSIS_PREPARATION_RETRY_SCHEDULED")) {
+        const waiting = latestProject(projectId);
+        patchProject(projectId, {
+          autoRunStatus:"RUNNING",
+          autoRunStep:"ANALISTA",
+          autoRunMessage:`${preparationStageLabel(waiting)}. ${analysisRetryLabel(waiting?.analysisPreparationRetryAt)}. O automático retomará deste checkpoint.`,
+          autoRunError:undefined,
+        });
+        setNotice("PREPARAÇÃO DO ANALISTA PRESERVADA · RETOMADA AUTOMÁTICA PROGRAMADA.");
+        setTimeout(() => setNotice(""), 5200);
       } else {
         patchProject(projectId, { autoRunStatus:"ERROR", autoRunStep:"ERRO", autoRunMessage:"O automático parou porque precisa de atenção.", autoRunError:message });
         setNotice(`AUTOMÁTICO PAROU: ${message}`);
@@ -684,7 +799,9 @@ export default function Home() {
 
   async function downloadProject(project:Project) {
     const zip = new JSZip();
-    zip.file("projeto.json", JSON.stringify(project, null, 2));
+    const { analysisUploadToken: _privateAnalysisToken, ...safeProject } = project;
+    void _privateAnalysisToken;
+    zip.file("projeto.json", JSON.stringify(safeProject, null, 2));
     zip.folder("ideia")?.file(`IDEIA_${project.id}.txt`, project.ideaText || `TÍTULO: ${project.title}\nTEMA: ${project.topic}`);
     zip.folder("roteiro")?.file(`${project.id}.txt`, project.scriptText || `PROJETO: ${project.id}\nROTEIRO AINDA NÃO CONCLUÍDO\n`);
     zip.folder("prompts")?.file(`PROMPTS_${project.id}.txt`, project.promptText || defaultQueries(project).map((item) => `${item.id}|${item.query}`).join("\n"));
@@ -875,6 +992,12 @@ export default function Home() {
   async function startImageFlow(projectArg?:Project, options:{automaticRun?:boolean;skipParallelBranches?:boolean;selectionMode?:SelectionMode} = {}) {
     const project = projectArg || active;
     if (!project) return false;
+    if (hasPreparedAnalysis(project) && project.pipelineStatus !== "IMAGENS FINAIS PRONTAS") {
+      return await resumePreparedAnalysis(project.id, !options.automaticRun);
+    }
+    if (hasAnalysisPreparationCheckpoint(project) && project.pipelineStatus !== "IMAGENS FINAIS PRONTAS") {
+      return await resumeAnalysisPreparation(project.id, !options.automaticRun);
+    }
     const token = ++runToken.current;
     const selectionMode = options.selectionMode || settings.selectionMode;
     setImageOpen(true); setImagePhase("connecting"); setImageProgress(4); setImageMessage("Conectando ao coletor..."); setImageStatusLine(""); setGroups([]); setPackageCode("");
@@ -1221,7 +1344,7 @@ export default function Home() {
     const refiners = items.filter((item) => item.route === "REFINADOR");
     const generators = items.filter((item) => item.route === "GERADOR");
     const failures:{id:string;error:string}[] = [];
-    const finalItems = new Map(items.map((item) => [String(item.id), item]));
+    const finalItems = new Map<string,PipelineItem>(items.map((item) => [String(item.id), item]));
     let completed = 0;
     const total = items.length;
     const setProgress = (label:string) => {
@@ -1260,7 +1383,7 @@ export default function Home() {
     await Promise.all([...refinerWorkers, generatorWorker]);
     await wait(50);
     const liveItems = latestProject(project.id)?.pipelineItems || [];
-    const liveById = new Map(liveItems.map((item) => [String(item.id), item]));
+    const liveById = new Map<string,PipelineItem>(liveItems.map((item) => [String(item.id), item]));
     const consolidatedItems = items.map((original) => ({ ...original, ...(finalItems.get(String(original.id)) || {}), ...(liveById.get(String(original.id)) || {}) }));
     if (failures.length) {
       patchProject(project.id, { pipelineStatus:"TRATAMENTO MANUAL NECESSÁRIO", pipelineItems:consolidatedItems });
@@ -1278,26 +1401,230 @@ export default function Home() {
     return true;
   }
 
-  async function dispatchAnalysis(project:Project, analysisJob:{jobId:string;prompt:string;uploadToken:string}, zipFile:any, expectedIds:string[]) {
-    patchProject(project.id, { analysisJobId:analysisJob.jobId, analysisStatus:"ENVIANDO AO ANALISTA", analysisZipUrl:zipFile.url, pipelineStatus:"ANALISANDO IMAGENS" });
-    updateAutoRun(project.id, "ANALISTA", `Corvo Analista comparando a shortlist de candidatas de ${expectedIds.length} IDs...`);
-    setImagePhase("searching"); setImageProgress(90); setImageMessage("Enviando as candidatas selecionadas tecnicamente ao Corvo Analista..."); setImageStatusLine("ZIP DE CANDIDATAS SALVO · ANALISTA ESCOLHENDO POR ID");
-    await dispatchCorvoBridge({
-      jobId:analysisJob.jobId,
-      prompt:[
-        analysisJob.prompt,
-        "",
-        "O ZIP bruto completo do Collector está anexado a esta conversa.",
-        "Para CADA ID, compare TODAS as candidatas disponíveis antes de decidir.",
-        "Não escolha pela ordem do arquivo. Elimine erros e duplicatas inferiores.",
-        "Em PASSOU/PASSOU_COM_RESSALVAS, ARQUIVO deve conter exatamente o nome real da candidata escolhida no ZIP.",
-        "Em NAO_PASSOU, deixe ARQUIVO vazio e forneça PROMPT_GERACAO completo.",
-        "Preserve todos os IDs e entregue [CORVO_IMAGE_ANALYSIS] VERSION=1.1.",
-      ].join("\n"),
-      specialist:"ANALISTA",
-      meta:{ projectId:project.id, attachments:[{ url:zipFile.url, name:zipFile.name, contentType:"application/zip" }] },
+  function hasPreparedAnalysis(project:Project | undefined | null) {
+    return Boolean(
+      project?.analysisJobId
+      && project?.analysisZipUrl
+      && project?.analysisZipName
+      && project?.analysisPrompt
+      && project?.analysisUploadToken
+      && project?.analysisExpectedIds?.length
+      && project.analysisStatus !== "CONCLUÍDA"
+    );
+  }
+
+  function hasAnalysisPreparationCheckpoint(project:Project | undefined | null) {
+    return Boolean(
+      project?.analysisJobId
+      && project?.analysisPrompt
+      && project?.analysisUploadToken
+      && project?.analysisExpectedIds?.length
+      && ["CANDIDATES_STORED", "ZIP_BUILDING", "ZIP_SAVED"].includes(String(project.analysisPreparationStage || ""))
+      && project.analysisStatus !== "CONCLUÍDA"
+    );
+  }
+
+  function preparationStageLabel(project:Project | undefined | null) {
+    const stage = project?.analysisPreparationStage;
+    if (stage === "CANDIDATES_STORED") return "CANDIDATAS PREPARADAS · CHECKPOINT SALVO";
+    if (stage === "ZIP_BUILDING") return "LOTES SALVOS · MONTANDO ZIP DO ANALISTA";
+    if (stage === "ZIP_SAVED") return "ZIP DO ANALISTA SALVO";
+    if (stage === "CANDIDATES_PREPARING") return "PREPARANDO CANDIDATAS";
+    if (stage === "JOB_CREATED") return "JOB DO ANALISTA CRIADO";
+    return "PREPARAÇÃO DO ANALISTA";
+  }
+
+  async function writeAnalysisCheckpoint(
+    project:Project,
+    stage:NonNullable<Project["analysisPreparationStage"]>,
+    patch:Record<string,unknown> = {},
+  ) {
+    if (!project.analysisJobId || !project.analysisUploadToken) return null;
+    const response = await fetch("/api/corvo/checkpoint", {
+      method:"POST",
+      headers:{ "content-type":"application/json", "x-corvo-upload-token":String(project.analysisUploadToken) },
+      body:JSON.stringify({ jobId:project.analysisJobId, stage, ...patch }),
     });
-    const status = await pollPipelineJob(analysisJob.jobId, project.id);
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result?.ok) throw new Error(result?.message || "Não foi possível salvar o checkpoint da preparação do Analista.");
+    return result;
+  }
+
+  async function readAnalysisCheckpoint(project:Project) {
+    if (!project.analysisJobId || !project.analysisUploadToken) throw new Error("CHECKPOINT_SEM_JOB_ANALISTA");
+    const response = await fetch(`/api/corvo/checkpoint?jobId=${encodeURIComponent(project.analysisJobId)}`, {
+      cache:"no-store",
+      headers:{ "x-corvo-upload-token":String(project.analysisUploadToken) },
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result?.ok) throw new Error(result?.message || "Não foi possível recuperar o checkpoint do Analista.");
+    return result;
+  }
+
+  function scheduleAnalysisPreparationRetry(projectId:string, error:unknown) {
+    const current = latestProject(projectId);
+    if (!current || !hasAnalysisPreparationCheckpoint(current)) return;
+    const count = (current.analysisPreparationRetryCount || 0) + 1;
+    const nextAt = new Date(Date.now() + analysisRetryDelay(count - 1)).toISOString();
+    const message = bridgeErrorMessage(error);
+    patchProject(projectId, {
+      analysisStatus:"CHECKPOINT SALVO · AGUARDANDO RETOMADA",
+      analysisPreparationRetryCount:count,
+      analysisPreparationRetryAt:nextAt,
+      analysisPreparationError:message,
+      pipelineStatus:"CHECKPOINT DO ANALISTA SALVO",
+      autoRunStatus:current.autoRunStatus === "RUNNING" ? "RUNNING" : current.autoRunStatus,
+      autoRunStep:current.autoRunStatus === "RUNNING" ? "ANALISTA" : current.autoRunStep,
+      autoRunMessage:current.autoRunStatus === "RUNNING" ? `${preparationStageLabel(current)}. ${analysisRetryLabel(nextAt)}.` : current.autoRunMessage,
+      autoRunError:current.autoRunStatus === "RUNNING" ? undefined : current.autoRunError,
+    });
+    setImagePhase("packaging");
+    setImageProgress(89);
+    setImageMessage("A preparação já está salva. O app retomará do checkpoint sem refazer o Collector.");
+    setImageStatusLine(`${preparationStageLabel(current)} · ${analysisRetryLabel(nextAt)} · RETOMADA ${count + 1}`);
+  }
+
+  async function materializeAnalysisZipFromCheckpoint(project:Project) {
+    const analysisJob = {
+      jobId:String(project.analysisJobId || ""),
+      prompt:String(project.analysisPrompt || ""),
+      uploadToken:String(project.analysisUploadToken || ""),
+    };
+    const expectedIds = [...(project.analysisExpectedIds || [])];
+    if (!analysisJob.jobId || !analysisJob.uploadToken || !expectedIds.length) throw new Error("CHECKPOINT_INCOMPLETO");
+    const fileName = project.analysisPackageFileName || `${project.id}_ANALISE_CANDIDATAS.zip`;
+    patchProject(project.id, {
+      analysisPreparationStage:"ZIP_BUILDING",
+      analysisStatus:"CHECKPOINT SALVO · MONTANDO ZIP",
+      pipelineStatus:"MONTANDO ZIP DO ANALISTA",
+      analysisPreparationError:undefined,
+    });
+    await writeAnalysisCheckpoint({ ...project, analysisJobId:analysisJob.jobId, analysisUploadToken:analysisJob.uploadToken }, "ZIP_BUILDING", {
+      packageFileName:fileName,
+      selectionMode:project.analysisSelectionMode || "AUTO",
+      storedCandidates:project.analysisStoredCandidates || 0,
+      storedIds:project.analysisStoredIds || expectedIds.length,
+      expectedIds:expectedIds.length,
+    });
+    setImagePhase("packaging"); setImageProgress(89);
+    setImageMessage("Checkpoint recuperado. Montando somente o ZIP do Analista a partir dos lotes já salvos...");
+    setImageStatusLine("LOTES PRESERVADOS · SEM REPROCESSAR IMAGENS");
+    const packageResponse = await fetch("/api/corvo/pacote", {
+      method:"POST",
+      headers:{ "content-type":"application/json", "x-corvo-upload-token":analysisJob.uploadToken },
+      body:JSON.stringify({ jobId:analysisJob.jobId, fileName, selectionMode:(project.analysisSelectionMode || "AUTO") }),
+    });
+    const packageResult = await packageResponse.json().catch(() => ({}));
+    if (!packageResponse.ok || !packageResult?.file?.url) throw new Error(packageResult?.message || "Não foi possível montar o ZIP do Analista a partir do checkpoint.");
+    patchProject(project.id, {
+      analysisPreparationStage:"ZIP_SAVED",
+      analysisStatus:"PACOTE DO ANALISTA SALVO",
+      analysisZipUrl:String(packageResult.file.url),
+      analysisZipName:String(packageResult.file.name || fileName),
+      analysisPreparedAt:new Date().toISOString(),
+      analysisPreparationRetryAt:undefined,
+      analysisPreparationRetryCount:0,
+      analysisPreparationError:undefined,
+      pipelineStatus:"PACOTE DO ANALISTA SALVO",
+    });
+    return packageResult.file;
+  }
+
+  async function resumeAnalysisPreparation(projectId:string, manual = false) {
+    if (analysisPreparationLocks.current.has(projectId)) return false;
+    const project = latestProject(projectId);
+    if (!project || !hasAnalysisPreparationCheckpoint(project)) return false;
+    analysisPreparationLocks.current.add(projectId);
+    if (manual) setImageOpen(true);
+    try {
+      setImagePhase("packaging"); setImageProgress(88);
+      setImageMessage("Recuperando o checkpoint da preparação do Analista...");
+      setImageStatusLine(preparationStageLabel(project));
+      const checkpoint = await readAnalysisCheckpoint(project);
+      const expectedIds = [...(project.analysisExpectedIds || [])];
+      const serverPreparation = checkpoint?.preparation || {};
+      const checkpointPatch:Partial<Project> = {
+        analysisStoredCandidates:Number(checkpoint?.storedCandidates || serverPreparation?.storedCandidates || project.analysisStoredCandidates || 0),
+        analysisStoredIds:Number(checkpoint?.storedIds || serverPreparation?.storedIds || project.analysisStoredIds || 0),
+      };
+      if (serverPreparation?.stage) checkpointPatch.analysisPreparationStage = String(serverPreparation.stage) as Project["analysisPreparationStage"];
+      patchProject(projectId, checkpointPatch);
+
+      let zipFile = checkpoint?.zipFile || null;
+      if (!zipFile) {
+        if (!checkpoint?.readyForZip) {
+          const missing = Array.isArray(checkpoint?.missingIds) ? checkpoint.missingIds.join(", ") : "";
+          throw new Error(`CHECKPOINT_AINDA_INCOMPLETO${missing ? ` · IDs: ${missing}` : ""}`);
+        }
+        const liveForZip = latestProject(projectId) || { ...project, ...checkpointPatch };
+        patchProject(projectId, { analysisPreparationStage:"CANDIDATES_STORED", analysisStatus:"CANDIDATAS PREPARADAS · CHECKPOINT SALVO" });
+        zipFile = await materializeAnalysisZipFromCheckpoint({ ...liveForZip, analysisPreparationStage:"CANDIDATES_STORED" });
+      } else {
+        patchProject(projectId, {
+          analysisPreparationStage:"ZIP_SAVED",
+          analysisStatus:"PACOTE DO ANALISTA SALVO",
+          analysisZipUrl:String(zipFile.url),
+          analysisZipName:String(zipFile.name || project.analysisPackageFileName || `${project.id}_ANALISE_CANDIDATAS.zip`),
+          analysisPreparedAt:project.analysisPreparedAt || new Date().toISOString(),
+          analysisPreparationRetryAt:undefined,
+          analysisPreparationRetryCount:0,
+          analysisPreparationError:undefined,
+          pipelineStatus:"PACOTE DO ANALISTA SALVO",
+        });
+      }
+
+      const live = latestProject(projectId) || project;
+      const analysisJob = { jobId:String(live.analysisJobId), prompt:String(live.analysisPrompt), uploadToken:String(live.analysisUploadToken) };
+      try {
+        const routed = await dispatchAnalysis(live, analysisJob, zipFile, expectedIds);
+        if (routed && latestProject(projectId)?.autoRunStatus === "RUNNING") setTimeout(() => void runAutomaticProduction(projectId), 100);
+        return routed;
+      } catch (analysisError) {
+        scheduleAnalysisRetry(projectId, analysisError);
+        return false;
+      }
+    } catch (error) {
+      scheduleAnalysisPreparationRetry(projectId, error);
+      return false;
+    } finally {
+      analysisPreparationLocks.current.delete(projectId);
+    }
+  }
+
+  function scheduleAnalysisRetry(projectId:string, error:unknown) {
+    const current = latestProject(projectId);
+    if (!current || !hasPreparedAnalysis(current)) return;
+    const count = (current.analysisRetryCount || 0) + 1;
+    const nextAt = new Date(Date.now() + analysisRetryDelay(count - 1)).toISOString();
+    const message = bridgeErrorMessage(error);
+    patchProject(projectId, {
+      analysisStatus:"PACOTE SALVO · AGUARDANDO ANALISTA",
+      analysisRetryCount:count,
+      analysisRetryAt:nextAt,
+      analysisLastError:message,
+      pipelineStatus:"AGUARDANDO ANALISTA",
+      autoRunStatus:current.autoRunStatus === "RUNNING" ? "RUNNING" : current.autoRunStatus,
+      autoRunStep:current.autoRunStatus === "RUNNING" ? "ANALISTA" : current.autoRunStep,
+      autoRunMessage:current.autoRunStatus === "RUNNING" ? `Pacote do Analista preservado. ${analysisRetryLabel(nextAt)}.` : current.autoRunMessage,
+      autoRunError:current.autoRunStatus === "RUNNING" ? undefined : current.autoRunError,
+    });
+    setImagePhase("searching");
+    setImageProgress(90);
+    setImageMessage("O pacote já está salvo. O Analista será chamado novamente sem repetir o Collector.");
+    setImageStatusLine(`PACOTE PRESERVADO · ${analysisRetryLabel(nextAt)} · TENTATIVA ${count + 1}`);
+  }
+
+  async function resetAnalysisJob(jobId:string, uploadToken:string) {
+    const response = await fetch("/api/corvo/retry", {
+      method:"POST",
+      headers:{ "content-type":"application/json", "x-corvo-upload-token":uploadToken },
+      body:JSON.stringify({ jobId }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result?.ok) throw new Error(result?.message || "Não foi possível preparar o job do Analista para nova tentativa.");
+  }
+
+  async function finishAnalysisFromStatus(project:Project, analysisJob:{jobId:string;prompt:string;uploadToken:string}, expectedIds:string[], status:any) {
     const manifestItems = Array.isArray(status.manifest?.items) ? status.manifest.items : [];
     if (!manifestItems.length) throw new Error("O Analista concluiu sem um manifesto por ID.");
     const returnedIds = manifestItems.map((manifestItem:any) => String(manifestItem?.id || "").trim()).filter(Boolean);
@@ -1355,8 +1682,95 @@ export default function Home() {
     });
     if (pipelineItems.length !== expectedIds.length) throw new Error(`O Analista devolveu ${pipelineItems.length}/${expectedIds.length} IDs roteáveis.`);
     if (pipelineItems.some((item) => item.route === "REFINADOR" && !item.sourceUrl)) throw new Error("Uma candidata aprovada pelo Analista não foi localizada no pacote bruto do Collector.");
-    patchProject(project.id, { analysisStatus:"CONCLUÍDA", analysisManifest:String(status.resultado || ""), pipelineItems });
+    patchProject(project.id, {
+      analysisStatus:"CONCLUÍDA",
+      analysisManifest:String(status.resultado || ""),
+      analysisRetryAt:undefined,
+      analysisRetryCount:0,
+      analysisLastError:undefined,
+      pipelineItems,
+    });
     return await runRoutedPipeline(project, pipelineItems);
+  }
+
+  async function dispatchAnalysis(project:Project, analysisJob:{jobId:string;prompt:string;uploadToken:string}, zipFile:any, expectedIds:string[]) {
+    patchProject(project.id, {
+      analysisJobId:analysisJob.jobId,
+      analysisStatus:"ENVIANDO AO ANALISTA",
+      analysisZipUrl:zipFile.url,
+      analysisZipName:zipFile.name,
+      analysisExpectedIds:expectedIds,
+      analysisPrompt:analysisJob.prompt,
+      analysisUploadToken:analysisJob.uploadToken,
+      analysisLastDispatchAt:new Date().toISOString(),
+      analysisRetryAt:undefined,
+      pipelineStatus:"ANALISANDO IMAGENS",
+    });
+    updateAutoRun(project.id, "ANALISTA", `Corvo Analista comparando a shortlist de candidatas de ${expectedIds.length} IDs...`);
+    setImagePhase("searching"); setImageProgress(90); setImageMessage("Enviando o pacote persistente ao Corvo Analista..."); setImageStatusLine("ZIP SALVO NO BLOB · ANALISTA ESCOLHENDO POR ID");
+    await dispatchCorvoBridge({
+      jobId:analysisJob.jobId,
+      prompt:[
+        analysisJob.prompt,
+        "",
+        "O ZIP bruto completo do Collector está anexado a esta conversa.",
+        "Para CADA ID, compare TODAS as candidatas disponíveis antes de decidir.",
+        "Não escolha pela ordem do arquivo. Elimine erros e duplicatas inferiores.",
+        "Em PASSOU/PASSOU_COM_RESSALVAS, ARQUIVO deve conter exatamente o nome real da candidata escolhida no ZIP.",
+        "Em NAO_PASSOU, deixe ARQUIVO vazio e forneça PROMPT_GERACAO completo.",
+        "Preserve todos os IDs e entregue [CORVO_IMAGE_ANALYSIS] VERSION=1.1.",
+      ].join("\n"),
+      specialist:"ANALISTA",
+      meta:{ projectId:project.id, attachments:[{ url:zipFile.url, name:zipFile.name, contentType:"application/zip" }] },
+    });
+    patchProject(project.id, { analysisStatus:"ANALISTA PROCESSANDO", analysisLastDispatchAt:new Date().toISOString() });
+    const status = await pollPipelineJob(analysisJob.jobId, project.id);
+    return await finishAnalysisFromStatus(project, analysisJob, expectedIds, status);
+  }
+
+  async function resumePreparedAnalysis(projectId:string, manual = false) {
+    if (analysisRetryLocks.current.has(projectId)) return false;
+    const project = latestProject(projectId);
+    if (!project || !hasPreparedAnalysis(project)) return false;
+    analysisRetryLocks.current.add(projectId);
+    const token = ++runToken.current;
+    if (manual) setImageOpen(true);
+    setImagePhase("searching"); setImageProgress(90);
+    setImageMessage("Pacote do Analista recuperado. Tentando continuar sem refazer o Collector...");
+    setImageStatusLine("PACOTE PERSISTENTE · RETOMANDO ANALISTA");
+    try {
+      const analysisJob = {
+        jobId:String(project.analysisJobId),
+        prompt:String(project.analysisPrompt),
+        uploadToken:String(project.analysisUploadToken),
+      };
+      const expectedIds = [...(project.analysisExpectedIds || [])];
+      const zipFile = { url:String(project.analysisZipUrl), name:String(project.analysisZipName || `${project.id}_ANALISE_CANDIDATAS.zip`) };
+
+      const currentResponse = await fetch(`/api/corvo/resultado?jobId=${encodeURIComponent(analysisJob.jobId)}`, { cache:"no-store" });
+      const currentStatus = await currentResponse.json().catch(() => ({}));
+      if (currentResponse.ok && currentStatus?.status === "DONE") {
+        try {
+          const routed = await finishAnalysisFromStatus(project, analysisJob, expectedIds, currentStatus);
+          if (routed && latestProject(projectId)?.autoRunStatus === "RUNNING") setTimeout(() => void runAutomaticProduction(projectId), 100);
+          return routed;
+        } catch {
+          await resetAnalysisJob(analysisJob.jobId, analysisJob.uploadToken);
+        }
+      } else {
+        await resetAnalysisJob(analysisJob.jobId, analysisJob.uploadToken);
+      }
+
+      const routed = await dispatchAnalysis(project, analysisJob, zipFile, expectedIds);
+      if (routed && latestProject(projectId)?.autoRunStatus === "RUNNING") setTimeout(() => void runAutomaticProduction(projectId), 100);
+      return routed;
+    } catch (error) {
+      if (token !== runToken.current) return false;
+      scheduleAnalysisRetry(projectId, error);
+      return false;
+    } finally {
+      analysisRetryLocks.current.delete(projectId);
+    }
   }
 
   async function buildPackage(selectedGroups:RankedGroup[], token = runToken.current, projectArg?:Project, selectionModeOverride?:SelectionMode, throwOnError = false) {
@@ -1397,7 +1811,37 @@ export default function Home() {
         ].join("\n"),
         expectedIds,
       );
-      patchProject(project.id, { analysisJobId:analysisJob.jobId, analysisStatus:automatic?"RECEBENDO CANDIDATAS":"RECEBENDO IMAGENS", pipelineStatus:"PREPARANDO ANÁLISE" });
+      const analysisPackageFileName = `${project.id}_ANALISE_CANDIDATAS.zip`;
+      patchProject(project.id, {
+        analysisJobId:analysisJob.jobId,
+        analysisStatus:automatic?"RECEBENDO CANDIDATAS":"RECEBENDO IMAGENS",
+        analysisExpectedIds:expectedIds,
+        analysisPrompt:analysisJob.prompt,
+        analysisUploadToken:analysisJob.uploadToken,
+        analysisPreparationStage:"JOB_CREATED",
+        analysisExpectedCandidates:selections.length,
+        analysisStoredCandidates:0,
+        analysisStoredIds:0,
+        analysisBatchTotal:Math.ceil(selections.length / 36),
+        analysisBatchesUploaded:0,
+        analysisPackageFileName,
+        analysisSelectionMode:automatic?"AUTO":"MANUAL",
+        analysisPreparationRetryAt:undefined,
+        analysisPreparationRetryCount:0,
+        analysisPreparationError:undefined,
+        pipelineStatus:"PREPARANDO ANÁLISE",
+      });
+      await writeAnalysisCheckpoint({
+        ...project,
+        analysisJobId:analysisJob.jobId,
+        analysisUploadToken:analysisJob.uploadToken,
+      }, "JOB_CREATED", {
+        expectedCandidates:selections.length,
+        expectedIds:expectedIds.length,
+        batchTotal:Math.ceil(selections.length / 36),
+        packageFileName:analysisPackageFileName,
+        selectionMode:automatic?"AUTO":"MANUAL",
+      });
       const expectedPackageFile = automatic ? `${project.id}_CANDIDATAS_BRUTAS.zip` : `${project.id}_COLLECTOR.zip`;
       let response = await sendCollectorMessage<any>("BUILD_FORMA_PACKAGE", {
         selections, productionId:project.id, prefix:settings.prefix, jpegQuality:settings.jpegQuality,
@@ -1422,6 +1866,17 @@ export default function Home() {
         }
       }
       if (!response?.ok) throw new Error(response?.error || "Falha ao montar o pacote.");
+      patchProject(project.id, {
+        analysisPreparationStage:"CANDIDATES_PREPARING",
+        analysisCollectorPackageId:String(response.packageId || ""),
+        analysisCollectorPackageCode:String(response.packageCode || ""),
+        analysisStatus:"PREPARANDO CANDIDATAS · CHECKPOINT ATIVO",
+      });
+      await writeAnalysisCheckpoint({ ...project, analysisJobId:analysisJob.jobId, analysisUploadToken:analysisJob.uploadToken }, "CANDIDATES_PREPARING", {
+        expectedCandidates:selections.length, expectedIds:expectedIds.length, batchTotal:Math.ceil(selections.length / 36),
+        collectorPackageId:String(response.packageId || ""), collectorPackageCode:String(response.packageCode || ""),
+        packageFileName:analysisPackageFileName, selectionMode:automatic?"AUTO":"MANUAL",
+      });
       const code = response.packageCode || "";
       while (token === runToken.current) {
         await wait(700);
@@ -1436,6 +1891,13 @@ export default function Home() {
         const batches = Number(status?.batchTotal || 0);
         const batchProgress = batches ? ` · ${Number(status?.batchesUploaded || 0)}/${batches} LOTES` : "";
         setImageStatusLine(`${Number(status?.pipelineUploaded || 0)}/${total} CANDIDATAS NO APP · ${expectedIds.length} IDS${batchProgress}`);
+        patchProject(project.id, {
+          analysisPreparationStage:"CANDIDATES_PREPARING",
+          analysisStoredCandidates:Number(status?.pipelineUploaded || 0),
+          analysisBatchTotal:batches || Math.ceil(selections.length / 36),
+          analysisBatchesUploaded:Number(status?.batchesUploaded || 0),
+          analysisStatus:`PREPARANDO CANDIDATAS · ${Number(status?.batchesUploaded || 0)}/${batches || Math.ceil(selections.length / 36)} LOTES`,
+        });
         if (status?.status === "DONE") {
           if (Number(status.pipelineUploadFailed || 0) > 0) {
             const detail = Array.isArray(status.pipelineErrors) && status.pipelineErrors.length ? ` Motivo: ${status.pipelineErrors[0]}` : "";
@@ -1446,25 +1908,70 @@ export default function Home() {
           }
           const finalCode = status.packageCode || code;
           setPackageCode(finalCode);
-          patchProject(project.id, { packageCode:finalCode, imageCount:expectedIds.length, analysisStatus:"MONTANDO ZIP BRUTO DE ANÁLISE" });
-          setImageProgress(89); setImageMessage(`Consolidando ${Number(status.pipelineUploaded || selections.length)} candidatas em um ZIP para o Analista...`);
-          const packageResponse = await fetch("/api/corvo/pacote", {
-            method:"POST",
-            headers:{ "content-type":"application/json", "x-corvo-upload-token":analysisJob.uploadToken },
-            body:JSON.stringify({ jobId:analysisJob.jobId, fileName:`${project.id}_ANALISE_CANDIDATAS.zip`, selectionMode:automatic?"AUTO":"MANUAL" }),
+          const checkpointState = await readAnalysisCheckpoint({
+            ...(latestProject(project.id) || project),
+            analysisJobId:analysisJob.jobId, analysisUploadToken:analysisJob.uploadToken,
           });
-          const packageResult = await packageResponse.json().catch(() => ({}));
-          if (!packageResponse.ok || !packageResult?.file?.url) throw new Error(packageResult?.message || "Não foi possível consolidar o ZIP bruto do Analista.");
-          const routedOk = await dispatchAnalysis(project, analysisJob, packageResult.file, expectedIds);
-          if (!routedOk) throw new Error("TRATAMENTO_MANUAL_NECESSARIO");
-          packageRetryRef.current = null;
-          return true;
+          if (!checkpointState?.readyForZip) {
+            const missing = Array.isArray(checkpointState?.missingIds) ? checkpointState.missingIds.join(", ") : "";
+            throw new Error(`A preparação terminou sem candidatas para todos os IDs${missing ? `: ${missing}` : "."}`);
+          }
+          const storedCandidates = Number(checkpointState?.storedCandidates || status.pipelineUploaded || selections.length);
+          const storedIds = Number(checkpointState?.storedIds || expectedIds.length);
+          patchProject(project.id, {
+            packageCode:finalCode, imageCount:expectedIds.length,
+            analysisPreparationStage:"CANDIDATES_STORED",
+            analysisStoredCandidates:storedCandidates, analysisStoredIds:storedIds,
+            analysisBatchTotal:Number(status?.batchTotal || Math.ceil(selections.length / 36)),
+            analysisBatchesUploaded:Number(status?.batchesUploaded || 0),
+            analysisStatus:"CANDIDATAS PREPARADAS · CHECKPOINT SALVO",
+            pipelineStatus:"CHECKPOINT DO ANALISTA SALVO",
+          });
+          await writeAnalysisCheckpoint({ ...project, analysisJobId:analysisJob.jobId, analysisUploadToken:analysisJob.uploadToken }, "CANDIDATES_STORED", {
+            expectedCandidates:selections.length, storedCandidates, storedIds, expectedIds:expectedIds.length,
+            batchesUploaded:Number(status?.batchesUploaded || 0), batchTotal:Number(status?.batchTotal || Math.ceil(selections.length / 36)),
+            collectorPackageId:String(response.packageId || ""), collectorPackageCode:finalCode,
+            packageFileName:analysisPackageFileName, selectionMode:automatic?"AUTO":"MANUAL",
+          });
+          setImageProgress(89); setImageMessage(`Checkpoint salvo. Consolidando ${storedCandidates} candidatas no ZIP do Analista sem reprocessar imagens...`);
+          const checkpointProject:Project = {
+            ...(latestProject(project.id) || project),
+            analysisJobId:analysisJob.jobId, analysisPrompt:analysisJob.prompt, analysisUploadToken:analysisJob.uploadToken,
+            analysisExpectedIds:expectedIds, analysisPreparationStage:"CANDIDATES_STORED", analysisStoredCandidates:storedCandidates, analysisStoredIds:storedIds,
+            analysisPackageFileName, analysisSelectionMode:automatic?"AUTO":"MANUAL",
+          };
+          const analysisZipFile = await materializeAnalysisZipFromCheckpoint(checkpointProject);
+          try {
+            const routedOk = await dispatchAnalysis(latestProject(project.id) || checkpointProject, analysisJob, analysisZipFile, expectedIds);
+            if (!routedOk) throw new Error("TRATAMENTO_MANUAL_NECESSARIO");
+            packageRetryRef.current = null;
+            return true;
+          } catch (analysisError) {
+            scheduleAnalysisRetry(project.id, analysisError);
+            packageRetryRef.current = null;
+            if (throwOnError) throw new Error("ANALYST_RETRY_SCHEDULED");
+            return false;
+          }
         }
         if (status?.status === "ERROR") throw new Error(status.error || "Falha no pacote.");
       }
       return false;
     } catch (error) {
       if (token !== runToken.current) return false;
+      if (String(error instanceof Error ? error.message : error) === "ANALYST_RETRY_SCHEDULED") {
+        const live = latestProject(project.id);
+        setImagePhase("searching"); setImageProgress(90);
+        setImageMessage("O pacote do Analista está preservado. O app tentará novamente sem refazer o Collector.");
+        setImageStatusLine(`PACOTE SALVO · ${analysisRetryLabel(live?.analysisRetryAt)}`);
+        if (throwOnError) throw error;
+        return false;
+      }
+      const checkpointProject = latestProject(project.id);
+      if (hasAnalysisPreparationCheckpoint(checkpointProject)) {
+        scheduleAnalysisPreparationRetry(project.id, error);
+        if (throwOnError) throw new Error("ANALYSIS_PREPARATION_RETRY_SCHEDULED");
+        return false;
+      }
       setImagePhase("error"); setImageMessage(friendlyError(error)); setImageProgress(0);
       patchProject(project.id, { pipelineStatus:"ERRO NO PIPELINE", analysisStatus:latestProject(project.id)?.analysisStatus || "FALHOU" });
       if (throwOnError) throw error;
@@ -1473,6 +1980,15 @@ export default function Home() {
   }
 
   async function retryImageFlow() {
+    const currentProject = latestProject(active?.id || "");
+    if (hasPreparedAnalysis(currentProject)) {
+      await resumePreparedAnalysis(String(currentProject?.id), true);
+      return;
+    }
+    if (hasAnalysisPreparationCheckpoint(currentProject)) {
+      await resumeAnalysisPreparation(String(currentProject?.id), true);
+      return;
+    }
     if (packageRetryRef.current?.length) {
       const token = ++runToken.current;
       setImageOpen(true);
@@ -1615,16 +2131,16 @@ export default function Home() {
           <button className={`file-row action ${active.scriptText?"done":"pending"}`} disabled={!active.scriptText} onClick={()=>openArtifact("ROTEIRO")}><span>▤</span><div><b>ROTEIRO.TXT</b><small>{active.scriptText?"ABRIR ROTEIRO COMPLETO":"AGUARDANDO ROTEIRISTA"}</small></div><i>{active.scriptText?"→":"○"}</i></button>
           <button className={`file-row action ${active.promptText?"done":"pending"}`} disabled={!active.promptText} onClick={()=>openArtifact("PROMPTS")}><span>✦</span><div><b>PROMPTS.TXT</b><small>{active.promptText?"ABRIR BUSCAS DE IMAGEM":"AGUARDANDO ROTEIRO"}</small></div><i>{active.promptText?"→":"○"}</i></button>
           <button className={`file-row action ${active.thumbUrl?"done":active.thumbStatus==="FALHOU"?"pending":""}`} disabled={!active.thumbUrl} onClick={()=>active.thumbUrl&&window.open(active.thumbUrl,"_blank","noopener,noreferrer")}><span>▰</span><div><b>THUMBNAIL</b><small>{active.thumbUrl?"ABRIR IMAGEM FINAL":active.thumbError||active.thumbStatus||"INICIA EM PARALELO COM O COLLECTOR"}</small></div><i>{active.thumbUrl?"→":"○"}</i></button>
-          <button className={`file-row action ${active.analysisStatus==="CONCLUÍDA"?"done":active.analysisStatus?"pending":""}`} disabled={!active.analysisManifest} onClick={()=>{if(active.analysisManifest){setNotice("MANIFESTO DO ANALISTA SALVO NO PROJETO.");setTimeout(()=>setNotice(""),2800);}}}><span>◫</span><div><b>ANÁLISE DE IMAGENS</b><small>{active.analysisStatus||"COMEÇA APÓS O PACOTE DO COLLECTOR"}</small></div><i>{active.analysisStatus==="CONCLUÍDA"?"✓":"○"}</i></button>
+          <button className={`file-row action ${active.analysisStatus==="CONCLUÍDA"?"done":active.analysisStatus?"pending":""}`} disabled={!active.analysisManifest&&!hasPreparedAnalysis(active)&&!hasAnalysisPreparationCheckpoint(active)} onClick={()=>{if(active.analysisManifest){setNotice("MANIFESTO DO ANALISTA SALVO NO PROJETO.");setTimeout(()=>setNotice(""),2800);}else if(hasPreparedAnalysis(active)){void resumePreparedAnalysis(active.id,true);}else if(hasAnalysisPreparationCheckpoint(active)){void resumeAnalysisPreparation(active.id,true);}}}><span>◫</span><div><b>{hasPreparedAnalysis(active)?"PACOTE DO ANALISTA SALVO":hasAnalysisPreparationCheckpoint(active)?"CHECKPOINT DO ANALISTA SALVO":"ANÁLISE DE IMAGENS"}</b><small>{hasPreparedAnalysis(active)?`${active.analysisStatus||"AGUARDANDO ANALISTA"} · ${analysisRetryLabel(active.analysisRetryAt)}`:hasAnalysisPreparationCheckpoint(active)?`${preparationStageLabel(active)} · ${analysisRetryLabel(active.analysisPreparationRetryAt)}`:active.analysisStatus||"COMEÇA APÓS O PACOTE DO COLLECTOR"}</small>{active.analysisLastError&&hasPreparedAnalysis(active)?<em>{active.analysisLastError}</em>:null}{active.analysisPreparationError&&hasAnalysisPreparationCheckpoint(active)?<em>{active.analysisPreparationError}</em>:null}</div><i>{active.analysisStatus==="CONCLUÍDA"?"✓":hasPreparedAnalysis(active)||hasAnalysisPreparationCheckpoint(active)?"↻":"○"}</i></button>
           <button className={`file-row action ${active.youtubeMetadata?"done":active.youtubeStatus==="FALHOU"?"pending":""}`} disabled={!active.youtubeMetadata} onClick={()=>{if(active.youtubeMetadata)downloadTextFile(`${active.id}_YOUTUBE.txt`,active.youtubeMetadata);}}><span>▶</span><div><b>YOUTUBE / METADADOS</b><small>{active.youtubeMetadata?"BAIXAR DADOS EDITORIAIS":active.youtubeError||active.youtubeStatus||(settings.youtubeParallel?"INICIA EM PARALELO":"DESATIVADO NAS CONFIGURAÇÕES")}</small></div><i>{active.youtubeMetadata?"↓":"○"}</i></button>
           <button className={`file-row action ${consolidationState(active).ready?"done":active.pipelineItems?.length?"pending":""}`} disabled={!active.pipelineItems?.length} onClick={()=>{setConsolidationMessage("");setConsolidationOpen(true);}}><span>▦</span><div><b>CONSOLIDAÇÃO / ZIP FINAL</b><small>{active.pipelineItems?.length ? `${consolidationState(active).completed}/${consolidationState(active).items.length} FINAIS · ${consolidationState(active).ready ? "PRONTO PARA GERAR" : active.pipelineStatus || "AGUARDANDO"}` : "AGUARDANDO O ANALISTA"}</small></div><i>{active.finalZipStatus==="CONCLUIDO"?"✓":consolidationState(active).ready?"→":"○"}</i></button>
-          {active.packageCode ? <button className="package-ready" onClick={() => active.pipelineStatus==="ERRO NO PIPELINE" ? void startImageFlow() : setImageOpen(true)}><span>{active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?"✓":"⌁"}</span><div><b>{active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?"IMAGENS FINAIS PRONTAS":"PIPELINE DE IMAGENS"}</b><small>{active.pipelineStatus||`${active.imageCount || 0} ARQUIVOS · ${active.packageCode}`}</small></div></button> : <button className="collector-box" disabled={!active.promptText || active.stage<4} onClick={()=>void startImageFlow()}><span>⌁</span><b>{collectorRunning?"ACOMPANHAR BUSCA":active.promptText&&active.stage>=4?"BUSCAR COM O CORVO":"AGUARDANDO PROMPTS"}</b><small>{collectorRunning?"O COLLECTOR CONTINUA TRABALHANDO":active.promptText&&active.stage>=4?`MOTOR: ${collectorEngines[settings.sourceMode].label} · SEGUNDO PLANO`:"A PRÓXIMA ETAPA SERÁ LIBERADA"}</small></button>}
+          {active.packageCode ? <button className="package-ready" onClick={() => hasPreparedAnalysis(active) ? void resumePreparedAnalysis(active.id,true) : hasAnalysisPreparationCheckpoint(active) ? void resumeAnalysisPreparation(active.id,true) : active.pipelineStatus==="ERRO NO PIPELINE" ? void startImageFlow() : setImageOpen(true)}><span>{active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?"✓":hasPreparedAnalysis(active)||hasAnalysisPreparationCheckpoint(active)?"↻":"⌁"}</span><div><b>{active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?"IMAGENS FINAIS PRONTAS":hasPreparedAnalysis(active)?"PACOTE PRESERVADO · REENVIAR ANALISTA":hasAnalysisPreparationCheckpoint(active)?"CHECKPOINT PRESERVADO · RETOMAR PREPARAÇÃO":"PIPELINE DE IMAGENS"}</b><small>{hasPreparedAnalysis(active)?`${active.analysisZipName||"ZIP DO ANALISTA"} · ${analysisRetryLabel(active.analysisRetryAt)}`:hasAnalysisPreparationCheckpoint(active)?`${preparationStageLabel(active)} · ${analysisRetryLabel(active.analysisPreparationRetryAt)}`:active.pipelineStatus||`${active.imageCount || 0} ARQUIVOS · ${active.packageCode}`}</small></div></button> : <button className="collector-box" disabled={!active.promptText || active.stage<4} onClick={()=>void startImageFlow()}><span>⌁</span><b>{collectorRunning?"ACOMPANHAR BUSCA":active.promptText&&active.stage>=4?"BUSCAR COM O CORVO":"AGUARDANDO PROMPTS"}</b><small>{collectorRunning?"O COLLECTOR CONTINUA TRABALHANDO":active.promptText&&active.stage>=4?`MOTOR: ${collectorEngines[settings.sourceMode].label} · SEGUNDO PLANO`:"A PRÓXIMA ETAPA SERÁ LIBERADA"}</small></button>}
         </aside>
       </article>}
     </section>
 
     <section className="projects" id="projetos"><div className="section-heading"><div><span className="section-number">02</span><h2>PROJETOS RECENTES</h2></div><span className="project-count">{String(projects.length).padStart(2,"0")} PRODUÇÕES</span></div><div className="project-list">{projects.map((project) => <button className={`project-row ${project.id===activeId?"selected":""}`} key={project.id} onClick={() => setActiveId(project.id)}><span className="project-icon">{project.format==="REELS"?"▯":"▭"}</span><span className="project-name"><b>{project.title}</b><small>{project.id}</small></span><span className="project-format">{project.format}</span><span className="progress"><i style={{width:`${project.stage*20}%`}} /></span><span className="stage-label">ETAPA {project.stage}/5</span><span className="row-arrow">→</span></button>)}</div></section>
-    <footer><span>CORVOQUIZ PRODUÇÃO <i>V0.6.16</i></span><span>AUTOMÁTICO REAL · RETOMADA DE PACOTE · SHORTLIST 10/ID · V0.6.16</span></footer>
+    <footer><span>CORVOQUIZ PRODUÇÃO <i>V0.6.27</i></span><span>CHECKPOINT FINO DO ANALISTA · RETOMADA SEM REPROCESSAR · V0.6.27</span></footer>
     {notice && <div className="toast">{notice}</div>}
 
     {createOpen && <div className="modal-backdrop" onMouseDown={(event) => event.target===event.currentTarget&&closeCreationModal()}><section className="creation-modal idea-modal" role="dialog" aria-modal="true" aria-labelledby="new-production-title"><button className="modal-close" disabled={ideaLoading} onClick={closeCreationModal} aria-label="Fechar">×</button><div className="modal-symbol">✦</div><span className="modal-kicker">{ideaRevisionProjectId?"REFAZER IDEIA":"NOVA PRODUÇÃO"}</span><h2 id="new-production-title">{ideaRevisionProjectId?"ESCOLHA UMA NOVA DIREÇÃO":"O QUE VAMOS CRIAR?"}</h2><p>{ideaRevisionProjectId?"Ao confirmar, roteiro, prompts e imagens serão refeitos automaticamente.":"Comece sem tema e peça ideias ao Corvo, ou informe uma direção opcional."}</p>
@@ -1665,12 +2181,12 @@ export default function Home() {
       <section className="downloads-section" aria-labelledby="downloads-title">
         <div className="downloads-head"><div><span>INSTALAÇÃO E SUPORTE</span><h3 id="downloads-title">ARQUIVOS PARA BAIXAR</h3></div><small>SE PRECISAR REINSTALAR</small></div>
         <div className="download-grid">
-          <a className="download-card" href="/downloads/CORVO_COLLECTOR_V079_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.7.9</small></div><i>↓</i></a>
-          <a className="download-card" href="/downloads/CORVO_BRIDGE_V065_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.5 · ZIP GRANDE + CAPTURA + LIMPEZA</small></div><i>↓</i></a>
-          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0616.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
+          <a className="download-card" href="/downloads/CORVO_COLLECTOR_V080_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.8.0</small></div><i>↓</i></a>
+          <a className="download-card" href="/downloads/CORVO_BRIDGE_V0614_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.14 · MENU EXCLUIR ROBUSTO + DIAGNÓSTICO VISUAL</small></div><i>↓</i></a>
+          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0627.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
         </div>
       </section>
-      <details className="advanced-settings"><summary>CONFIGURAÇÕES AVANÇADAS</summary><div className="settings-grid"><label>CANDIDATAS COLETADAS<input type="number" min="10" max="250" value={settings.maxCandidates} onChange={(event)=>setSettings({...settings,maxCandidates:Number(event.target.value)})}/></label><label>CANDIDATAS/ID → ANALISTA<input type="number" min="1" max="30" value={settings.analystCandidatesPerId} onChange={(event)=>setSettings({...settings,analystCandidatesPerId:Math.max(1,Math.min(30,Number(event.target.value)||10))})}/></label><label>VARREDURA<input type="number" value={settings.scrollSteps} onChange={(event)=>setSettings({...settings,scrollSteps:Number(event.target.value)})}/></label><label>QUALIDADE JPEG<input type="number" step=".01" value={settings.jpegQuality} onChange={(event)=>setSettings({...settings,jpegQuality:Number(event.target.value)})}/></label><label>PREFIXO<input value={settings.prefix} onChange={(event)=>setSettings({...settings,prefix:event.target.value})}/></label></div><p>O limite do Analista reduz apenas o transporte. O app não escolhe a vencedora; o GPT Analista continua comparando as candidatas enviadas e decide qual arquivo usar.</p><label className="batch-label">COMANDOS EM LOTE — OPCIONAL<textarea value={settings.batchText} onChange={(event)=>setSettings({...settings,batchText:event.target.value})} placeholder={"01|primeira busca\n02|segunda busca"} /></label></details>
+      <details className="advanced-settings"><summary>CONFIGURAÇÕES AVANÇADAS</summary><div className="settings-grid"><label>CANDIDATAS COLETADAS/ID<input type="number" min="1" max="20" value={settings.maxCandidates} onChange={(event)=>setSettings({...settings,maxCandidates:Math.max(1,Math.min(20,Number(event.target.value)||20))})}/></label><label>CANDIDATAS/ID → ANALISTA<input type="number" min="1" max="30" value={settings.analystCandidatesPerId} onChange={(event)=>setSettings({...settings,analystCandidatesPerId:Math.max(1,Math.min(30,Number(event.target.value)||10))})}/></label><label>VARREDURA<input type="number" value={settings.scrollSteps} onChange={(event)=>setSettings({...settings,scrollSteps:Number(event.target.value)})}/></label><label>QUALIDADE JPEG<input type="number" step=".01" value={settings.jpegQuality} onChange={(event)=>setSettings({...settings,jpegQuality:Number(event.target.value)})}/></label><label>PREFIXO<input value={settings.prefix} onChange={(event)=>setSettings({...settings,prefix:event.target.value})}/></label></div><p>A busca coleta no máximo 20 candidatas únicas por ID. No modo Mesclado, a meta é dividida entre Google e Pinterest. Depois, o limite do Analista reduz apenas o transporte; o app não escolhe a vencedora.</p><label className="batch-label">COMANDOS EM LOTE — OPCIONAL<textarea value={settings.batchText} onChange={(event)=>setSettings({...settings,batchText:event.target.value})} placeholder={"01|primeira busca\n02|segunda busca"} /></label></details>
       <button className="modal-submit" onClick={()=>setSettingsOpen(false)}>SALVAR E FECHAR <span>✓</span></button>
     </section></div>}
 

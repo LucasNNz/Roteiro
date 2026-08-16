@@ -46,7 +46,10 @@ function localDay(ts = Date.now()) {
 function conversationKey(url) {
   try {
     const u = new URL(url);
-    const match = u.pathname.match(/^\/c\/([^/?#]+)/);
+    // Conversas de GPTs personalizados podem usar /g/<gpt>/c/<conversationId>,
+    // enquanto chats comuns usam /c/<conversationId>. Aceitar /c/ em qualquer
+    // ponto do pathname evita perder o ID das conversas abertas pelo Bridge.
+    const match = u.pathname.match(/(?:^|\/)c\/([^/?#]+)/);
     return match ? match[1] : "";
   } catch { return ""; }
 }
@@ -58,6 +61,20 @@ async function getCleanerRecords() {
 
 async function saveCleanerRecords(records) {
   await chrome.storage.local.set({ [CLEANER_RECORDS_KEY]: records.slice(-1000) });
+}
+
+async function repairCleanerRecords() {
+  const records = await getCleanerRecords();
+  let changed = false;
+  const repaired = records.map((record) => {
+    if (!record?.conversationUrl) return record;
+    const conversationId = conversationKey(record.conversationUrl);
+    if (!conversationId || conversationId === record.conversationId) return record;
+    changed = true;
+    return { ...record, conversationId, repairedAt: Date.now(), updatedAt: Date.now() };
+  });
+  if (changed) await saveCleanerRecords(repaired);
+  return repaired;
 }
 
 async function upsertCleanerRecord(jobId, patch = {}) {
@@ -118,50 +135,139 @@ async function waitTabReady(tabId, timeout = 30000) {
   throw new Error("CLEANER_TAB_TIMEOUT");
 }
 
-async function deleteConversationRecord(record, dryRun) {
+async function navigateCleanerTab(tabId, url, timeout = 18000) {
+  await chrome.tabs.update(tabId, { url, active: false });
+  await waitTabReady(tabId, timeout);
+  // document.complete não significa que a SPA do ChatGPT já hidratou.
+  // Um ping extra curto evita gastar 30s em cada conversa, mas dá tempo
+  // para o content script e a interface principal ficarem disponíveis.
+  const deadline = Date.now() + 6000;
+  while (Date.now() < deadline) {
+    try {
+      const pong = await chrome.tabs.sendMessage(tabId, { type: "CORVO_BRIDGE_PING" });
+      if (pong?.ok !== false) return;
+    } catch {}
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
+
+async function deleteConversationInTab(tabId, record, dryRun) {
   if (!record.conversationUrl || !record.conversationId) throw new Error("CONVERSATION_URL_MISSING");
   if (dryRun) return { ok: true, dryRun: true };
-  const tab = await chrome.tabs.create({ url: record.conversationUrl, active: false });
-  if (!tab.id) throw new Error("CLEANER_TAB_CREATE_FAILED");
-  try {
-    await waitTabReady(tab.id);
-    const result = await chrome.tabs.sendMessage(tab.id, {
-      type: "CORVO_DELETE_CURRENT_CHAT",
-      payload: { conversationUrl: record.conversationUrl, conversationId: record.conversationId }
-    });
-    if (!result?.ok) throw new Error(result?.error || "DELETE_FAILED");
-    return result;
-  } finally {
-    await chrome.tabs.remove(tab.id).catch(() => {});
+
+  // 1) Abre a conversa exata e pede a exclusão pelo menu da linha exata.
+  await navigateCleanerTab(tabId, record.conversationUrl);
+  const requested = await chrome.tabs.sendMessage(tabId, {
+    type: "CORVO_DELETE_CURRENT_CHAT",
+    payload: { conversationUrl: record.conversationUrl, conversationId: record.conversationId }
+  });
+  if (!requested?.ok || !requested?.deleteRequested) {
+    throw new Error(requested?.error || "DELETE_REQUEST_NOT_APPLIED");
   }
+
+  // 2) Verificação forte: só navegar DEPOIS que o content script esperou o
+  // alertdialog fechar e deu tempo para a mutação ser aplicada.
+  await new Promise((r) => setTimeout(r, requested.applyObserved ? 1400 : 3000));
+
+  // Reabrimos até duas vezes para tolerar consistência eventual do histórico.
+  let lastVerified = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    await navigateCleanerTab(tabId, "https://chatgpt.com/", 14000).catch(() => {});
+    await new Promise((r) => setTimeout(r, 700));
+    await navigateCleanerTab(tabId, record.conversationUrl, 18000);
+    await new Promise((r) => setTimeout(r, 1200));
+    const verified = await chrome.tabs.sendMessage(tabId, {
+      type: "CORVO_VERIFY_CHAT_DELETED",
+      payload: { conversationId: record.conversationId }
+    });
+    if (!verified?.ok) throw new Error(verified?.error || "DELETE_VERIFY_FAILED");
+    lastVerified = verified;
+    if (verified.deleted === true) {
+      return { ok: true, deleted: true, verifiedBy: verified.reason || "REOPEN_CHECK" };
+    }
+    if (attempt < 2) await new Promise((r) => setTimeout(r, 3500));
+  }
+
+  if (lastVerified?.exists === true) {
+    throw new Error(`DELETE_DID_NOT_HAPPEN:${requested.applyReason || lastVerified.reason || 'UNKNOWN'}`);
+  }
+  throw new Error(`DELETE_VERIFICATION_UNKNOWN:${requested.applyReason || lastVerified?.reason || 'UNKNOWN'}`);
 }
 
 async function runCleaner({ manual = false, forceDelete = false } = {}) {
   if (cleanerRunning) return { ok: false, error: "CLEANER_BUSY" };
   cleanerRunning = true;
+  let cleanerTabId = null;
   try {
     const config = await getConfig();
     if (!manual && !config.cleanerEnabled) return { ok: true, skipped: true };
-    const records = await getCleanerRecords();
+    const records = await repairCleanerRecords();
     const candidates = records.filter((r) => r.eligible === true && r.done && !r.deleted && r.conversationUrl && r.conversationId);
     const dryRun = forceDelete ? false : config.cleanerDryRun !== false;
     let deleted = 0, failed = 0;
-    for (const record of candidates) {
+    const errors = [];
+
+    await chrome.storage.local.set({ corvoBridgeCleanerStatus: {
+      at: Date.now(), running: true, current: 0, candidates: candidates.length,
+      deleted: 0, failed: 0, dryRun, manual, forceDelete, errors: []
+    }});
+
+    if (!dryRun && candidates.length) {
+      const tab = await chrome.tabs.create({ url: "https://chatgpt.com/", active: false });
+      cleanerTabId = tab.id || null;
+      if (!cleanerTabId) throw new Error("CLEANER_TAB_CREATE_FAILED");
+      await waitTabReady(cleanerTabId, 18000).catch(() => {});
+    }
+
+    for (let index = 0; index < candidates.length; index++) {
+      const record = candidates[index];
+      await chrome.storage.local.set({ corvoBridgeCleanerStatus: {
+        at: Date.now(), running: true, current: index + 1, candidates: candidates.length,
+        deleted, failed, dryRun, manual, forceDelete, errors: errors.slice(0, 10),
+        currentJobId: record.jobId, currentConversationId: record.conversationId
+      }});
       try {
-        const result = await deleteConversationRecord(record, dryRun);
-        await upsertCleanerRecord(record.jobId, { deleted: !result.dryRun, lastCleanerAt: Date.now(), lastCleanerResult: result.dryRun ? "DRY_RUN" : "DELETED" });
+        const result = dryRun
+          ? { ok: true, dryRun: true }
+          : await deleteConversationInTab(cleanerTabId, record, false);
+        await upsertCleanerRecord(record.jobId, {
+          deleted: !result.dryRun,
+          lastCleanerAt: Date.now(),
+          lastCleanerResult: result.dryRun ? "DRY_RUN" : "DELETED",
+          cleanerError: ""
+        });
         await appendCleanerLog({ jobId: record.jobId, conversationId: record.conversationId, result: result.dryRun ? "DRY_RUN" : "DELETED" });
         if (!result.dryRun) deleted++;
       } catch (error) {
         failed++;
-        await upsertCleanerRecord(record.jobId, { lastCleanerAt: Date.now(), lastCleanerResult: "ERROR", cleanerError: error.message });
-        await appendCleanerLog({ jobId: record.jobId, conversationId: record.conversationId, result: "ERROR", error: error.message });
+        const errorCode = String(error?.message || "DELETE_FAILED");
+        await upsertCleanerRecord(record.jobId, { lastCleanerAt: Date.now(), lastCleanerResult: "ERROR", cleanerError: errorCode });
+        await appendCleanerLog({ jobId: record.jobId, conversationId: record.conversationId, result: "ERROR", error: errorCode });
+        errors.push({ jobId: record.jobId, conversationId: record.conversationId, error: errorCode });
+        // Na limpeza manual destrutiva, uma falha pode indicar mudança na UI.
+        // Parar no primeiro erro evita repetir cinco tentativas cegas ou clicar
+        // em elementos ambíguos nas conversas seguintes.
+        if (manual && forceDelete) break;
       }
-      await new Promise((r) => setTimeout(r, 1200));
+      // Curto intervalo apenas para a interface do ChatGPT estabilizar antes
+      // de navegar a mesma aba para a próxima conversa.
+      if (index < candidates.length - 1) await new Promise((r) => setTimeout(r, 350));
     }
-    await chrome.storage.local.set({ corvoBridgeCleanerStatus: { at: Date.now(), candidates: candidates.length, deleted, failed, dryRun, manual, forceDelete } });
-    return { ok: failed === 0, candidates: candidates.length, deleted, failed, dryRun, forceDelete };
+
+    const finalStatus = {
+      at: Date.now(), running: false, current: candidates.length, candidates: candidates.length,
+      deleted, failed, dryRun, manual, forceDelete, errors: errors.slice(0, 10)
+    };
+    await chrome.storage.local.set({ corvoBridgeCleanerStatus: finalStatus });
+    return { ok: failed === 0, candidates: candidates.length, deleted, failed, dryRun, forceDelete, errors: errors.slice(0, 10) };
+  } catch (error) {
+    const existing = (await chrome.storage.local.get("corvoBridgeCleanerStatus")).corvoBridgeCleanerStatus || {};
+    await chrome.storage.local.set({ corvoBridgeCleanerStatus: {
+      ...existing, at: Date.now(), running: false, fatalError: String(error?.message || "CLEANER_FAILED")
+    }});
+    throw error;
   } finally {
+    if (cleanerTabId) await chrome.tabs.remove(cleanerTabId).catch(() => {});
     cleanerRunning = false;
   }
 }
@@ -332,6 +438,18 @@ async function completeJobTab(jobId) {
   const jobs = data[JOB_TABS_KEY] || {};
   const record = jobs[jobId];
   if (!record) return { ok: true, closed: false };
+
+  // Captura a URL FINAL antes de fechar a aba. Em GPTs personalizados a rota
+  // costuma ser /g/<gpt>/c/<conversationId>, então esse é o momento mais
+  // confiável para garantir que o Cleaner conheça a conversa real.
+  try {
+    const tab = await chrome.tabs.get(record.tabId);
+    const conversationUrl = String(tab?.url || "");
+    if (conversationKey(conversationUrl)) {
+      await patchEligibleCleanerRecord(jobId, { conversationUrl, completedAt: Date.now() });
+    }
+  } catch {}
+
   delete jobs[jobId];
   const owned = new Set(Array.isArray(data[OWNED_TABS_KEY]) ? data[OWNED_TABS_KEY] : []);
   if (record.closeOnComplete) owned.delete(record.tabId);
@@ -577,7 +695,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "CORVO_CLEANER_GET_STATE") {
-    Promise.all([getCleanerRecords(), chrome.storage.local.get([CLEANER_LOG_KEY, "corvoBridgeCleanerStatus"]), getConfig()])
+    Promise.all([repairCleanerRecords(), chrome.storage.local.get([CLEANER_LOG_KEY, "corvoBridgeCleanerStatus"]), getConfig()])
       .then(([records, data, config]) => sendResponse({ ok: true, records, log: data[CLEANER_LOG_KEY] || [], status: data.corvoBridgeCleanerStatus || null, config }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
@@ -660,6 +778,16 @@ chrome.runtime.onStartup.addListener(() => {
     todayRun.setHours(h || 0, m || 0, 0, 0);
     const status = (await chrome.storage.local.get("corvoBridgeCleanerStatus")).corvoBridgeCleanerStatus;
     if (now >= todayRun && (!status?.at || localDay(status.at) !== localDay(now.getTime()))) runCleaner().catch(() => {});
+  }).catch(() => {});
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  const url = String(changeInfo?.url || tab?.url || "");
+  if (!conversationKey(url)) return;
+  chrome.storage.local.get(JOB_TABS_KEY).then((data) => {
+    const jobs = data[JOB_TABS_KEY] || {};
+    const matches = Object.entries(jobs).filter(([, record]) => record?.tabId === tabId);
+    return Promise.all(matches.map(([jobId]) => patchEligibleCleanerRecord(jobId, { conversationUrl: url, conversationSeenAt: Date.now() })));
   }).catch(() => {});
 });
 

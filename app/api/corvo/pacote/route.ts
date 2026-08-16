@@ -1,7 +1,7 @@
 import { put } from "@vercel/blob";
 import JSZip from "jszip";
 import { NextRequest, NextResponse } from "next/server";
-import { attachCorvoFile, getCorvoJob, listCollectorCandidates } from "../../../../lib/corvo-jobs";
+import { attachCorvoFile, getCorvoJob, listCollectorCandidates, updateCorvoAnalysisPreparation } from "../../../../lib/corvo-jobs";
 import { storageFailure } from "../../../../lib/corvo-api";
 
 export const runtime = "nodejs";
@@ -34,6 +34,14 @@ export async function POST(request: NextRequest) {
 
     const candidates = await listCollectorCandidates(jobId, token);
     if (!candidates?.length) return NextResponse.json({ ok: false, message: "Nenhuma candidata do Collector foi recebida." }, { status: 409 });
+    await updateCorvoAnalysisPreparation(jobId, token, {
+      stage:"ZIP_BUILDING",
+      storedCandidates:candidates.length,
+      storedIds:new Set(candidates.map((candidate) => String(candidate.id))).size,
+      packageFileName:requestedName || undefined,
+      selectionMode,
+      error:undefined,
+    });
 
     const expectedIds = (job.request.ids || []).map((id) => String(id));
     const grouped = new Map<string, typeof candidates>();
@@ -159,6 +167,14 @@ export async function POST(request: NextRequest) {
       createdAt: new Date().toISOString(),
     });
     if (!updated) return NextResponse.json({ ok: false, message: "Trabalho não encontrado ou expirado." }, { status: 404 });
+    await updateCorvoAnalysisPreparation(jobId, token, {
+      stage:"ZIP_SAVED",
+      storedCandidates:ordered.length,
+      storedIds:new Set(ordered.map((candidate) => String(candidate.id))).size,
+      packageFileName:fileName,
+      selectionMode,
+      error:undefined,
+    });
     return NextResponse.json({
       ok: true,
       jobId,
@@ -169,6 +185,16 @@ export async function POST(request: NextRequest) {
       failures,
     });
   } catch (error) {
+    if (jobId && token) {
+      try {
+        await updateCorvoAnalysisPreparation(jobId, token, {
+          stage:"ZIP_BUILDING",
+          packageFileName:requestedName || undefined,
+          selectionMode,
+          error:error instanceof Error ? error.message : String(error),
+        });
+      } catch {}
+    }
     return storageFailure(error);
   }
 }

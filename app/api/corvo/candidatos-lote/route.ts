@@ -1,7 +1,7 @@
 import { put } from "@vercel/blob";
 import JSZip from "jszip";
 import { NextRequest, NextResponse } from "next/server";
-import { attachCollectorCandidatesBatch, getCorvoJob, type CorvoCollectorCandidate } from "../../../../lib/corvo-jobs";
+import { attachCollectorCandidatesBatch, getCorvoJob, listCollectorCandidates, updateCorvoAnalysisPreparation, type CorvoCollectorCandidate } from "../../../../lib/corvo-jobs";
 import { storageFailure } from "../../../../lib/corvo-api";
 
 export const runtime = "nodejs";
@@ -91,7 +91,14 @@ export async function POST(request:NextRequest) {
     }));
     const saved = await attachCollectorCandidatesBatch(jobId, token, records);
     if (!saved) return NextResponse.json({ ok:false, message:"Trabalho não encontrado, expirado ou incompatível com o Collector." }, { status:404 });
-    return NextResponse.json({ ok:true, jobId, batchName, batchUrl:blob.url, accepted:saved.length, bytes:file.size });
+    const allCandidates = await listCollectorCandidates(jobId, token) || [];
+    await updateCorvoAnalysisPreparation(jobId, token, {
+      stage:"CANDIDATES_PREPARING",
+      storedCandidates:allCandidates.length,
+      storedIds:new Set(allCandidates.map((candidate) => String(candidate.id))).size,
+      error:undefined,
+    });
+    return NextResponse.json({ ok:true, jobId, batchName, batchUrl:blob.url, accepted:saved.length, storedCandidates:allCandidates.length, bytes:file.size });
   } catch (error) {
     return storageFailure(error);
   }
