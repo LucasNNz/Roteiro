@@ -91,7 +91,7 @@ async function getDiagnostic(jobId) {
   const start = events[0]?.at || job.createdAt || Date.now();
   const lines = [
     "CORVO BRIDGE DIAGNÓSTICO V1",
-    `Bridge: V0.6.17`,
+    `Bridge: V0.6.18`,
     `JOB_ID: ${id}`,
     `Eventos: ${events.length}`,
     `Status atual: ${data.corvoBridgeStatus?.state || ""} | ${data.corvoBridgeStatus?.message || ""}`,
@@ -371,11 +371,42 @@ async function rememberJobTab(jobId, tabId, openedByBridge, meta = {}) {
 async function fetchAttachmentForChat(payload = {}) {
   const rawUrl = String(payload.url || "").trim();
   if (!/^https:\/\//i.test(rawUrl)) throw new Error("ATTACHMENT_URL_INVALID");
-  const response = await fetch(rawUrl, { cache: "no-store", credentials: "omit" });
-  if (!response.ok) throw new Error(`ATTACHMENT_FETCH_${response.status}`);
+  const jobId = String(payload.jobId || "").trim();
+  const uploadToken = String(payload.uploadToken || "").trim();
+  const config = await getConfig();
+  const appOrigin = String(payload.appOrigin || config.appOrigin || "").trim().replace(/\/$/, "");
+  let response = null;
+  let source = "blob-direct";
+
+  if (jobId && uploadToken && /^https:\/\//i.test(appOrigin)) {
+    const proxyUrl = `${appOrigin}/api/corvo/download?jobId=${encodeURIComponent(jobId)}&url=${encodeURIComponent(rawUrl)}&name=${encodeURIComponent(String(payload.name || "arquivo"))}`;
+    await appendDiagnostic(jobId, "ATTACHMENT_BACKGROUND_PROXY_START", { appOrigin, fileName:String(payload.name || "arquivo") }, "background").catch(() => {});
+    try {
+      response = await fetch(proxyUrl, {
+        method:"GET", cache:"no-store", credentials:"omit",
+        headers:{ "x-corvo-upload-token":uploadToken },
+      });
+      if (!response.ok) {
+        await appendDiagnostic(jobId, "ATTACHMENT_BACKGROUND_PROXY_FAIL", { status:response.status }, "background").catch(() => {});
+        response = null;
+      } else {
+        source = "app-proxy";
+        await appendDiagnostic(jobId, "ATTACHMENT_BACKGROUND_PROXY_OK", { status:response.status, contentLength:response.headers.get("content-length") || "" }, "background").catch(() => {});
+      }
+    } catch (error) {
+      await appendDiagnostic(jobId, "ATTACHMENT_BACKGROUND_PROXY_EXCEPTION", { error:String(error?.message || error || "") }, "background").catch(() => {});
+      response = null;
+    }
+  }
+
+  if (!response) {
+    response = await fetch(rawUrl, { cache: "no-store", credentials: "omit" });
+    if (!response.ok) throw new Error(`ATTACHMENT_FETCH_${response.status}`);
+  }
+
   const buffer = await response.arrayBuffer();
   if (!buffer.byteLength) throw new Error("ATTACHMENT_EMPTY");
-  if (buffer.byteLength > 40 * 1024 * 1024) throw new Error("ATTACHMENT_TOO_LARGE");
+  if (buffer.byteLength > 40 * 1024 * 1024) throw new Error("ATTACHMENT_BACKGROUND_MESSAGE_TOO_LARGE");
   const bytes = new Uint8Array(buffer);
   let binary = "";
   const chunk = 0x8000;
@@ -388,6 +419,7 @@ async function fetchAttachmentForChat(payload = {}) {
     name: String(payload.name || "arquivo").trim() || "arquivo",
     contentType,
     size: buffer.byteLength,
+    source,
     dataUrl: `data:${contentType};base64,${btoa(binary)}`
   };
 }

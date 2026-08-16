@@ -1,3 +1,7 @@
+## Alteração V0.6.31 — proxy autenticado do ZIP do Analista
+
+O diagnóstico V1 chegou até `COMPOSER_FILL_OK` e falhou exatamente em `ATTACHMENT_FETCH_DIRECT_FAIL` / `ATTACHMENT_FETCH_403`. O transporte do ZIP deixa de depender da leitura direta do domínio Blob dentro do ChatGPT. O app fornece `appOrigin` + token do job ao Bridge; quando a leitura direta falha, o Bridge chama `GET /api/corvo/download`, que autentica o job, valida que a origem é um Blob interno `corvoquiz/` e usa `@vercel/blob.get()` no servidor para devolver o stream. O mesmo pacote `ZIP_SAVED` é reutilizado; nenhuma etapa do Collector/preparo é refeita.
+
 ## Alteração V0.6.30 — autorrecuperação do handshake em aba reutilizada
 
 O diagnóstico mostrou `TAB_REUSED` seguido de `Receiving end does not exist`: a aba do Analista estava aberta, mas sem o content script do Bridge. O Bridge V0.6.17 passa a detectar esse estado, injetar `chatgpt-bridge.js` via `chrome.scripting`, e usar reload da aba como fallback. Nenhum anexo/prompt é iniciado antes do `PING_OK`. O checkpoint de preparação continua preservado durante toda a recuperação.

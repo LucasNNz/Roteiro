@@ -1,4 +1,12 @@
-# CorvoQuiz Produção — V0.6.30
+# CorvoQuiz Produção — V0.6.31
+
+## V0.6.31 — proxy autenticado para anexos do Analista
+
+- Corrige o diagnóstico `ATTACHMENT_FETCH_403`: o prompt chegava ao composer, mas o ZIP do Analista não podia ser lido diretamente do Blob pela página/extensão.
+- Nova rota `GET /api/corvo/download` valida `JOB_ID` + `x-corvo-upload-token` e recupera o Blob no servidor com `@vercel/blob/get`.
+- O Bridge V0.6.18 tenta leitura direta, depois o proxy do CorvoQuiz e mantém o background como fallback final.
+- O ZIP continua sendo o mesmo artefato persistente do checkpoint; falha de transporte não refaz Collector, candidatas, lotes nem montagem do ZIP.
+- O diagnóstico passa a registrar `ATTACHMENT_PROXY_FETCH_START/OK/FAIL`.
 
 ## V0.6.30 — handshake autorrecuperável do Analista
 
@@ -262,9 +270,9 @@ Configure no projeto:
 
 ## Instalação
 
-### Corvo Bridge V0.6.17
+### Corvo Bridge V0.6.18
 
-Use `public/downloads/CORVO_BRIDGE_V0617_EXTENSION.zip` ou carregue a pasta `corvo-bridge-extension` em `chrome://extensions`.
+Use `public/downloads/CORVO_BRIDGE_V0618_EXTENSION.zip` ou carregue a pasta `corvo-bridge-extension` em `chrome://extensions`.
 
 ### Corvo Collector V0.8.0
 
@@ -273,8 +281,8 @@ Use `public/downloads/CORVO_COLLECTOR_V077_EXTENSION.zip` ou carregue a pasta `c
 ## Downloads dentro do app
 
 - Corvo Collector V0.8.0;
-- Corvo Bridge V0.6.17;
-- Kit completo CorvoQuiz V0.6.30.
+- Corvo Bridge V0.6.18;
+- Kit completo CorvoQuiz V0.6.31.
 
 ## Fora do escopo atual
 

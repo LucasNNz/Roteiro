@@ -1,3 +1,12 @@
+# CORVO BRIDGE V0.6.18 — PROXY DE DOWNLOAD + DIAGNÓSTICO
+
+## V0.6.18 — hotfix ATTACHMENT_FETCH_403
+
+- Mantém a autorrecuperação do content script da V0.6.17.
+- Quando o Blob não pode ser lido diretamente da página do ChatGPT, tenta `/api/corvo/download` no app usando o token do próprio job.
+- O proxy recupera o arquivo no servidor e evita o gap de CORS/403 entre ChatGPT/extensão e Vercel Blob.
+- Diagnóstico novo: `ATTACHMENT_PROXY_FETCH_START`, `ATTACHMENT_PROXY_FETCH_OK` e `ATTACHMENT_PROXY_FETCH_FAIL`.
+
 # CORVO BRIDGE V0.6.17 — AUTORRECUPERAÇÃO DO CONTENT SCRIPT + DIAGNÓSTICO
 
 ## V0.6.17 — hotfix do handshake em aba reutilizada

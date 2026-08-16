@@ -1,6 +1,6 @@
 (() => {
-  if (globalThis.__CORVO_CHATGPT_BRIDGE_V0617__) return;
-  globalThis.__CORVO_CHATGPT_BRIDGE_V0617__ = true;
+  if (globalThis.__CORVO_CHATGPT_BRIDGE_V0618__) return;
+  globalThis.__CORVO_CHATGPT_BRIDGE_V0618__ = true;
 
   let busy = false;
   const COMPOSER_TIMEOUT_MS = 30000;
@@ -348,6 +348,41 @@
     return new File([blob], name, { type:blob.type || String(attachment?.contentType || "application/octet-stream") });
   }
 
+  async function fetchAttachmentThroughApp(job, attachment) {
+    const appOrigin = String(job?.meta?.appOrigin || "").trim().replace(/\/$/, "");
+    const uploadToken = String(job?.meta?.uploadToken || "").trim();
+    const jobId = String(job?.jobId || "").trim();
+    const url = String(attachment?.url || "").trim();
+    const name = String(attachment?.name || "arquivo").trim() || "arquivo";
+    if (!appOrigin || !/^https:\/\//i.test(appOrigin) || !uploadToken || !jobId || !url) throw new Error("ATTACHMENT_PROXY_CONTEXT_MISSING");
+    const proxyUrl = `${appOrigin}/api/corvo/download?jobId=${encodeURIComponent(jobId)}&url=${encodeURIComponent(url)}&name=${encodeURIComponent(name)}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 180000);
+    try {
+      const response = await fetch(proxyUrl, {
+        method:"GET",
+        cache:"no-store",
+        credentials:"omit",
+        headers:{ "x-corvo-upload-token":uploadToken },
+        signal:controller.signal,
+      });
+      if (!response.ok) {
+        let message = "";
+        try { message = String((await response.json())?.message || ""); } catch {}
+        throw new Error(`ATTACHMENT_PROXY_FETCH_${response.status}${message ? `:${message}` : ""}`);
+      }
+      const blob = await response.blob();
+      if (!blob.size) throw new Error("ATTACHMENT_PROXY_EMPTY");
+      if (blob.size > 480 * 1024 * 1024) throw new Error("ATTACHMENT_TOO_LARGE_FOR_CHAT");
+      return new File([blob], name, { type:blob.type || String(attachment?.contentType || "application/octet-stream") });
+    } catch (error) {
+      if (error?.name === "AbortError") throw new Error("ATTACHMENT_PROXY_TIMEOUT");
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async function attachJobFiles(job) {
     const attachments = Array.isArray(job?.meta?.attachments) ? job.meta.attachments : [];
     await reportDiagnostic(job.jobId, "ATTACHMENTS_PLAN", { count:attachments.length, files:attachments.map((item) => ({ name:String(item?.name || ""), contentType:String(item?.contentType || ""), url:(() => { try { const u=new URL(String(item?.url || "")); return `${u.origin}${u.pathname}`; } catch { return ""; } })() })) });
@@ -372,13 +407,24 @@
         await reportDiagnostic(job.jobId, "ATTACHMENT_FETCH_DIRECT_OK", { fileName:name, bytes:file.size, type:file.type });
       } catch (directError) {
         await reportDiagnostic(job.jobId, "ATTACHMENT_FETCH_DIRECT_FAIL", { fileName:name, error:String(directError?.message || directError || "") });
-        const fetched = await chrome.runtime.sendMessage({
-          type: "CORVO_FETCH_ATTACHMENT",
-          payload: { url, name, contentType: String(attachment?.contentType || "") }
-        });
-        if (!fetched?.ok || !fetched?.dataUrl) throw new Error(fetched?.error || directError?.message || "ATTACHMENT_FETCH_FAILED");
-        file = dataUrlToFile(fetched.dataUrl, name, fetched.contentType);
-        await reportDiagnostic(job.jobId, "ATTACHMENT_FETCH_BACKGROUND_OK", { fileName:name, bytes:file.size, type:file.type });
+        try {
+          await reportStage(job.jobId, "FETCHING_ATTACHMENT_PROXY", `O Blob recusou leitura direta. Recuperando ${name} pelo CorvoQuiz...`, { fileName:name, attachmentIndex:index + 1, attachmentTotal:attachments.length });
+          await reportDiagnostic(job.jobId, "ATTACHMENT_PROXY_FETCH_START", { fileName:name, appOrigin:String(job?.meta?.appOrigin || "") });
+          file = await fetchAttachmentThroughApp(job, attachment);
+          await reportDiagnostic(job.jobId, "ATTACHMENT_PROXY_FETCH_OK", { fileName:name, bytes:file.size, type:file.type });
+        } catch (proxyError) {
+          await reportDiagnostic(job.jobId, "ATTACHMENT_PROXY_FETCH_FAIL", { fileName:name, error:String(proxyError?.message || proxyError || "") });
+          const fetched = await chrome.runtime.sendMessage({
+            type: "CORVO_FETCH_ATTACHMENT",
+            payload: {
+              url, name, contentType: String(attachment?.contentType || ""),
+              jobId:String(job?.jobId || ""), uploadToken:String(job?.meta?.uploadToken || ""), appOrigin:String(job?.meta?.appOrigin || "")
+            }
+          });
+          if (!fetched?.ok || !fetched?.dataUrl) throw new Error(fetched?.error || proxyError?.message || directError?.message || "ATTACHMENT_FETCH_FAILED");
+          file = dataUrlToFile(fetched.dataUrl, name, fetched.contentType);
+          await reportDiagnostic(job.jobId, "ATTACHMENT_FETCH_BACKGROUND_OK", { fileName:name, bytes:file.size, type:file.type, source:fetched.source || "background" });
+        }
       }
 
       totalBytes += Number(file?.size || 0);
@@ -1139,7 +1185,7 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "CORVO_BRIDGE_PING") {
       chrome.runtime.sendMessage({ type: "CORVO_GPT_READY" }).catch(() => {});
-      sendResponse({ ok: true, version:"0.6.17", page:pageDiagnostic() });
+      sendResponse({ ok: true, version:"0.6.18", page:pageDiagnostic() });
       return;
     }
     if (message?.type === "CORVO_SEND_PROMPT") {
