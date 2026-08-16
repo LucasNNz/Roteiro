@@ -1,6 +1,6 @@
 (() => {
-  if (globalThis.__CORVO_CHATGPT_BRIDGE_V0624__) return;
-  globalThis.__CORVO_CHATGPT_BRIDGE_V0624__ = true;
+  if (globalThis.__CORVO_CHATGPT_BRIDGE_V0628__) return;
+  globalThis.__CORVO_CHATGPT_BRIDGE_V0628__ = true;
 
   let busy = false;
   const capturedImageAssignments = new Map();
@@ -1019,62 +1019,205 @@
     };
   }
 
-  function generatedImageCandidates(payload = {}) {
-    const seen = new Set();
-    const items = [];
-    // Em jobs batelados o composer contém até 10 imagens de ENTRADA. Elas jamais
-    // podem ser confundidas com a saída refinada/gerada. Por isso o capturador
-    // considera somente regiões pertencentes ao ASSISTANT.
-    const assistantScopes = [
-      ...document.querySelectorAll('[data-message-author-role="assistant"]'),
-      ...document.querySelectorAll('article[data-testid^="conversation-turn"]')
-    ].filter((scope, index, all) => {
-      if (all.indexOf(scope) !== index) return false;
+  function assistantLikeScopes() {
+    const explicit = [...document.querySelectorAll('[data-message-author-role="assistant"]')];
+    const turns = [...document.querySelectorAll('article[data-testid^="conversation-turn"]')].filter((scope) => {
       const ownRole = scope.getAttribute?.('data-message-author-role');
-      if (ownRole) return ownRole === 'assistant';
+      if (ownRole === 'user') return false;
+      if (ownRole === 'assistant') return true;
       if (scope.querySelector?.('[data-message-author-role="user"]')) return false;
-      return Boolean(scope.querySelector?.('[data-message-author-role="assistant"]'));
+      return true;
     });
+    return [...explicit, ...turns].filter((scope, index, all) => all.indexOf(scope) === index);
+  }
+
+  function manifestOutputFileNames(payload = {}) {
+    const supplied = Array.isArray(payload?.expectedFiles) ? payload.expectedFiles : [];
+    const names = supplied.map((value) => String(value || '').trim()).filter(Boolean);
+    const scopes = assistantLikeScopes();
+    // Em retries semânticos a mesma conversa pode conter manifestos antigos.
+    // Só o manifesto mais recente pertence às imagens após a última mensagem
+    // do usuário e, portanto, só ele define os ARQUIVO= desta captura.
+    const manifestScopes = scopes.filter((scope) => /\[CORVO_(?:THUMBNAIL|IMAGE_(?:GENERATION|REFINEMENT))\]/i.test(String(scope?.textContent || '')));
+    const scope = manifestScopes.at(-1) || null;
+    if (scope) {
+      const text = String(scope.textContent || '');
+      for (const match of text.matchAll(/(?:^|\n)\s*ARQUIVO\s*=\s*([^\n\r]+)/gi)) {
+        const name = String(match?.[1] || '').trim();
+        if (name) names.push(name);
+      }
+    }
+    return [...new Map(names.map((name) => [name.toLocaleLowerCase('pt-BR'), name])).values()];
+  }
+
+  function generatedImageCandidates(payload = {}) {
+    const seenElements = new Set();
+    const rawItems = [];
+    const assistantScopes = assistantLikeScopes();
+    const latestUser = [...document.querySelectorAll('[data-message-author-role="user"]')].at(-1) || null;
+    let latestUserY = -Infinity;
+    try {
+      if (latestUser) latestUserY = latestUser.getBoundingClientRect().top + window.scrollY;
+    } catch {}
 
     function addImage(image, scope = null, scopeIndex = -1) {
-      if (!image || seen.has(image)) return;
-      const authorNode = image.closest?.('[data-message-author-role]');
-      if (authorNode && authorNode.getAttribute('data-message-author-role') !== 'assistant') return;
-      const turn = scope || image.closest('article[data-testid^="conversation-turn"], [data-message-author-role="assistant"]');
-      if (!turn) return;
-      const turnRole = turn.getAttribute?.('data-message-author-role');
-      if (turnRole && turnRole !== 'assistant') return;
-      if (!turnRole && turn.querySelector?.('[data-message-author-role="user"]')) return;
+      if (!image || seenElements.has(image)) return;
+      seenElements.add(image);
 
-      seen.add(image);
+      const authorNode = image.closest?.('[data-message-author-role]');
+      if (authorNode?.getAttribute('data-message-author-role') === 'user') return;
+      if (image.closest?.('form, textarea, [contenteditable="true"], nav, header, aside')) return;
+
+      const turn = scope || image.closest?.('article[data-testid^="conversation-turn"], [data-message-author-role="assistant"]') || null;
+      const turnRole = turn?.getAttribute?.('data-message-author-role');
+      if (turnRole === 'user') return;
+      if (turn && !turnRole && turn.querySelector?.('[data-message-author-role="user"]')) return;
+
       if (!visible(image)) return;
-      const width = image.naturalWidth || image.width || image.clientWidth || 0;
-      const height = image.naturalHeight || image.height || image.clientHeight || 0;
-      const src = String(image.currentSrc || image.src || "");
-      const alt = String(image.alt || "").toLowerCase();
-      if (!src || src.startsWith("data:image/svg")) return;
-      if (/avatar|profile|ícone|icon|favicon/.test(alt)) return;
-      if (width < 420 || height < 220 || width * height < 180000) return;
-      const text = String(turn?.textContent || "");
+      const naturalWidth = image.naturalWidth || 0;
+      const naturalHeight = image.naturalHeight || 0;
+      const renderedWidth = image.clientWidth || image.width || 0;
+      const renderedHeight = image.clientHeight || image.height || 0;
+      const naturalArea = naturalWidth * naturalHeight;
+      const renderedArea = renderedWidth * renderedHeight;
+      const src = String(image.currentSrc || image.src || '');
+      const alt = String(image.alt || '').toLowerCase();
+      if (!src || src.startsWith('data:image/svg')) return;
+      if (/avatar|profile|ícone|icon|favicon|emoji/.test(alt)) return;
+
+      // A UI nova do ChatGPT pode renderizar 2 variantes por geração em tiles
+      // relativamente pequenos. Aceitamos tiles pequenos quando o arquivo real
+      // possui resolução de imagem, mas continuamos rejeitando ícones/thumbnails.
+      const hasRealResolution = naturalWidth >= 256 && naturalHeight >= 160 && naturalArea >= 70000;
+      const hasUsefulRenderedSize = renderedWidth >= 110 && renderedHeight >= 70 && renderedArea >= 10000;
+      if (!hasRealResolution && !hasUsefulRenderedSize) return;
+
+      const rect = image.getBoundingClientRect();
+      const y = rect.top + window.scrollY;
+      const x = rect.left + window.scrollX;
+      if (Number.isFinite(latestUserY) && y + Math.max(renderedHeight, 1) < latestUserY - 40) return;
+
+      const text = String(turn?.textContent || '');
       const manifest = /\[CORVO_THUMBNAIL\]|TIPO_ARQUIVO\s*=\s*THUMBNAIL|\[CORVO_IMAGE_(GENERATION|REFINEMENT)\]/i.test(text) ? 1 : 0;
       const jobMatch = payload?.jobId && text.includes(String(payload.jobId)) ? 1 : 0;
       const fileMatch = payload?.name && text.includes(String(payload.name)) ? 1 : 0;
-      const rect = image.getBoundingClientRect();
-      items.push({ image, scope: turn, scopeIndex, manifest, jobMatch, fileMatch, area: width * height, y: rect.top + window.scrollY });
+      const selected = image.closest?.('[aria-selected="true"], [aria-pressed="true"], [data-state="active"], [data-selected="true"]') ? 1 : 0;
+      const ancestorText = String(image.closest?.('button, figure, [role="group"], [role="listitem"]')?.textContent || '').toLowerCase();
+      const generatedHint = /oaiusercontent\.com|blob:/i.test(src) || /editar|edit image|share|compartilhar/.test(ancestorText) ? 1 : 0;
+      rawItems.push({
+        image, scope:turn, scopeIndex, manifest, jobMatch, fileMatch, selected, generatedHint,
+        naturalArea, renderedArea, area:Math.max(naturalArea, renderedArea), x, y,
+        centerY:y + Math.max(renderedHeight, naturalHeight ? Math.min(naturalHeight, renderedHeight || naturalHeight) : 0) / 2,
+        renderedWidth, renderedHeight, naturalWidth, naturalHeight, src
+      });
     }
 
     assistantScopes.forEach((scope, scopeIndex) => {
       [...scope.querySelectorAll('img')].forEach((image) => addImage(image, scope, scopeIndex));
     });
 
-    return items.sort((a, b) =>
+    // Fallback para o novo componente de geração de imagens: em algumas versões
+    // o gallery/card fica dentro de <main>, mas fora do nó que carrega
+    // data-message-author-role="assistant". Coletamos apenas imagens grandes o
+    // suficiente e nunca imagens pertencentes a mensagens do usuário/composer.
+    const main = document.querySelector('main') || document.body;
+    [...main.querySelectorAll('img')].forEach((image) => addImage(image, null, 9999));
+
+    // A mesma imagem pode aparecer como preview grande + miniatura. Mantemos a
+    // ocorrência visualmente maior para que Thumb com 2 opções escolha o asset
+    // principal, não o thumbnail lateral.
+    const bySrc = new Map();
+    for (const item of rawItems) {
+      const key = String(item.src || '');
+      const previous = bySrc.get(key);
+      if (!previous || item.renderedArea > previous.renderedArea || (item.renderedArea === previous.renderedArea && item.selected > previous.selected)) {
+        bySrc.set(key, item);
+      }
+    }
+
+    return [...bySrc.values()].sort((a, b) =>
       b.jobMatch - a.jobMatch ||
       b.fileMatch - a.fileMatch ||
       b.manifest - a.manifest ||
+      b.selected - a.selected ||
+      b.generatedHint - a.generatedHint ||
       a.y - b.y ||
-      a.scopeIndex - b.scopeIndex ||
-      b.area - a.area
+      a.x - b.x ||
+      b.renderedArea - a.renderedArea ||
+      b.naturalArea - a.naturalArea
     );
+  }
+
+  function visualRows(candidates = []) {
+    const sorted = [...candidates].sort((a,b) => a.y - b.y || a.x - b.x);
+    if (!sorted.length) return [];
+    const heights = sorted.map((item) => Number(item.renderedHeight || 0)).filter((value) => value > 0).sort((a,b) => a-b);
+    const medianHeight = heights.length ? heights[Math.floor(heights.length / 2)] : 120;
+    const tolerance = Math.max(24, Math.min(100, medianHeight * 0.45));
+    const rows = [];
+    for (const item of sorted) {
+      let row = rows.find((entry) => Math.abs(entry.centerY - item.centerY) <= tolerance);
+      if (!row) {
+        row = { centerY:item.centerY, items:[] };
+        rows.push(row);
+      }
+      row.items.push(item);
+      row.centerY = row.items.reduce((sum, current) => sum + current.centerY, 0) / row.items.length;
+    }
+    return rows.sort((a,b) => a.centerY - b.centerY).map((row) => row.items.sort((a,b) => a.x - b.x));
+  }
+
+  function bestVariant(group = []) {
+    const all = [...group];
+    const maxRenderedArea = all.reduce((max, item) => Math.max(max, Number(item.renderedArea || 0)), 0);
+    // A gallery de Thumb mostra um preview grande e miniaturas laterais. Um
+    // thumbnail pode estar aria-selected=true, mas o asset a capturar é o preview
+    // grande correspondente. Descartamos ocorrências muito menores antes de
+    // considerar estado selecionado.
+    const meaningful = maxRenderedArea > 0
+      ? all.filter((item) => Number(item.renderedArea || 0) >= maxRenderedArea * 0.28)
+      : all;
+    const pool = meaningful.length ? meaningful : all;
+    return pool.sort((a,b) =>
+      b.selected - a.selected ||
+      b.generatedHint - a.generatedHint ||
+      b.renderedArea - a.renderedArea ||
+      b.naturalArea - a.naturalArea ||
+      a.x - b.x ||
+      a.y - b.y
+    )[0] || null;
+  }
+
+  function logicalGeneratedImageSlots(candidates = [], payload = {}) {
+    const expectedNames = manifestOutputFileNames(payload);
+    const expectedCount = Math.max(1, expectedNames.length || Number(payload?.expectedCount || 0) || 1);
+    const ordered = [...candidates].sort((a,b) => a.y - b.y || a.x - b.x);
+    if (!ordered.length) return { expectedNames, slots:[] };
+
+    // Thumb / saída única: pode haver duas opções ou preview + miniaturas. A
+    // variante visualmente principal/selecionada é a saída física do manifesto.
+    if (expectedCount === 1) return { expectedNames, slots:[bestVariant(ordered)] };
+
+    const rows = visualRows(ordered);
+    if (rows.length >= expectedCount) {
+      return { expectedNames, slots:rows.slice(0, expectedCount).map((row) => bestVariant(row)).filter(Boolean) };
+    }
+
+    // Fallback para galerias sem coordenadas de linha confiáveis. Quando o
+    // ChatGPT devolve N variantes para cada um dos IDs, o número total costuma
+    // ser múltiplo da quantidade de ARQUIVO=. Dividimos em grupos visuais iguais
+    // e escolhemos uma variante de cada grupo.
+    if (ordered.length >= expectedCount && ordered.length % expectedCount === 0) {
+      const variantsPerOutput = ordered.length / expectedCount;
+      const slots = [];
+      for (let index = 0; index < expectedCount; index += 1) {
+        const group = ordered.slice(index * variantsPerOutput, (index + 1) * variantsPerOutput);
+        slots.push(bestVariant(group));
+      }
+      return { expectedNames, slots:slots.filter(Boolean) };
+    }
+
+    return { expectedNames, slots:ordered.slice(0, expectedCount) };
   }
 
   function blobToDataUrl(blob) {
@@ -1125,22 +1268,37 @@
     capturedImageAssignments.set(jobId, assignments);
     while (Date.now() < deadline) {
       const candidates = generatedImageCandidates(payload);
+      const layout = logicalGeneratedImageSlots(candidates, payload);
       const assignedSrc = assignments.get(requestedName) || "";
       const used = new Set([...assignments.entries()].filter(([name]) => name !== requestedName).map(([,src]) => src));
-      let candidate = assignedSrc ? candidates.find((item) => String(item.image.currentSrc || item.image.src || "") === assignedSrc) : null;
+      let candidate = assignedSrc ? candidates.find((item) => String(item.src || item.image.currentSrc || item.image.src || "") === assignedSrc) : null;
       if (!candidate) {
-        const unused = candidates.filter((item) => !used.has(String(item.image.currentSrc || item.image.src || "")));
-        const exact = unused.filter((item) => item.fileMatch > 0);
-        // Em lotes, cada ARQUIVO esperado precisa receber uma imagem física
-        // distinta. Quando o texto do GPT não vincula explicitamente o nome do
-        // arquivo à imagem, usamos a ordem visual da conversa (topo -> baixo),
-        // que acompanha a ordem dos blocos [ID] do manifesto.
-        const pool = exact.length ? exact : unused;
-        candidate = [...pool].sort((a,b) => a.y - b.y || a.scopeIndex - b.scopeIndex || a.area - b.area)[0] || null;
-        if (candidate) assignments.set(requestedName, String(candidate.image.currentSrc || candidate.image.src || ""));
+        const requestedKey = requestedName.toLocaleLowerCase('pt-BR');
+        const logicalIndex = layout.expectedNames.findIndex((name) => String(name || '').toLocaleLowerCase('pt-BR') === requestedKey);
+        if (logicalIndex >= 0 && layout.slots[logicalIndex]) {
+          const slot = layout.slots[logicalIndex];
+          const slotSrc = String(slot.src || slot.image.currentSrc || slot.image.src || '');
+          if (!used.has(slotSrc)) candidate = slot;
+        }
+        if (!candidate) {
+          const unusedSlots = layout.slots.filter((item) => !used.has(String(item.src || item.image.currentSrc || item.image.src || '')));
+          candidate = unusedSlots[0] || candidates.find((item) => !used.has(String(item.src || item.image.currentSrc || item.image.src || ''))) || null;
+        }
+        if (candidate) assignments.set(requestedName, String(candidate.src || candidate.image.currentSrc || candidate.image.src || ""));
       }
       if (candidate) {
-        const src = String(candidate.image.currentSrc || candidate.image.src || "");
+        reportDiagnostic(jobId, 'CAPTURE_IMAGE_SLOT_SELECTED', {
+          requestedName,
+          expectedFiles:layout.expectedNames,
+          candidateCount:candidates.length,
+          slotCount:layout.slots.length,
+          chosenSrc:shortText(String(candidate.src || candidate.image.currentSrc || candidate.image.src || ''), 160),
+          chosenRendered:[candidate.renderedWidth || 0, candidate.renderedHeight || 0],
+          chosenNatural:[candidate.naturalWidth || 0, candidate.naturalHeight || 0]
+        }).catch(() => {});
+      }
+      if (candidate) {
+        const src = String(candidate.src || candidate.image.currentSrc || candidate.image.src || "");
         try {
           const blob = await fetchImageBlob(src, 7000);
           return {
@@ -1333,7 +1491,7 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "CORVO_BRIDGE_PING") {
       chrome.runtime.sendMessage({ type: "CORVO_GPT_READY" }).catch(() => {});
-      sendResponse({ ok: true, version:"0.6.26", page:pageDiagnostic() });
+      sendResponse({ ok: true, version:"0.6.28", page:pageDiagnostic() });
       return;
     }
     if (message?.type === "CORVO_SEND_PROMPT") {

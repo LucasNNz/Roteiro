@@ -1,0 +1,14 @@
+CORVOQUIZ V0.6.42 + CORVO BRIDGE V0.6.27
+
+FIX: PARAR LIMPEZA
+
+A V0.6.26 mantinha o cancelamento principal somente em memória do service worker. Em Manifest V3 o worker pode ser recriado, deixando `corvoBridgeCleanerStatus.running=true` no storage sem a variável em memória correspondente. Nesse cenário o popup mostrava a limpeza ativa, mas o STOP não conseguia cancelar o estado antigo.
+
+V0.6.27:
+- persiste runId, stopRequested e tabId do Cleaner;
+- STOP funciona mesmo depois de reinício do service worker;
+- fecha a aba de manutenção pelo tabId persistido;
+- marca a limpeza como parada imediatamente no popup;
+- verifica cancelamento durante navegação, espera e retry;
+- recupera automaticamente status `running=true` órfão;
+- não segue para a próxima conversa após STOP.

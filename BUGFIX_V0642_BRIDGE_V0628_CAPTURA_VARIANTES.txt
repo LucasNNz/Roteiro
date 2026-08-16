@@ -1,0 +1,20 @@
+CORVO BRIDGE V0.6.28 — CAPTURA DE GALERIAS / VARIANTES
+
+PROBLEMA
+O ChatGPT pode devolver duas ou mais opções visuais para uma mesma geração.
+Exemplos observados:
+- 4 IDs do Gerador/Refinador retornando 8 imagens (2 variantes por ID);
+- Thumbnail retornando 2 opções para 1 ARQUIVO.
+A V0.6.27 procurava imagens principalmente dentro do nó assistant e não possuía agrupamento lógico de variantes.
+
+CORREÇÃO
+1. Captura também galleries/cards dentro do conteúdo principal quando o componente de imagem está fora do nó assistant.
+2. Lê os ARQUIVO= do manifesto para descobrir quantas saídas físicas são esperadas.
+3. Agrupa variantes por posição visual/linha.
+4. Seleciona uma variante por ARQUIVO/ID.
+5. Para saída única (Thumb), escolhe a imagem principal/selecionada/maior e ignora miniaturas laterais.
+6. Deduplica previews com o mesmo src.
+7. Registra CAPTURE_IMAGE_SLOT_SELECTED no diagnóstico para auditoria.
+
+COMPATIBILIDADE
+Não altera o contrato do app. Funciona com o CorvoQuiz V0.6.42 existente. Jobs presos em WAITING_FILE podem ser recuperados com Tentar captura novamente após recarregar a extensão e a página da conversa.

@@ -48,7 +48,7 @@ async function refresh(){
       const stopButton=document.querySelector("#stopCleaner");
       const cleanerStatus=c.status||null;
       const refreshStatus=c.refreshStatus||null;
-      const busy=Boolean(cleanerStatus?.running||refreshStatus?.running);
+      const busy=Boolean(cleanerStatus?.running||refreshStatus?.running||c.runtimeBusy);
       deleteButton.disabled=mappedPending===0||busy;
       refreshButton.disabled=busy;
       refreshButton.textContent=refreshStatus?.running?`Atualizando ${refreshStatus.current||refreshStatus.checked||0}/${refreshStatus.candidates||mappedPending}...`:"Atualizar lista";
@@ -110,7 +110,7 @@ document.querySelector("#refreshCleaner").addEventListener("click",async(e)=>{
 document.querySelector("#stopCleaner").addEventListener("click",async(e)=>{
   const b=e.currentTarget,output=document.querySelector("#cleanerAction");
   b.disabled=true;b.textContent="Parando...";output.textContent="Interrompendo a limpeza e fechando a aba de manutenção...";
-  try{const r=await chrome.runtime.sendMessage({type:"CORVO_CLEANER_STOP"});if(!r?.ok)throw new Error(r?.error||"Falha ao parar");output.textContent="Comando de parada enviado. A fila não continuará para a próxima conversa.";}catch(err){output.textContent=`Erro ao parar: ${err?.message||"falha"}`;}finally{setTimeout(()=>refresh().catch(()=>{}),300);}
+  try{const r=await chrome.runtime.sendMessage({type:"CORVO_CLEANER_STOP"});if(!r?.ok)throw new Error(r?.error||"Falha ao parar");output.textContent="Limpeza parada. Nenhuma próxima conversa será processada.";}catch(err){output.textContent=`Erro ao parar: ${err?.message||"falha"}`;}finally{setTimeout(()=>refresh().catch(()=>{}),300);}
 });
 
 document.querySelector("#copyDiagnostic").addEventListener("click",async(e)=>{

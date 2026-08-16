@@ -1,0 +1,9 @@
+CORVO BRIDGE V0.6.27 — CLEANER STOP PERSISTENTE
+
+Correção principal:
+- O botão Parar limpeza não depende mais somente de variáveis em memória do service worker Manifest V3.
+- O estado de cancelamento e o tabId da aba de manutenção ficam persistidos em chrome.storage.local.
+- Parar limpeza marca o estado como parado imediatamente, fecha a aba de manutenção e grava stopRequested persistente.
+- O loop consulta o cancelamento entre navegações, retries e esperas.
+- Se a extensão reiniciar e encontrar um status running=true órfão, o status é recuperado automaticamente como parado.
+- Não inicia a próxima conversa depois do STOP.

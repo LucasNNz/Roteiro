@@ -1,3 +1,15 @@
+# CorvoQuiz Produção V0.6.43
+
+## V0.6.43 — Automático Reels / Vídeo Completo + Thumb por formato
+
+- Dois atalhos independentes na tela principal: **Automático Reels** e **Automático Vídeo Completo**.
+- Reels envia `FORMATO=REELS` e exige thumbnail **vertical 9:16**.
+- Vídeo completo envia `FORMATO=VÍDEO COMPLETO` e exige thumbnail **horizontal 16:9**.
+- O formato é fixado no nascimento do projeto automático para não depender do último valor usado no modal assistido.
+- Migração automática invalida apenas thumbs legadas de Reels, porque até a V0.6.42 o contrato de Thumb era 16:9 para qualquer formato.
+- Thumbs legadas de vídeo completo são mantidas.
+- Bridge continua na V0.6.28.
+
 # CORVOQUIZ V0.6.41 — BATCHING REAL + JOB LÓGICO + CLEANER RESILIENTE
 
 ## Correção estrutural da pipeline de imagens
@@ -387,3 +399,7 @@ Publicação automática no YouTube continua futura: upload do vídeo final, apl
 - Recarga da página retoma somente o polling quando a mensagem já foi enviada.
 - O Bridge V0.6.21 bloqueia um novo job ANALISTA enquanto a conversa do Analista ainda está respondendo.
 - O retry por tempo continua existindo apenas antes da confirmação real do envio (composer/anexo/botão).
+
+
+## Bridge V0.6.28 — captura de galerias e variantes
+O Bridge agora reconhece múltiplas opções geradas pelo ChatGPT (ex.: 2 variantes por ID e 2 opções de thumbnail), agrupa as imagens pelas saídas ARQUIVO= do manifesto e captura uma imagem física por saída sem travar o pipeline.

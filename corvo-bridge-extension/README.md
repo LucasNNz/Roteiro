@@ -1,4 +1,4 @@
-# CORVO BRIDGE V0.6.26 — CLEANER SINCRONIZÁVEL + PARADA MANUAL
+# CORVO BRIDGE V0.6.28 — CAPTURA DE VARIANTES + CLEANER PERSISTENTE
 
 - **Atualizar lista** reconcilia as conversas mapeadas com o ChatGPT e remove da fila registros de conversas apagadas manualmente.
 - Antes de cada exclusão, o Cleaner faz uma pré-checagem: se a conversa já não existir, marca `REMOVED_EXTERNALLY` e segue sem repetir a tentativa.
@@ -176,3 +176,16 @@ O Bridge agora reconhece IDs tanto em `/c/<id>` quanto em `/g/<gpt>/c/<id>`, rep
 - mostra progresso `Limpando X/Y`;
 - mantém o último resultado e o primeiro código de erro no popup;
 - marca `deleted=true` somente após a conversa sair da rota atual.
+
+## V0.6.27 — STOP persistente
+
+O comando **Parar limpeza** agora é persistido no `chrome.storage.local`, fecha a aba de manutenção mesmo após reinício do service worker e recupera automaticamente estados `running=true` órfãos. O Cleaner consulta o cancelamento entre navegações, retries e esperas, impedindo que a fila avance depois do STOP.
+
+
+## V0.6.28 — galerias e múltiplas variantes
+
+- reconhece o novo gallery/card de imagens mesmo quando ele fica fora de `data-message-author-role="assistant"`;
+- lê todos os `ARQUIVO=` do manifesto para saber quantas saídas físicas são esperadas;
+- quando o ChatGPT devolve 2 variantes por ID, agrupa as imagens por linha/posição visual e escolhe uma representante por arquivo;
+- Thumb com duas opções escolhe a variante principal/maior (ou a primeira equivalente) em vez de travar;
+- elimina miniaturas duplicadas pelo mesmo `src` e registra diagnóstico `CAPTURE_IMAGE_SLOT_SELECTED`.

@@ -1,0 +1,24 @@
+CORVOQUIZ V0.6.43 — AUTOMÁTICO POR FORMATO + THUMB RESPONSIVA
+
+1. A tela principal agora oferece dois fluxos diretos:
+   - AUTOMÁTICO REELS
+   - AUTOMÁTICO VÍDEO COMPLETO
+
+2. O formato fica travado na criação do projeto automático:
+   - REELS -> FORMATO=REELS, 1 VÍDEO, RÁPIDO
+   - VÍDEO COMPLETO -> FORMATO=VÍDEO COMPLETO, 1 VÍDEO, RÁPIDO
+
+3. O Corvo Thumb agora recebe contrato por formato:
+   - REELS -> thumbnail VERTICAL 9:16
+   - VÍDEO COMPLETO -> thumbnail HORIZONTAL 16:9
+
+4. O payload da Thumb inclui TIPO_DE_VIDEO, ORIENTACAO_THUMB, PROPORCAO_THUMB e uma regra explícita para não inverter o aspecto.
+
+5. Migração de projetos antigos:
+   - thumbs antigas de VÍDEO COMPLETO são preservadas como 16:9;
+   - thumbs antigas de REELS são invalidadas porque o contrato anterior sempre gerava 16:9;
+   - apenas a Thumb é reaberta, sem refazer roteiro, Collector, Analista, Gerador ou Refinador.
+
+6. A linha THUMBNAIL da produção mostra o aspecto esperado e pode ser clicada para gerar/refazer a thumb quando necessário.
+
+7. Bridge permanece V0.6.28, preservando checkpoint, Cleaner STOP persistente e captura de múltiplas variantes.

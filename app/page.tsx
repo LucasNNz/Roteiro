@@ -44,7 +44,7 @@ type PipelineItem = {
 type Project = {
   id:string; title:string; topic:string; format:Format; quantity:Quantity; mode:Mode;
   stage:number; createdAt:string; ideaText?:string; scriptText?:string; promptText?:string; packageCode?:string; imageCount?:number;
-  thumbJobId?:string; thumbStatus?:string; thumbUrl?:string; thumbFileName?:string; thumbError?:string;
+  thumbJobId?:string; thumbStatus?:string; thumbUrl?:string; thumbFileName?:string; thumbError?:string; thumbFormat?:Format; thumbAspectRatio?:"9:16"|"16:9";
   analysisJobId?:string; analysisStatus?:string; analysisZipUrl?:string; analysisZipName?:string; analysisManifest?:string; analysisExpectedIds?:string[];
   analysisPrompt?:string; analysisUploadToken?:string; analysisPreparedAt?:string; analysisLastDispatchAt?:string; analysisRetryAt?:string; analysisRetryCount?:number; analysisLastError?:string;
   analysisBridgeStage?:string; analysisBridgeUpdatedAt?:string; analysisZipDownloadUrl?:string;
@@ -98,6 +98,22 @@ const MAX_PARALLEL_REFINER_BATCHES = 2;
 const MAX_PARALLEL_GENERATOR_BATCHES = 1;
 const MAX_PARALLEL_FALLBACK_BATCHES = 1;
 const ANALYSIS_RETRY_DELAYS = [60_000, 120_000, 300_000, 600_000];
+
+function thumbAspectRatioForFormat(format:Format):"9:16"|"16:9" {
+  return format === "REELS" ? "9:16" : "16:9";
+}
+
+function thumbOrientationForFormat(format:Format) {
+  return format === "REELS" ? "VERTICAL" : "HORIZONTAL";
+}
+
+function thumbMatchesProjectFormat(project?:Project | null) {
+  if (!project?.thumbUrl) return false;
+  const expected = thumbAspectRatioForFormat(project.format);
+  // Antes da V0.6.43 toda thumb legada era 16:9. Para vídeo completo ela continua válida.
+  if (!project.thumbAspectRatio) return project.format === "VÍDEO COMPLETO";
+  return project.thumbAspectRatio === expected && (!project.thumbFormat || project.thumbFormat === project.format);
+}
 
 function analysisRetryDelay(retryCount:number) {
   return ANALYSIS_RETRY_DELAYS[Math.min(Math.max(0, retryCount), ANALYSIS_RETRY_DELAYS.length - 1)];
@@ -197,7 +213,7 @@ function autoRunChecklist(project:Project, youtubeEnabled:boolean):Array<{key:Ac
     { key:"COLLECTOR", label:"COLLECTOR", done:Boolean(project.packageCode || project.analysisJobId) },
     { key:"ANALISTA", label:"ANALISTA", done:project.analysisStatus === "CONCLUÍDA" },
     { key:"IMAGENS", label:"IMAGENS", done:project.pipelineStatus === "IMAGENS FINAIS PRONTAS" },
-    { key:"THUMB", label:"THUMB", done:Boolean(project.thumbUrl) },
+    { key:"THUMB", label:"THUMB", done:thumbMatchesProjectFormat(project) },
     { key:"METADADOS", label:"METADADOS", done:!youtubeEnabled || Boolean(project.youtubeMetadata) },
     { key:"CONSOLIDANDO", label:"ZIP FINAL", done:project.finalZipStatus === "CONCLUIDO" },
   ];
@@ -263,9 +279,40 @@ function migratePipelineCheckpoint(project:Project):Project {
   };
 }
 
+function migrateThumbnailCheckpoint(project:Project):Project {
+  const expectedAspect = thumbAspectRatioForFormat(project.format);
+  const expectedFormat = project.format;
+
+  // Até a V0.6.42 o prompt do Corvo Thumb era sempre horizontal 16:9.
+  // Portanto, uma thumb legada de VÍDEO COMPLETO continua correta; uma thumb legada de REELS precisa ser refeita em 9:16.
+  if (!project.thumbAspectRatio && project.format === "VÍDEO COMPLETO") {
+    return { ...project, thumbFormat:expectedFormat, thumbAspectRatio:expectedAspect };
+  }
+
+  const wrongFinishedThumb = Boolean(project.thumbUrl) && !thumbMatchesProjectFormat(project);
+  const oldReelsJobInFlight = project.format === "REELS" && Boolean(project.thumbJobId) && !project.thumbAspectRatio;
+  const explicitMismatch = Boolean(project.thumbAspectRatio) && project.thumbAspectRatio !== expectedAspect;
+
+  if (wrongFinishedThumb || oldReelsJobInFlight || explicitMismatch) {
+    return {
+      ...project,
+      thumbJobId:undefined,
+      thumbStatus:`PENDENTE · REFAZER THUMB ${expectedAspect}`,
+      thumbUrl:undefined,
+      thumbFileName:undefined,
+      thumbError:undefined,
+      finalZipStatus:undefined, finalZipError:undefined, finalZipGeneratedAt:undefined,
+      thumbFormat:expectedFormat,
+      thumbAspectRatio:expectedAspect,
+    };
+  }
+
+  return { ...project, thumbFormat:project.thumbFormat || expectedFormat, thumbAspectRatio:project.thumbAspectRatio || expectedAspect };
+}
+
 function loadProjects() {
   return safeLoad<Project[]>(PROJECTS_STORAGE_KEY, initialProjects).map((rawProject) => {
-    const project = migratePipelineCheckpoint(rawProject);
+    const project = migrateThumbnailCheckpoint(migratePipelineCheckpoint(rawProject));
     const withIdea = project.ideaText ? project : { ...project, ideaText:`TÍTULO: ${project.title}\nTEMA: ${project.topic}` };
     if (withIdea.stage >= 3 && !withIdea.scriptText) return { ...withIdea, stage:2 };
     if (withIdea.stage >= 4 && !withIdea.promptText) return { ...withIdea, stage:3 };
@@ -579,41 +626,45 @@ export default function Home() {
     setCreateOpen(true);
   }
 
-  function createAutomaticProjectShell() {
+  function createAutomaticProjectShell(targetFormat:Format) {
     const stamp = Date.now();
     const id = `AUTO_${stamp}`;
+    const targetAspect = thumbAspectRatioForFormat(targetFormat);
     const project:Project = {
       id,
       title:"PRODUÇÃO AUTOMÁTICA",
       topic:"DESCOBERTA AUTOMÁTICA",
-      format,
-      quantity,
-      mode,
+      format:targetFormat,
+      quantity:"1 VÍDEO",
+      mode:"RÁPIDO",
       stage:1,
       createdAt:"AGORA",
+      thumbFormat:targetFormat,
+      thumbAspectRatio:targetAspect,
       autoRunStatus:"RUNNING",
       autoRunStep:"VALIDANDO",
-      autoRunMessage:"Preparando uma produção nova do zero...",
+      autoRunMessage:`Preparando Automático ${targetFormat === "REELS" ? "Reels" : "Vídeo Completo"} · thumb ${targetAspect}...`,
       autoRunStartedAt:new Date().toISOString(),
     };
     setProjects((current) => {
       const next = [project, ...current];
       projectsRef.current = next;
+      persistProjectsSnapshot(next);
       return next;
     });
     setActiveId(id);
     return project;
   }
 
-  function startFullAutomaticProduction() {
+  function startFullAutomaticProduction(targetFormat:Format) {
     const running = projectsRef.current.find((project) => project.autoRunStatus === "RUNNING");
     if (running) {
       setActiveId(running.id);
-      setNotice("JÁ EXISTE UMA PRODUÇÃO AUTOMÁTICA EM ANDAMENTO.");
+      setNotice(`JÁ EXISTE UMA PRODUÇÃO AUTOMÁTICA ${running.format} EM ANDAMENTO.`);
       setTimeout(() => setNotice(""), 4200);
       return;
     }
-    const project = createAutomaticProjectShell();
+    const project = createAutomaticProjectShell(targetFormat);
     void runAutomaticProduction(project.id);
   }
 
@@ -640,7 +691,10 @@ export default function Home() {
       const revised:Project = {
         ...previous,
         title:project.title, topic:project.topic, format:project.format, quantity:project.quantity, mode:project.mode,
-        ideaText:project.ideaText, stage:2, scriptText:undefined, promptText:undefined, ...EMPTY_IMAGE_PIPELINE,
+        ideaText:project.ideaText, stage:2, scriptText:undefined, promptText:undefined,
+        thumbJobId:undefined, thumbStatus:undefined, thumbUrl:undefined, thumbFileName:undefined, thumbError:undefined,
+        thumbFormat:project.format, thumbAspectRatio:thumbAspectRatioForFormat(project.format),
+        ...EMPTY_IMAGE_PIPELINE,
       };
       runToken.current += 1; setImageOpen(false); setGroups([]); setPackageCode("");
       setProjects((current) => current.map((item) => item.id === previous.id ? revised : item));
@@ -978,7 +1032,7 @@ export default function Home() {
       if (!project) throw new Error("Projeto automático não encontrado.");
       if (project.thumbStatus === "FALHOU") throw new Error(project.thumbError || "A thumbnail falhou.");
       if (settings.youtubeParallel && project.youtubeStatus === "FALHOU") throw new Error(project.youtubeError || "Os metadados falharam.");
-      const thumbReady = Boolean(project.thumbUrl);
+      const thumbReady = thumbMatchesProjectFormat(project);
       const youtubeReady = !settings.youtubeParallel || Boolean(project.youtubeMetadata);
       if (thumbReady && youtubeReady) return project;
       const waiting = [!thumbReady ? "THUMB" : "", !youtubeReady ? "METADADOS" : ""].filter(Boolean).join(" + ");
@@ -1256,7 +1310,17 @@ export default function Home() {
   }
 
   async function startThumbBranch(project:Project) {
-    if (project.thumbUrl || thumbRuns.current.has(project.id)) return;
+    const expectedAspect = thumbAspectRatioForFormat(project.format);
+    const expectedOrientation = thumbOrientationForFormat(project.format);
+    if (thumbMatchesProjectFormat(project) || thumbRuns.current.has(project.id)) return;
+    if (project.thumbUrl || (project.format === "REELS" && project.thumbJobId && !project.thumbAspectRatio) || (project.thumbAspectRatio && project.thumbAspectRatio !== expectedAspect)) {
+      updateThumb(project.id, {
+        thumbJobId:undefined, thumbStatus:`PREPARANDO THUMB ${expectedAspect}`, thumbUrl:undefined, thumbFileName:undefined, thumbError:undefined,
+        finalZipStatus:undefined, finalZipError:undefined, finalZipGeneratedAt:undefined,
+        thumbFormat:project.format, thumbAspectRatio:expectedAspect,
+      });
+      project = { ...project, thumbJobId:undefined, thumbUrl:undefined, thumbFileName:undefined, thumbError:undefined, thumbFormat:project.format, thumbAspectRatio:expectedAspect };
+    }
     thumbRuns.current.add(project.id);
     try {
       if (project.thumbJobId && project.thumbStatus !== "FALHOU") {
@@ -1266,7 +1330,7 @@ export default function Home() {
       }
       if (project.thumbStatus === "FALHOU") updateThumb(project.id, { thumbJobId:undefined, thumbStatus:"NOVA TENTATIVA", thumbError:undefined });
       const fileName = `thumb_${project.id.toLowerCase()}.png`;
-      updateThumb(project.id, { thumbStatus:"PREPARANDO THUMBNAIL", thumbFileName:fileName, thumbError:undefined });
+      updateThumb(project.id, { thumbStatus:`PREPARANDO THUMBNAIL ${expectedAspect}`, thumbFileName:fileName, thumbError:undefined, thumbFormat:project.format, thumbAspectRatio:expectedAspect });
       const response = await fetch("/api/corvo/job", {
         method:"POST",
         headers:{ "content-type":"application/json" },
@@ -1284,6 +1348,10 @@ export default function Home() {
             `TEMA=${project.topic}`,
             `PUBLICO=INFANTIL, PRE-ADOLESCENTE E ADOLESCENTE`,
             `IDENTIDADE_VISUAL=CORVOQUIZ`,
+            `TIPO_DE_VIDEO=${project.format}`,
+            `ORIENTACAO_THUMB=${expectedOrientation}`,
+            `PROPORCAO_THUMB=${expectedAspect}`,
+            `REGRA_DE_FORMATO=${project.format === "REELS" ? "A imagem final deve ser VERTICAL 9:16; não entregar composição horizontal 16:9." : "A imagem final deve ser HORIZONTAL 16:9; não entregar composição vertical 9:16."}`,
             `PADRAO_ARQUIVO_FINAL=${fileName}`,
             "",
             "ROTEIRO / CONTEXTO:",
@@ -1298,7 +1366,7 @@ export default function Home() {
         jobId:result.jobId,
         prompt:result.prompt,
         specialist:"THUMB",
-        meta:{ projectId:project.id, uploadToken:result.uploadToken, expectedFile:fileName },
+        meta:{ projectId:project.id, uploadToken:result.uploadToken, expectedFile:fileName, format:project.format, aspectRatio:expectedAspect },
       });
       updateThumb(project.id, { thumbStatus:"CRIANDO THUMBNAIL" });
       await monitorThumbJob(project, result.jobId);
@@ -3044,7 +3112,7 @@ export default function Home() {
       <div className="header-actions"><button className="corvo-link" onClick={openNewProduction}><span className="online-dot" /> PEDIR IDEIAS AO CORVO</button><button className="icon-button" onClick={() => setSettingsOpen(true)} aria-label="Configurações">•••</button></div>
     </header>
 
-    <section className="hero" id="top"><div><span className="eyebrow"><i /> CENTRAL DE PRODUÇÃO</span><h1>DA IDEIA AO <em>PACOTE FINAL.</em></h1><p>No automático, um clique inicia uma produção nova e o Corvo conduz tudo até o ZIP final.<br />No modo assistido, você continua controlando cada etapa.</p></div><div className="hero-actions"><button className="auto-project" onClick={startFullAutomaticProduction}><span>⚡</span><b>INICIAR AUTOMÁTICO</b><small>1 CLIQUE · IDEIA → ZIP FINAL</small></button><button className="new-project" onClick={openNewProduction}><span>＋</span><b>NOVA PRODUÇÃO</b><small>MODO ASSISTIDO</small></button></div></section>
+    <section className="hero" id="top"><div><span className="eyebrow"><i /> CENTRAL DE PRODUÇÃO</span><h1>DA IDEIA AO <em>PACOTE FINAL.</em></h1><p>Escolha Automático Reels ou Automático Vídeo Completo e o Corvo conduz tudo até o ZIP final.<br />A thumbnail acompanha o formato: 9:16 no Reels e 16:9 no vídeo completo.</p></div><div className="hero-actions"><button className="auto-project reels" onClick={()=>startFullAutomaticProduction("REELS")}><span>▯</span><b>AUTOMÁTICO REELS</b><small>9:16 · IDEIA → ZIP FINAL</small></button><button className="auto-project full" onClick={()=>startFullAutomaticProduction("VÍDEO COMPLETO")}><span>▭</span><b>AUTOMÁTICO VÍDEO COMPLETO</b><small>16:9 · IDEIA → ZIP FINAL</small></button><button className="new-project" onClick={openNewProduction}><span>＋</span><b>NOVA PRODUÇÃO</b><small>MODO ASSISTIDO</small></button></div></section>
 
     <section className="workspace" id="producao">
       <div className="section-heading"><div><span className="section-number">01</span><h2>EM PRODUÇÃO</h2></div><button className="text-button" onClick={openNewProduction}>CRIAR OUTRA <span>↗</span></button></div>
@@ -3058,14 +3126,14 @@ export default function Home() {
             <button className="primary-action" onClick={continueProduction}>{active.stage<=2?(active.scriptText?"REVISAR ROTEIRO":"CRIAR ROTEIRO"):active.stage===3?(active.promptText?"REVISAR PROMPTS":"CRIAR PROMPTS"):active.stage===4?"BUSCAR IMAGENS":"BAIXAR PRODUÇÃO"} <span>→</span></button>
             <button className="secondary-action" onClick={() => downloadProject(active)}>↓ BAIXAR PROJETO</button>
           </div>
-          {active.autoRunStatus&&<div className={`auto-run-panel ${active.autoRunStatus.toLowerCase()}`}><div className="auto-run-head"><div><span>AUTOMÁTICO TOTAL</span><b>{active.autoRunMessage||"Acompanhando a produção automática."}</b>{active.autoRunError&&<small>{active.autoRunError}</small>}</div>{active.autoRunStatus==="RUNNING"?<div className="auto-run-actions"><button className="monitor" onClick={()=>openActivity(active.autoRunStep || "TODOS")}>ACOMPANHAR</button><button onClick={()=>void cancelAutomaticProduction(active.id)}>PARAR</button></div>:<em>{active.autoRunStatus==="DONE"?"CONCLUÍDO":active.autoRunStatus==="ERROR"?"PRECISA DE ATENÇÃO":"INTERROMPIDO"}</em>}</div><div className="auto-run-steps">{autoRunChecklist(active,settings.youtubeParallel).map((item)=><button type="button" className={item.done?"done":active.autoRunStep===item.key?"current":""} key={item.key} onClick={()=>openActivity(item.key)} title={`Acompanhar ${item.label}`}><i>{item.done?"✓":active.autoRunStep===item.key?"•":"○"}</i>{item.label}</button>)}</div></div>}
+          {active.autoRunStatus&&<div className={`auto-run-panel ${active.autoRunStatus.toLowerCase()}`}><div className="auto-run-head"><div><span>{active.format==="REELS"?"AUTOMÁTICO REELS":"AUTOMÁTICO VÍDEO COMPLETO"}</span><b>{active.autoRunMessage||"Acompanhando a produção automática."}</b>{active.autoRunError&&<small>{active.autoRunError}</small>}</div>{active.autoRunStatus==="RUNNING"?<div className="auto-run-actions"><button className="monitor" onClick={()=>openActivity(active.autoRunStep || "TODOS")}>ACOMPANHAR</button><button onClick={()=>void cancelAutomaticProduction(active.id)}>PARAR</button></div>:<em>{active.autoRunStatus==="DONE"?"CONCLUÍDO":active.autoRunStatus==="ERROR"?"PRECISA DE ATENÇÃO":"INTERROMPIDO"}</em>}</div><div className="auto-run-steps">{autoRunChecklist(active,settings.youtubeParallel).map((item)=><button type="button" className={item.done?"done":active.autoRunStep===item.key?"current":""} key={item.key} onClick={()=>openActivity(item.key)} title={`Acompanhar ${item.label}`}><i>{item.done?"✓":active.autoRunStep===item.key?"•":"○"}</i>{item.label}</button>)}</div></div>}
         </div>
         <aside className="card-side" id="arquivos">
           <div className="mini-title"><span>MEMÓRIA DA PRODUÇÃO</span><b>{[active.ideaText,active.scriptText,active.promptText].filter(Boolean).length}/3</b></div>
           <button className="file-row done action" onClick={()=>openArtifact("IDEIA")}><span>◆</span><div><b>IDEIA ESCOLHIDA</b><small>ABRIR CONCEITO ORIGINAL</small></div><i>→</i></button>
           <button className={`file-row action ${active.scriptText?"done":"pending"}`} disabled={!active.scriptText} onClick={()=>openArtifact("ROTEIRO")}><span>▤</span><div><b>ROTEIRO.TXT</b><small>{active.scriptText?"ABRIR ROTEIRO COMPLETO":"AGUARDANDO ROTEIRISTA"}</small></div><i>{active.scriptText?"→":"○"}</i></button>
           <button className={`file-row action ${active.promptText?"done":"pending"}`} disabled={!active.promptText} onClick={()=>openArtifact("PROMPTS")}><span>✦</span><div><b>PROMPTS.TXT</b><small>{active.promptText?"ABRIR BUSCAS DE IMAGEM":"AGUARDANDO ROTEIRO"}</small></div><i>{active.promptText?"→":"○"}</i></button>
-          <button className={`file-row action ${active.thumbUrl?"done":active.thumbStatus==="FALHOU"?"pending":""}`} disabled={!active.thumbUrl} onClick={()=>active.thumbUrl&&window.open(active.thumbUrl,"_blank","noopener,noreferrer")}><span>▰</span><div><b>THUMBNAIL</b><small>{active.thumbUrl?"ABRIR IMAGEM FINAL":active.thumbError||active.thumbStatus||"INICIA EM PARALELO COM O COLLECTOR"}</small></div><i>{active.thumbUrl?"→":"○"}</i></button>
+          <button className={`file-row action ${thumbMatchesProjectFormat(active)?"done":active.thumbStatus==="FALHOU"?"pending":""}`} disabled={!active.scriptText && !thumbMatchesProjectFormat(active)} onClick={()=>thumbMatchesProjectFormat(active)?window.open(active.thumbUrl,"_blank","noopener,noreferrer"):void startThumbBranch(active)}><span>▰</span><div><b>THUMBNAIL · {thumbAspectRatioForFormat(active.format)}</b><small>{thumbMatchesProjectFormat(active)?"ABRIR IMAGEM FINAL":active.thumbError||active.thumbStatus||`CLIQUE PARA GERAR · ${thumbOrientationForFormat(active.format)}`}</small></div><i>{thumbMatchesProjectFormat(active)?"→":"↻"}</i></button>
           <button className={`file-row action ${active.analysisStatus==="CONCLUÍDA"?"done":active.analysisStatus?"pending":""}`} disabled={!active.analysisManifest&&!hasPreparedAnalysis(active)&&!hasAnalysisPreparationCheckpoint(active)} onClick={()=>{if(analysisMessageCommitted(active)){openActivity("ANALISTA");}else if(active.analysisManifest){openActivity("ANALISTA");}else if(hasPreparedAnalysis(active)){void resumePreparedAnalysis(active.id,true);}else if(hasAnalysisPreparationCheckpoint(active)){void resumeAnalysisPreparation(active.id,true);}}}><span>◫</span><div><b>{hasPreparedAnalysis(active)?"PACOTE DO ANALISTA SALVO":hasAnalysisPreparationCheckpoint(active)?"CHECKPOINT DO ANALISTA SALVO":"ANÁLISE DE IMAGENS"}</b><small>{hasPreparedAnalysis(active)?`${active.analysisStatus||"AGUARDANDO ANALISTA"} · ${analysisRetryLabel(active.analysisRetryAt)}`:hasAnalysisPreparationCheckpoint(active)?`${preparationStageLabel(active)} · ${analysisRetryLabel(active.analysisPreparationRetryAt)}`:active.analysisStatus||"COMEÇA APÓS O PACOTE DO COLLECTOR"}</small>{active.analysisLastError&&hasPreparedAnalysis(active)?<em>{active.analysisLastError}</em>:null}{active.analysisPreparationError&&hasAnalysisPreparationCheckpoint(active)?<em>{active.analysisPreparationError}</em>:null}</div><i>{active.analysisStatus==="CONCLUÍDA"?"✓":hasPreparedAnalysis(active)||hasAnalysisPreparationCheckpoint(active)?"↻":"○"}</i></button>
           <button className={`file-row action ${active.youtubeMetadata?"done":active.youtubeStatus==="FALHOU"?"pending":""}`} disabled={!active.youtubeMetadata} onClick={()=>{if(active.youtubeMetadata)downloadTextFile(`${active.id}_YOUTUBE.txt`,active.youtubeMetadata);}}><span>▶</span><div><b>YOUTUBE / METADADOS</b><small>{active.youtubeMetadata?"BAIXAR DADOS EDITORIAIS":active.youtubeError||active.youtubeStatus||(settings.youtubeParallel?"INICIA EM PARALELO":"DESATIVADO NAS CONFIGURAÇÕES")}</small></div><i>{active.youtubeMetadata?"↓":"○"}</i></button>
           <button className={`file-row action ${consolidationState(active).ready?"done":active.pipelineItems?.length?"pending":""}`} disabled={!active.pipelineItems?.length} onClick={()=>{setConsolidationMessage("");setConsolidationOpen(true);}}><span>▦</span><div><b>CONSOLIDAÇÃO / ZIP FINAL</b><small>{active.pipelineItems?.length ? `${consolidationState(active).completed}/${consolidationState(active).items.length} FINAIS · ${consolidationState(active).ready ? "PRONTO PARA GERAR" : active.pipelineStatus || "AGUARDANDO"}` : "AGUARDANDO O ANALISTA"}</small></div><i>{active.finalZipStatus==="CONCLUIDO"?"✓":consolidationState(active).ready?"→":"○"}</i></button>
@@ -3135,8 +3203,8 @@ export default function Home() {
         <div className="downloads-head"><div><span>INSTALAÇÃO E SUPORTE</span><h3 id="downloads-title">ARQUIVOS PARA BAIXAR</h3></div><small>SE PRECISAR REINSTALAR</small></div>
         <div className="download-grid">
           <a className="download-card" href="/downloads/CORVO_COLLECTOR_V080_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.8.0</small></div><i>↓</i></a>
-          <a className="download-card" href="/downloads/CORVO_BRIDGE_V0626_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.26 · CLEANER ATUALIZÁVEL + PARADA MANUAL</small></div><i>↓</i></a>
-          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0641.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
+          <a className="download-card" href="/downloads/CORVO_BRIDGE_V0628_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.28 · VARIANTES + STOP PERSISTENTE</small></div><i>↓</i></a>
+          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0643.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
         </div>
       </section>
       <details className="advanced-settings"><summary>CONFIGURAÇÕES AVANÇADAS</summary><div className="settings-grid"><label>CANDIDATAS COLETADAS/ID<input type="number" min="1" max="20" value={settings.maxCandidates} onChange={(event)=>setSettings({...settings,maxCandidates:Math.max(1,Math.min(20,Number(event.target.value)||20))})}/></label><label>CANDIDATAS/ID → ANALISTA<input type="number" min="1" max="30" value={settings.analystCandidatesPerId} onChange={(event)=>setSettings({...settings,analystCandidatesPerId:Math.max(1,Math.min(30,Number(event.target.value)||10))})}/></label><label>VARREDURA<input type="number" value={settings.scrollSteps} onChange={(event)=>setSettings({...settings,scrollSteps:Number(event.target.value)})}/></label><label>QUALIDADE JPEG<input type="number" step=".01" value={settings.jpegQuality} onChange={(event)=>setSettings({...settings,jpegQuality:Number(event.target.value)})}/></label><label>PREFIXO<input value={settings.prefix} onChange={(event)=>setSettings({...settings,prefix:event.target.value})}/></label></div><p>A busca coleta no máximo 20 candidatas únicas por ID. No modo Mesclado, a meta é dividida entre Google e Pinterest. Depois, o limite do Analista reduz apenas o transporte; o app não escolhe a vencedora.</p><label className="batch-label">COMANDOS EM LOTE — OPCIONAL<textarea value={settings.batchText} onChange={(event)=>setSettings({...settings,batchText:event.target.value})} placeholder={"01|primeira busca\n02|segunda busca"} /></label></details>

@@ -109,8 +109,15 @@ function buildPipelinePrompt(request: CorvoJobRequest) {
       "Uma falha de um ID não deve impedir decisões para os demais IDs do lote.",
       "Entregue o manifesto [CORVO_IMAGE_FALLBACK] VERSION=1.0.",
     ],
-    THUMB: [
-      "Crie efetivamente UMA thumbnail horizontal 16:9, de leitura rápida, forte em tamanho pequeno e coerente com o CorvoQuiz.",
+    THUMB: request.formato === "REELS" ? [
+      "Crie efetivamente UMA thumbnail VERTICAL 9:16, de leitura rápida, forte em tamanho pequeno e coerente com o CorvoQuiz.",
+      "A composição final deve permanecer vertical 9:16. Não entregue thumbnail horizontal 16:9, mesmo que referências ou exemplos estejam em formato horizontal.",
+      "A imagem deve permanecer disponível na conversa para captura pelo Corvo Bridge.",
+      "Em sucesso, informe STATUS=GERADA, ARQUIVO, TIPO_ARQUIVO=THUMBNAIL, CONCEITO e TEXTO_THUMB.",
+      "Entregue o manifesto [CORVO_THUMBNAIL] VERSION=1.1.",
+    ] : [
+      "Crie efetivamente UMA thumbnail HORIZONTAL 16:9, de leitura rápida, forte em tamanho pequeno e coerente com o CorvoQuiz.",
+      "A composição final deve permanecer horizontal 16:9. Não entregue thumbnail vertical 9:16.",
       "A imagem deve permanecer disponível na conversa para captura pelo Corvo Bridge.",
       "Em sucesso, informe STATUS=GERADA, ARQUIVO, TIPO_ARQUIVO=THUMBNAIL, CONCEITO e TEXTO_THUMB.",
       "Entregue o manifesto [CORVO_THUMBNAIL] VERSION=1.1.",
