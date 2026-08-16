@@ -1,4 +1,11 @@
-# CORVO BRIDGE V0.6.15 — ENVIO CONFIRMADO PARA GPTS COM ANEXO
+# CORVO BRIDGE V0.6.16 — DIAGNÓSTICO DO ENVIO PARA GPTS COM ANEXO
+
+## V0.6.16 — diagnóstico persistente por JOB_ID
+
+O Bridge registra os estados reais do envio ao GPT e permite copiar o diagnóstico pelo popup. O log inclui composer, file inputs, download/anexo, botão de enviar e confirmação da mensagem, sem copiar o conteúdo integral do prompt ou tokens sensíveis.
+
+Em uma falha, abra o popup e use **Copiar diagnóstico do último job**.
+
 
 ## V0.6.15 — correção do gap Analista
 

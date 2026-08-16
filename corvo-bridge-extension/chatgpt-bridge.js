@@ -5,6 +5,65 @@
   const CONFIRM_TIMEOUT_MS = 9000;
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+  function shortText(value, max = 180) {
+    const text = String(value || "").replace(/\s+/g, " ").trim();
+    return text.length > max ? `${text.slice(0, max)}…` : text;
+  }
+
+  function elementDiagnostic(element) {
+    if (!element) return null;
+    let rect = null;
+    try {
+      const r = element.getBoundingClientRect();
+      rect = { x:Math.round(r.x), y:Math.round(r.y), width:Math.round(r.width), height:Math.round(r.height) };
+    } catch {}
+    return {
+      tag:String(element.tagName || "").toLowerCase(),
+      id:String(element.id || ""),
+      role:String(element.getAttribute?.("role") || ""),
+      type:String(element.getAttribute?.("type") || ""),
+      name:String(element.getAttribute?.("name") || ""),
+      testid:String(element.getAttribute?.("data-testid") || ""),
+      ariaLabel:shortText(element.getAttribute?.("aria-label") || "", 140),
+      title:shortText(element.getAttribute?.("title") || "", 140),
+      accept:String(element.getAttribute?.("accept") || ""),
+      multiple:Boolean(element.multiple),
+      disabled:Boolean(element.disabled),
+      ariaDisabled:String(element.getAttribute?.("aria-disabled") || ""),
+      contentEditable:String(element.getAttribute?.("contenteditable") || ""),
+      visible:isVisible(element),
+      enabled:isEnabled(element),
+      rect,
+      text:shortText(element.textContent || "", 160)
+    };
+  }
+
+  function pageDiagnostic() {
+    const composer = findComposer();
+    const fileInputs = [...document.querySelectorAll('input[type="file"]')];
+    const userMessages = [...document.querySelectorAll('[data-message-author-role="user"]')];
+    return {
+      url:`${location.origin}${location.pathname}`,
+      readyState:document.readyState,
+      visibilityState:document.visibilityState,
+      hasFocus:document.hasFocus(),
+      title:shortText(document.title, 160),
+      composer:elementDiagnostic(composer),
+      composerTextLength:composerText(composer).length,
+      fileInputs:fileInputs.slice(0, 10).map(elementDiagnostic),
+      fileInputCount:fileInputs.length,
+      userMessageCount:userMessages.length,
+      buttonCount:document.querySelectorAll('button').length
+    };
+  }
+
+  async function reportDiagnostic(jobId, event, details = {}) {
+    await chrome.runtime.sendMessage({
+      type:"CORVO_GPT_DIAG",
+      payload:{ jobId, event, details }
+    }).catch(() => {});
+  }
+
   function isVisible(element) {
     if (!element) return false;
     const rect = element.getBoundingClientRect();
@@ -194,25 +253,32 @@
     }) || null;
   }
 
-  async function waitForAttachmentInput(timeout = 15000) {
+  async function waitForAttachmentInput(timeout = 15000, jobId = "", fileName = "") {
     const deadline = Date.now() + timeout;
     let clickedAttach = false;
     let clickedUploadAction = false;
     const existing = new Set([...document.querySelectorAll('input[type="file"]')]);
+    await reportDiagnostic(jobId, "ATTACHMENT_INPUT_WAIT_START", { fileName, page:pageDiagnostic(), attachmentButtons:findAttachmentButtons().slice(0, 8).map(elementDiagnostic) });
     while (Date.now() < deadline) {
       const direct = attachmentInput();
-      if (direct) return direct;
+      if (direct) {
+        await reportDiagnostic(jobId, "ATTACHMENT_INPUT_DIRECT_FOUND", { fileName, input:elementDiagnostic(direct), score:scoreAttachmentInput(direct, composerRoot()) });
+        return direct;
+      }
 
       if (!clickedAttach) {
         const button = findAttachmentButtons()[0];
         if (button) {
+          await reportDiagnostic(jobId, "ATTACH_BUTTON_CLICK", { fileName, button:elementDiagnostic(button) });
           clickButton(button);
           clickedAttach = true;
           await sleep(700);
+          await reportDiagnostic(jobId, "ATTACH_BUTTON_AFTER", { fileName, fileInputs:[...document.querySelectorAll('input[type="file"]')].slice(0, 10).map(elementDiagnostic), uploadAction:elementDiagnostic(findUploadMenuAction()) });
         }
       } else if (!clickedUploadAction) {
         const action = findUploadMenuAction();
         if (action) {
+          await reportDiagnostic(jobId, "UPLOAD_MENU_ACTION_CLICK", { fileName, action:elementDiagnostic(action) });
           clickButton(action);
           clickedUploadAction = true;
           await sleep(500);
@@ -221,9 +287,13 @@
 
       const created = [...document.querySelectorAll('input[type="file"]')]
         .find((input) => input instanceof HTMLInputElement && !existing.has(input));
-      if (created) return created;
+      if (created) {
+        await reportDiagnostic(jobId, "ATTACHMENT_INPUT_CREATED", { fileName, input:elementDiagnostic(created), score:scoreAttachmentInput(created, composerRoot()) });
+        return created;
+      }
       await sleep(250);
     }
+    await reportDiagnostic(jobId, "ATTACHMENT_INPUT_TIMEOUT", { fileName, page:pageDiagnostic(), attachmentButtons:findAttachmentButtons().slice(0, 8).map(elementDiagnostic), uploadAction:elementDiagnostic(findUploadMenuAction()) });
     throw new Error("ATTACHMENT_INPUT_NOT_FOUND");
   }
 
@@ -238,12 +308,21 @@
     });
   }
 
-  async function attachmentLoaded(name, timeout = 90000) {
+  async function attachmentLoaded(name, timeout = 90000, jobId = "") {
     const deadline = Date.now() + timeout;
+    let lastReport = 0;
     while (Date.now() < deadline) {
-      if (attachmentVisible(name)) return true;
+      if (attachmentVisible(name)) {
+        await reportDiagnostic(jobId, "ATTACHMENT_NAME_VISIBLE", { fileName:name, elapsedMs:timeout - Math.max(0, deadline - Date.now()) });
+        return true;
+      }
+      if (Date.now() - lastReport > 5000) {
+        lastReport = Date.now();
+        await reportDiagnostic(jobId, "ATTACHMENT_WAITING_VISIBLE", { fileName:name, elapsedMs:timeout - Math.max(0, deadline - Date.now()), page:pageDiagnostic() });
+      }
       await sleep(350);
     }
+    await reportDiagnostic(jobId, "ATTACHMENT_VISIBLE_TIMEOUT", { fileName:name, timeout, page:pageDiagnostic() });
     return false;
   }
 
@@ -268,6 +347,7 @@
 
   async function attachJobFiles(job) {
     const attachments = Array.isArray(job?.meta?.attachments) ? job.meta.attachments : [];
+    await reportDiagnostic(job.jobId, "ATTACHMENTS_PLAN", { count:attachments.length, files:attachments.map((item) => ({ name:String(item?.name || ""), contentType:String(item?.contentType || ""), url:(() => { try { const u=new URL(String(item?.url || "")); return `${u.origin}${u.pathname}`; } catch { return ""; } })() })) });
     if (!attachments.length) return 0;
     let totalBytes = 0;
     for (let index = 0; index < attachments.length; index++) {
@@ -282,31 +362,38 @@
       }
 
       await reportStage(job.jobId, "FETCHING_ATTACHMENT", `Baixando ${name} para anexar ao GPT...`, { fileName:name, attachmentIndex:index + 1, attachmentTotal:attachments.length });
+      await reportDiagnostic(job.jobId, "ATTACHMENT_FETCH_START", { fileName:name, index:index + 1, total:attachments.length });
       let file;
       try {
         file = await fetchAttachmentDirect(attachment);
+        await reportDiagnostic(job.jobId, "ATTACHMENT_FETCH_DIRECT_OK", { fileName:name, bytes:file.size, type:file.type });
       } catch (directError) {
+        await reportDiagnostic(job.jobId, "ATTACHMENT_FETCH_DIRECT_FAIL", { fileName:name, error:String(directError?.message || directError || "") });
         const fetched = await chrome.runtime.sendMessage({
           type: "CORVO_FETCH_ATTACHMENT",
           payload: { url, name, contentType: String(attachment?.contentType || "") }
         });
         if (!fetched?.ok || !fetched?.dataUrl) throw new Error(fetched?.error || directError?.message || "ATTACHMENT_FETCH_FAILED");
         file = dataUrlToFile(fetched.dataUrl, name, fetched.contentType);
+        await reportDiagnostic(job.jobId, "ATTACHMENT_FETCH_BACKGROUND_OK", { fileName:name, bytes:file.size, type:file.type });
       }
 
       totalBytes += Number(file?.size || 0);
       await reportStage(job.jobId, "ATTACHING_FILE", `Anexando ${name} ao editor do GPT...`, { fileName:name, fileBytes:file.size, attachmentIndex:index + 1, attachmentTotal:attachments.length });
-      const input = await waitForAttachmentInput();
+      const input = await waitForAttachmentInput(15000, job.jobId, name);
+      await reportDiagnostic(job.jobId, "ATTACHMENT_INPUT_SELECTED", { fileName:name, input:elementDiagnostic(input), score:scoreAttachmentInput(input, composerRoot()), page:pageDiagnostic() });
       const transfer = new DataTransfer();
       transfer.items.add(file);
       input.files = transfer.files;
       input.dispatchEvent(new Event("input", { bubbles: true, composed:true }));
       input.dispatchEvent(new Event("change", { bubbles: true, composed:true }));
+      await reportDiagnostic(job.jobId, "ATTACHMENT_EVENTS_DISPATCHED", { fileName:name, input:elementDiagnostic(input), files:[...input.files].map((f) => ({ name:f.name, size:f.size, type:f.type })) });
 
       const loadTimeout = Math.max(30000, Math.min(180000, 15000 + Math.floor(Number(file?.size || 0) / 250)));
-      const loaded = await attachmentLoaded(name, loadTimeout);
+      const loaded = await attachmentLoaded(name, loadTimeout, job.jobId);
       if (!loaded) throw new Error(`ATTACHMENT_NOT_CONFIRMED:${name}`);
       await reportStage(job.jobId, "ATTACHMENT_READY", `${name} confirmado no editor.`, { fileName:name, fileBytes:file.size, attachmentIndex:index + 1, attachmentTotal:attachments.length });
+      await reportDiagnostic(job.jobId, "ATTACHMENT_CONFIRMED", { fileName:name, fileBytes:file.size, page:pageDiagnostic() });
       await sleep(700);
     }
     return totalBytes;
@@ -950,16 +1037,22 @@
 
 
   async function sendPrompt(job) {
-    if (busy) throw new Error("BRIDGE_BUSY");
+    if (busy) {
+      await reportDiagnostic(job?.jobId, "SEND_REJECTED_BUSY", { page:pageDiagnostic() });
+      throw new Error("BRIDGE_BUSY");
+    }
     busy = true;
     try {
+      await reportDiagnostic(job.jobId, "SEND_PROMPT_START", { specialist:job.specialist || "", attempt:job.bridgeAttempt || "background", page:pageDiagnostic(), promptLength:String(job.prompt || "").length, attachmentCount:Array.isArray(job?.meta?.attachments) ? job.meta.attachments.length : 0 });
       if (conversationHasJob(job.jobId)) {
+        await reportDiagnostic(job.jobId, "JOB_ALREADY_IN_CONVERSATION", { page:pageDiagnostic() });
         await reportSent(job.jobId);
         return;
       }
 
       await reportStage(job.jobId, "WAITING_COMPOSER", "Aguardando o editor do GPT ficar pronto...");
       let composer = await waitForComposer();
+      await reportDiagnostic(job.jobId, "COMPOSER_FOUND", { composer:elementDiagnostic(composer), page:pageDiagnostic() });
       const message = compose(job);
       const previousState = userMessageState();
 
@@ -968,8 +1061,10 @@
       const fillDeadline = Date.now() + 8000;
       while (Date.now() < fillDeadline && !composerText(findComposer()).includes(job.jobId)) await sleep(180);
       if (!composerText(findComposer()).includes(job.jobId)) throw new Error("COMPOSER_FILL_FAILED");
+      await reportDiagnostic(job.jobId, "COMPOSER_FILL_OK", { length:composerText(findComposer()).length, containsJob:true, composer:elementDiagnostic(findComposer()) });
 
       const attachmentBytes = await attachJobFiles(job);
+      await reportDiagnostic(job.jobId, "ATTACHMENTS_FINISHED", { attachmentBytes, page:pageDiagnostic() });
       composer = await waitForComposer();
       if (!composerText(composer).includes(job.jobId)) {
         setComposerText(composer, message);
@@ -982,11 +1077,15 @@
         ? Math.max(30000, Math.min(180000, 15000 + Math.floor(attachmentBytes / 250)))
         : BUTTON_TIMEOUT_MS;
       const buttons = await waitForEnabledButtons(findComposer(), attachmentButtonTimeout);
+      await reportDiagnostic(job.jobId, "SEND_BUTTON_SCAN", { timeout:attachmentButtonTimeout, found:buttons.length, buttons:buttons.map(elementDiagnostic), page:pageDiagnostic() });
       for (const button of buttons) {
         if (!isEnabled(button)) continue;
         await reportStage(job.jobId, "SENDING_MESSAGE", "Enviando a mensagem ao GPT...");
+        await reportDiagnostic(job.jobId, "SEND_BUTTON_CLICK", { button:elementDiagnostic(button), previousState, composerLength:composerText(findComposer()).length });
         clickButton(button);
-        if (await waitForSendConfirmation(previousState, job.jobId, 12000)) {
+        const confirmed = await waitForSendConfirmation(previousState, job.jobId, 12000);
+        await reportDiagnostic(job.jobId, confirmed ? "SEND_BUTTON_CONFIRMED" : "SEND_BUTTON_NOT_CONFIRMED", { button:elementDiagnostic(button), afterState:userMessageState(), page:pageDiagnostic() });
+        if (confirmed) {
           await reportStage(job.jobId, "MESSAGE_CONFIRMED", "Mensagem confirmada na conversa. Aguardando o especialista...");
           await reportSent(job.jobId);
           return;
@@ -999,8 +1098,11 @@
         const submitButton = form?.querySelector('button[type="submit"]');
         if (form && submitButton && isEnabled(submitButton) && typeof form.requestSubmit === "function") {
           await reportStage(job.jobId, "SENDING_MESSAGE", "Confirmando envio pelo formulário do GPT...");
+          await reportDiagnostic(job.jobId, "FORM_REQUEST_SUBMIT", { submitButton:elementDiagnostic(submitButton), form:elementDiagnostic(form) });
           form.requestSubmit(submitButton);
-          if (await waitForSendConfirmation(previousState, job.jobId, 12000)) {
+          const confirmed = await waitForSendConfirmation(previousState, job.jobId, 12000);
+          await reportDiagnostic(job.jobId, confirmed ? "FORM_SUBMIT_CONFIRMED" : "FORM_SUBMIT_NOT_CONFIRMED", { afterState:userMessageState(), page:pageDiagnostic() });
+          if (confirmed) {
             await reportStage(job.jobId, "MESSAGE_CONFIRMED", "Mensagem confirmada na conversa. Aguardando o especialista...");
             await reportSent(job.jobId);
             return;
@@ -1011,8 +1113,11 @@
       const fallbackComposer = findComposer();
       if (fallbackComposer && composerText(fallbackComposer)) {
         await reportStage(job.jobId, "SENDING_MESSAGE", "Tentando envio pelo teclado...");
+        await reportDiagnostic(job.jobId, "KEYBOARD_SUBMIT", { composer:elementDiagnostic(fallbackComposer), composerLength:composerText(fallbackComposer).length });
         submitWithEnter(fallbackComposer);
-        if (await waitForSendConfirmation(previousState, job.jobId, 15000)) {
+        const confirmed = await waitForSendConfirmation(previousState, job.jobId, 15000);
+        await reportDiagnostic(job.jobId, confirmed ? "KEYBOARD_SUBMIT_CONFIRMED" : "KEYBOARD_SUBMIT_NOT_CONFIRMED", { afterState:userMessageState(), page:pageDiagnostic() });
+        if (confirmed) {
           await reportStage(job.jobId, "MESSAGE_CONFIRMED", "Mensagem confirmada na conversa. Aguardando o especialista...");
           await reportSent(job.jobId);
           return;
@@ -1020,6 +1125,9 @@
       }
 
       throw new Error("GPT_SEND_NOT_CONFIRMED");
+    } catch (error) {
+      await reportDiagnostic(job?.jobId, "SEND_PROMPT_ERROR", { error:String(error?.message || error || "GPT_SEND_FAILED"), stack:shortText(error?.stack || "", 700), page:pageDiagnostic() });
+      throw error;
     } finally {
       busy = false;
     }
@@ -1028,7 +1136,7 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "CORVO_BRIDGE_PING") {
       chrome.runtime.sendMessage({ type: "CORVO_GPT_READY" }).catch(() => {});
-      sendResponse({ ok: true });
+      sendResponse({ ok: true, version:"0.6.16", page:pageDiagnostic() });
       return;
     }
     if (message?.type === "CORVO_SEND_PROMPT") {

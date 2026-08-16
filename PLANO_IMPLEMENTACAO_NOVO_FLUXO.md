@@ -1,3 +1,7 @@
+## Alteração V0.6.29 — diagnóstico de handshake do Analista
+
+O Bridge V0.6.16 passa a persistir um trace por JOB_ID cobrindo: abertura/ping da aba, composer, preenchimento, download do anexo, descoberta e estado dos inputs de arquivo, confirmação visual do ZIP, botões de envio e presença do JOB_ID na mensagem do usuário. O trace pode ser copiado pelo popup para localizar a falha exata sem desmontar o checkpoint do Analista.
+
 # Plano de implementação — Novo fluxo CorvoQuiz
 
 Bases: `CORVOQUIZ_ESPECIFICACAO_NOVO_FLUXO_APP_BRIDGE` e `CORVOQUIZ_MUDANCA_MODO_AUTOMATICO_ANALISTA`.

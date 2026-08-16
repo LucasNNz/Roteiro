@@ -1,4 +1,14 @@
-# CorvoQuiz Produção — V0.6.28
+# CorvoQuiz Produção — V0.6.29
+
+## V0.6.29 — diagnóstico completo do envio ao Analista
+
+- Bridge V0.6.16 registra uma linha do tempo persistente por JOB_ID para descobrir exatamente onde o envio ao GPT quebra.
+- O diagnóstico cobre abertura da aba, content script, composer, preenchimento, download do ZIP, descoberta do input de arquivo, dispatch do File, confirmação visual do anexo, descoberta/clique do botão de envio e confirmação do JOB_ID na conversa.
+- O popup mostra quantos eventos foram registrados e o último evento.
+- Botão **Copiar diagnóstico do último job** copia um TXT pronto para compartilhar.
+- URLs são reduzidas a origem + caminho e campos sensíveis/tokens são removidos do log.
+- Mantém o checkpoint V0.6.27/V0.6.28: uma falha diagnosticada no Analista não refaz Collector, lotes ou ZIP.
+
 
 
 
@@ -244,9 +254,9 @@ Configure no projeto:
 
 ## Instalação
 
-### Corvo Bridge V0.6.15
+### Corvo Bridge V0.6.16
 
-Use `public/downloads/CORVO_BRIDGE_V0615_EXTENSION.zip` ou carregue a pasta `corvo-bridge-extension` em `chrome://extensions`.
+Use `public/downloads/CORVO_BRIDGE_V0616_EXTENSION.zip` ou carregue a pasta `corvo-bridge-extension` em `chrome://extensions`.
 
 ### Corvo Collector V0.8.0
 
@@ -255,8 +265,8 @@ Use `public/downloads/CORVO_COLLECTOR_V077_EXTENSION.zip` ou carregue a pasta `c
 ## Downloads dentro do app
 
 - Corvo Collector V0.8.0;
-- Corvo Bridge V0.6.15;
-- Kit completo CorvoQuiz V0.6.28.
+- Corvo Bridge V0.6.16;
+- Kit completo CorvoQuiz V0.6.29.
 
 ## Fora do escopo atual
 
