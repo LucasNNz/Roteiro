@@ -7,7 +7,7 @@ export type CorvoBridgePayload = {
 
 type BridgeAck = { ok?: boolean; jobId?: string; error?: string };
 
-export function dispatchCorvoBridge(payload: CorvoBridgePayload, timeoutMs = 110000) {
+export function dispatchCorvoBridge(payload: CorvoBridgePayload, timeoutMs = Array.isArray(payload.meta?.attachments) && payload.meta.attachments.length ? 12 * 60 * 1000 : 150000) {
   return new Promise<BridgeAck>((resolve, reject) => {
     const timer = window.setTimeout(() => {
       window.removeEventListener("message", onMessage);

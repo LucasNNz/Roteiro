@@ -507,7 +507,7 @@ function waitForDelivery(payload, tabId, reused, sourceTabId) {
       pendingByTab.delete(tabId);
       sendingTabs.delete(tabId);
       reject(new Error("GPT_SEND_FAILED"));
-    }, 100000);
+    }, 12 * 60 * 1000);
     deliveryByJob.set(payload.jobId, { resolve, reject, timeoutId, tabId, reused, sourceTabId });
   });
 }
@@ -593,24 +593,29 @@ async function dispatchToGpt(job, sourceTabId) {
   return await delivery;
 }
 
+function shouldFocusedRetry(errorCode = "") {
+  const code = String(errorCode || "").toUpperCase();
+  return /GPT_SEND|COMPOSER_|ATTACHMENT_(INPUT|NOT_CONFIRMED)|READY_TO_SEND|SEND_BUTTON|BRIDGE_BUSY/.test(code);
+}
+
 async function sendWithFocusedRetry(tabId, pending) {
   const firstResult = await chrome.tabs.sendMessage(tabId, { type: "CORVO_SEND_PROMPT", payload: pending });
   if (firstResult?.ok) return firstResult;
 
   const firstError = firstResult?.error || "GPT_SEND_FAILED";
-  if (firstError !== "GPT_SEND_FAILED") throw new Error(firstError);
+  if (!shouldFocusedRetry(firstError)) throw new Error(firstError);
 
   const delivery = deliveryByJob.get(pending.jobId);
   const sourceTabId = delivery?.sourceTabId;
   const gptTab = await chrome.tabs.get(tabId);
   let activatedForRetry = false;
 
-  await setStatus("SENDING_TO_GPT", pending.jobId, "Sincronizando o editor do GPT para concluir o envio...");
+  await setStatus("FOCUSED_RETRY", pending.jobId, `O envio em segundo plano não confirmou (${firstError}). Ativando a aba do GPT e tentando novamente...`, { firstError });
   try {
     if (!gptTab.active) {
       await chrome.tabs.update(tabId, { active: true });
       activatedForRetry = true;
-      await new Promise((resolve) => setTimeout(resolve, 900));
+      await new Promise((resolve) => setTimeout(resolve, 1800));
     }
 
     const retryResult = await chrome.tabs.sendMessage(tabId, {
@@ -621,6 +626,7 @@ async function sendWithFocusedRetry(tabId, pending) {
     return retryResult;
   } finally {
     if (activatedForRetry && sourceTabId && sourceTabId !== tabId) {
+      await new Promise((resolve) => setTimeout(resolve, 700));
       await chrome.tabs.update(sourceTabId, { active: true }).catch(() => {});
     }
   }
@@ -660,6 +666,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: false, error: error.message || "GPT_SEND_FAILED" });
       });
     return true;
+  }
+
+  if (message.type === "CORVO_GPT_STAGE") {
+    const payload = message.payload || {};
+    const jobId = payload.jobId || null;
+    const state = String(payload.state || "SENDING_TO_GPT");
+    const statusMessage = String(payload.message || "Preparando envio ao GPT...");
+    setStatus(state, jobId, statusMessage, payload).catch(() => {});
+    sendResponse({ ok: true });
+    return;
   }
 
   if (message.type === "CORVO_GPT_SENT") {

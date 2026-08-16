@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Corvo Bridge",
-  "version": "0.6.14",
-  "description": "Encaminha especialistas do CorvoQuiz, captura arquivos e exclui conversas mapeadas com sincronização por estado da interface, confirmação estável e verificação forte de remoção real.",
+  "version": "0.6.15",
+  "description": "Encaminha especialistas do CorvoQuiz com confirmação real de mensagem/anexo, captura arquivos e exclui conversas mapeadas com verificação forte.",
   "permissions": [
     "storage",
     "tabs",

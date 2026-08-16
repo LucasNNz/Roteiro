@@ -1,6 +1,21 @@
-# CorvoQuiz Produção — V0.6.27
+# CorvoQuiz Produção — V0.6.28
 
 
+
+
+## V0.6.28 — confirmação real do envio ao Analista
+
+- Corrige o gap em que o Bridge abria o GPT Analista em segundo plano, mas o ZIP/mensagem podiam nunca chegar ao editor.
+- O Bridge V0.6.15 preenche a mensagem antes do anexo e confirma cada estado do envio.
+- O anexo só é aceito quando o nome do ZIP aparece de fato no composer do ChatGPT.
+- Inputs de arquivo são selecionados pelo contexto do composer; inputs globais/errados deixam de ser usados cegamente.
+- Timeout de anexo agora gera erro estruturado e retry; não é ignorado.
+- Em falhas de UI no segundo plano, o Bridge ativa temporariamente a aba do GPT e tenta novamente.
+- A mensagem só vira ENVIADA quando o JOB_ID aparece numa mensagem real da conversa.
+- App e Bridge aguardam até 12 minutos na fase de envio com anexo, evitando timeout prematuro em ZIPs maiores.
+- A interface do app recebe os estados de envio e mostra BAIXANDO ZIP / ANEXANDO ZIP / ZIP ANEXADO / ENVIANDO MENSAGEM / MENSAGEM CONFIRMADA.
+- O checkpoint fino da V0.6.27 permanece: qualquer falha nesta fase reutiliza o mesmo pacote persistente.
+- Mantém Collector V0.8.0.
 
 
 ## V0.6.27 — checkpoint fino da preparação do Analista
@@ -13,7 +28,7 @@
 - `ZIP_SAVED` continua usando o comportamento da V0.6.26: falha do Analista gera somente retry do Analista com o mesmo ZIP.
 - A interface distingue `CHECKPOINT DO ANALISTA SALVO` de `PACOTE DO ANALISTA SALVO` e oferece retomada manual imediata.
 - A nova rota `GET/POST /api/corvo/checkpoint` reconcilia o estado local com candidatos e ZIP existentes no servidor.
-- Mantém Corvo Bridge V0.6.14 e Corvo Collector V0.8.0.
+- Mantém Corvo Collector V0.8.0; Bridge atualizado para V0.6.15.
 
 ## V0.6.26 — pacote do Analista persistente e retry automático
 
@@ -25,7 +40,7 @@
 - Ao recarregar a página durante essa espera, o pacote continua salvo e o timer é retomado.
 - Um job do Analista em erro é resetado mantendo o `COLLECTOR_ZIP` anexado; a nova tentativa usa o mesmo pacote físico.
 - O Automático Total fica pausado em `ANALISTA`, sem virar falha final, e continua sozinho quando a análise finalmente terminar.
-- Mantém Bridge V0.6.14 e Collector V0.8.0.
+- Mantém Collector V0.8.0; Bridge atualizado para V0.6.15.
 
 ## V0.6.25 — Cleaner: clique robusto no item Excluir
 
@@ -229,9 +244,9 @@ Configure no projeto:
 
 ## Instalação
 
-### Corvo Bridge V0.6.14
+### Corvo Bridge V0.6.15
 
-Use `public/downloads/CORVO_BRIDGE_V0614_EXTENSION.zip` ou carregue a pasta `corvo-bridge-extension` em `chrome://extensions`.
+Use `public/downloads/CORVO_BRIDGE_V0615_EXTENSION.zip` ou carregue a pasta `corvo-bridge-extension` em `chrome://extensions`.
 
 ### Corvo Collector V0.8.0
 
@@ -240,8 +255,8 @@ Use `public/downloads/CORVO_COLLECTOR_V077_EXTENSION.zip` ou carregue a pasta `c
 ## Downloads dentro do app
 
 - Corvo Collector V0.8.0;
-- Corvo Bridge V0.6.14;
-- Kit completo CorvoQuiz V0.6.27.
+- Corvo Bridge V0.6.15;
+- Kit completo CorvoQuiz V0.6.28.
 
 ## Fora do escopo atual
 

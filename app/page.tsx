@@ -247,6 +247,46 @@ export default function Home() {
   useEffect(() => { projectsRef.current = projects; localStorage.setItem("corvoquiz-projects-v02", JSON.stringify(projects)); }, [projects]);
   useEffect(() => { localStorage.setItem("corvo-collector-settings-v02", JSON.stringify(settings)); }, [settings]);
   useEffect(() => {
+    function onBridgeStatus(event:MessageEvent) {
+      if (event.source !== window || event.data?.source !== "CORVO_BRIDGE" || event.data?.type !== "CORVO_BRIDGE_STATUS") return;
+      const payload = event.data?.payload || {};
+      const jobId = String(payload.jobId || "");
+      if (!jobId) return;
+      const project = projectsRef.current.find((item) => item.analysisJobId === jobId);
+      if (!project) return;
+      const state = String(payload.state || "");
+      const message = String(payload.message || "");
+      const labels:Record<string,string> = {
+        WAITING_COMPOSER:"ANALISTA · ABRINDO EDITOR",
+        FILLING_COMPOSER:"ANALISTA · MENSAGEM PREENCHIDA",
+        FETCHING_ATTACHMENT:"ANALISTA · BAIXANDO ZIP",
+        ATTACHING_FILE:"ANALISTA · ANEXANDO ZIP",
+        ATTACHMENT_READY:"ANALISTA · ZIP ANEXADO",
+        READY_TO_SEND:"ANALISTA · PRONTO PARA ENVIAR",
+        SENDING_MESSAGE:"ANALISTA · ENVIANDO MENSAGEM",
+        MESSAGE_CONFIRMED:"ANALISTA · MENSAGEM CONFIRMADA",
+        FOCUSED_RETRY:"ANALISTA · RETRY COM ABA ATIVA",
+        WAITING_ACTION:"ANALISTA PROCESSANDO",
+      };
+      const label = labels[state];
+      if (!label) return;
+      patchProject(project.id, {
+        analysisStatus:label,
+        pipelineStatus:state === "WAITING_ACTION" || state === "MESSAGE_CONFIRMED" ? "ANALISANDO IMAGENS" : "ENVIANDO AO ANALISTA",
+      });
+      if (project.autoRunStatus === "RUNNING") updateAutoRun(project.id, "ANALISTA", message || label);
+      if (activeId === project.id) {
+        setImagePhase("searching");
+        setImageProgress(state === "MESSAGE_CONFIRMED" || state === "WAITING_ACTION" ? 92 : 90);
+        setImageMessage(message || label);
+        setImageStatusLine(label);
+      }
+    }
+    window.addEventListener("message", onBridgeStatus);
+    return () => window.removeEventListener("message", onBridgeStatus);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId]);
+  useEffect(() => {
     const interrupted = projectsRef.current.filter((project) => project.autoRunStatus === "RUNNING");
     for (const project of interrupted) {
       if (hasPreparedAnalysis(project)) {
@@ -470,7 +510,10 @@ export default function Home() {
     if (message.includes("GPT_URL_NOT_CONFIGURED_ROTEIRO")) return "CONFIGURE O GPT DE ROTEIRO NAS OPÇÕES DO CORVO BRIDGE.";
     if (message.includes("GPT_URL_NOT_CONFIGURED_PROMPTS")) return "CONFIGURE O GPT DE PROMPTS DE IMAGEM NAS OPÇÕES DO CORVO BRIDGE.";
     if (message.includes("GPT_URL_NOT_CONFIGURED")) return "CONFIGURE OS GPTS NAS OPÇÕES DO CORVO BRIDGE.";
-    if (message.includes("GPT_SEND_FAILED")) return "O BRIDGE PREENCHEU A MENSAGEM, MAS O CHATGPT NÃO CONFIRMOU O ENVIO.";
+    if (message.includes("ATTACHMENT_INPUT_NOT_FOUND")) return "O BRIDGE ABRIU O GPT, MAS NÃO ENCONTROU O CONTROLE DE ANEXO DO EDITOR.";
+    if (message.includes("ATTACHMENT_NOT_CONFIRMED")) return "O BRIDGE TENTOU ANEXAR O PACOTE, MAS O CHATGPT NÃO CONFIRMOU O ARQUIVO NO EDITOR.";
+    if (message.includes("COMPOSER_FILL_FAILED") || message.includes("COMPOSER_LOST_AFTER_ATTACHMENT")) return "O EDITOR DO CHATGPT NÃO MANTEVE A MENSAGEM DO CORVO BRIDGE.";
+    if (message.includes("GPT_SEND_NOT_CONFIRMED") || message.includes("GPT_SEND_FAILED")) return "O BRIDGE PREPAROU A SOLICITAÇÃO, MAS A MENSAGEM NÃO APARECEU NA CONVERSA DO GPT.";
     return message || "NÃO FOI POSSÍVEL CONCLUIR ESTA ETAPA.";
   }
 
@@ -2140,7 +2183,7 @@ export default function Home() {
     </section>
 
     <section className="projects" id="projetos"><div className="section-heading"><div><span className="section-number">02</span><h2>PROJETOS RECENTES</h2></div><span className="project-count">{String(projects.length).padStart(2,"0")} PRODUÇÕES</span></div><div className="project-list">{projects.map((project) => <button className={`project-row ${project.id===activeId?"selected":""}`} key={project.id} onClick={() => setActiveId(project.id)}><span className="project-icon">{project.format==="REELS"?"▯":"▭"}</span><span className="project-name"><b>{project.title}</b><small>{project.id}</small></span><span className="project-format">{project.format}</span><span className="progress"><i style={{width:`${project.stage*20}%`}} /></span><span className="stage-label">ETAPA {project.stage}/5</span><span className="row-arrow">→</span></button>)}</div></section>
-    <footer><span>CORVOQUIZ PRODUÇÃO <i>V0.6.27</i></span><span>CHECKPOINT FINO DO ANALISTA · RETOMADA SEM REPROCESSAR · V0.6.27</span></footer>
+    <footer><span>CORVOQUIZ PRODUÇÃO <i>V0.6.28</i></span><span>ENVIO CONFIRMADO AO ANALISTA · CHECKPOINT PRESERVADO · V0.6.28</span></footer>
     {notice && <div className="toast">{notice}</div>}
 
     {createOpen && <div className="modal-backdrop" onMouseDown={(event) => event.target===event.currentTarget&&closeCreationModal()}><section className="creation-modal idea-modal" role="dialog" aria-modal="true" aria-labelledby="new-production-title"><button className="modal-close" disabled={ideaLoading} onClick={closeCreationModal} aria-label="Fechar">×</button><div className="modal-symbol">✦</div><span className="modal-kicker">{ideaRevisionProjectId?"REFAZER IDEIA":"NOVA PRODUÇÃO"}</span><h2 id="new-production-title">{ideaRevisionProjectId?"ESCOLHA UMA NOVA DIREÇÃO":"O QUE VAMOS CRIAR?"}</h2><p>{ideaRevisionProjectId?"Ao confirmar, roteiro, prompts e imagens serão refeitos automaticamente.":"Comece sem tema e peça ideias ao Corvo, ou informe uma direção opcional."}</p>
@@ -2182,8 +2225,8 @@ export default function Home() {
         <div className="downloads-head"><div><span>INSTALAÇÃO E SUPORTE</span><h3 id="downloads-title">ARQUIVOS PARA BAIXAR</h3></div><small>SE PRECISAR REINSTALAR</small></div>
         <div className="download-grid">
           <a className="download-card" href="/downloads/CORVO_COLLECTOR_V080_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.8.0</small></div><i>↓</i></a>
-          <a className="download-card" href="/downloads/CORVO_BRIDGE_V0614_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.14 · MENU EXCLUIR ROBUSTO + DIAGNÓSTICO VISUAL</small></div><i>↓</i></a>
-          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0627.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
+          <a className="download-card" href="/downloads/CORVO_BRIDGE_V0615_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.15 · ANEXO + MENSAGEM CONFIRMADOS NO ANALISTA</small></div><i>↓</i></a>
+          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0628.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
         </div>
       </section>
       <details className="advanced-settings"><summary>CONFIGURAÇÕES AVANÇADAS</summary><div className="settings-grid"><label>CANDIDATAS COLETADAS/ID<input type="number" min="1" max="20" value={settings.maxCandidates} onChange={(event)=>setSettings({...settings,maxCandidates:Math.max(1,Math.min(20,Number(event.target.value)||20))})}/></label><label>CANDIDATAS/ID → ANALISTA<input type="number" min="1" max="30" value={settings.analystCandidatesPerId} onChange={(event)=>setSettings({...settings,analystCandidatesPerId:Math.max(1,Math.min(30,Number(event.target.value)||10))})}/></label><label>VARREDURA<input type="number" value={settings.scrollSteps} onChange={(event)=>setSettings({...settings,scrollSteps:Number(event.target.value)})}/></label><label>QUALIDADE JPEG<input type="number" step=".01" value={settings.jpegQuality} onChange={(event)=>setSettings({...settings,jpegQuality:Number(event.target.value)})}/></label><label>PREFIXO<input value={settings.prefix} onChange={(event)=>setSettings({...settings,prefix:event.target.value})}/></label></div><p>A busca coleta no máximo 20 candidatas únicas por ID. No modo Mesclado, a meta é dividida entre Google e Pinterest. Depois, o limite do Analista reduz apenas o transporte; o app não escolhe a vencedora.</p><label className="batch-label">COMANDOS EM LOTE — OPCIONAL<textarea value={settings.batchText} onChange={(event)=>setSettings({...settings,batchText:event.target.value})} placeholder={"01|primeira busca\n02|segunda busca"} /></label></details>

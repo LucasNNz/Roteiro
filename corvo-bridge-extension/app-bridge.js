@@ -56,5 +56,5 @@
     }
   });
 
-  window.postMessage({ source: "CORVO_BRIDGE", type: "CORVO_BRIDGE_READY", payload: { version: "0.6.8" } }, "*");
+  window.postMessage({ source: "CORVO_BRIDGE", type: "CORVO_BRIDGE_READY", payload: { version: "0.6.15" } }, "*");
 })();

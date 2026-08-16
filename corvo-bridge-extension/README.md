@@ -1,6 +1,18 @@
-# CORVO BRIDGE V0.6.14 — CLEANER SINCRONIZADO PELA INTERFACE
+# CORVO BRIDGE V0.6.15 — ENVIO CONFIRMADO PARA GPTS COM ANEXO
 
-## Cleaner V0.6.14 — espera por estados reais
+## V0.6.15 — correção do gap Analista
+
+- O Bridge diferencia abrir o GPT de efetivamente enviar a solicitação.
+- Preenche a mensagem primeiro, para o estado ficar visível e verificável.
+- Seleciona o input de arquivo ligado ao composer por pontuação/contexto, evitando inputs globais errados.
+- O ZIP só é considerado anexado quando o nome real aparece no editor.
+- Timeout de anexo não é mais ignorado.
+- Se o envio em segundo plano falhar por estado da UI, o Bridge ativa temporariamente a aba e tenta novamente.
+- Mensagem só é considerada enviada quando o JOB_ID aparece numa mensagem do usuário na conversa.
+- Jobs com anexos podem permanecer em envio por até 12 minutos sem o app declarar ausência do Bridge.
+- Estados intermediários são enviados ao app: WAITING_COMPOSER, FILLING_COMPOSER, FETCHING_ATTACHMENT, ATTACHING_FILE, ATTACHMENT_READY, READY_TO_SEND, SENDING_MESSAGE e MESSAGE_CONFIRMED.
+- Mantém o Cleaner corrigido da V0.6.14.
+
 
 A exclusão não avança mais por delays curtos. O Bridge espera a conversa ficar carregada e estável, o menu do cabeçalho abrir e estabilizar, o item Excluir aparecer, o modal de confirmação ficar visível/estável e o botão vermelho ficar habilitado antes de confirmar. Isso evita cliques antes da hidratação/animação da interface.
 

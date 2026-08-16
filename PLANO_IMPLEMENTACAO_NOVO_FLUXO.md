@@ -17,6 +17,16 @@ Bases: `CORVOQUIZ_ESPECIFICACAO_NOVO_FLUXO_APP_BRIDGE` e `CORVOQUIZ_MUDANCA_MODO
 
 ## Fase 3 — Collector → Analista → roteamento
 
+## Alteração V0.6.28 — handshake real de envio ao Analista
+
+- O Bridge não pode considerar que abrir a aba do GPT equivale a enviar o job.
+- Um job com anexo passa pelos estados WAITING_COMPOSER → FILLING_COMPOSER → FETCHING_ATTACHMENT → ATTACHING_FILE → ATTACHMENT_READY → READY_TO_SEND → SENDING_MESSAGE → MESSAGE_CONFIRMED.
+- ATTACHMENT_READY exige o nome real do arquivo presente no editor.
+- MESSAGE_CONFIRMED exige o JOB_ID presente numa mensagem real do usuário na conversa.
+- Falha/timeout de anexo é recuperável usando o checkpoint do pacote; não remonta Collector/ZIP.
+- Se a UI não funcionar em segundo plano, o Bridge pode ativar temporariamente a aba para um retry focado e voltar à aba de origem depois.
+- O timeout de transporte com anexo é ampliado para 12 minutos.
+
 ## Alteração V0.6.27 — checkpoint fino da preparação do Analista
 
 - [x] Persistir estágio `JOB_CREATED` ao criar o job do Analista.

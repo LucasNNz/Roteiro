@@ -143,45 +143,115 @@
     return new File([bytes], name, { type: mime });
   }
 
-  function attachmentInput() {
+  function composerRoot() {
     const composer = findComposer();
-    const form = composer?.closest("form");
-    const inputs = [
-      ...(form ? form.querySelectorAll('input[type="file"]') : []),
-      ...document.querySelectorAll('input[type="file"]')
-    ];
-    return uniqueElements(inputs).find((input) => input instanceof HTMLInputElement) || null;
+    if (!composer) return null;
+    return composer.closest("form") || composer.parentElement || null;
   }
 
-  async function waitForAttachmentInput(timeout = 10000) {
+  function scoreAttachmentInput(input, root) {
+    if (!(input instanceof HTMLInputElement) || input.type !== "file") return -1;
+    let score = 0;
+    if (root?.contains(input)) score += 100;
+    if (input.multiple) score += 25;
+    const accept = String(input.accept || "").toLowerCase();
+    if (accept && !/^image\/?\*?$/.test(accept)) score += 8;
+    const marker = [input.id, input.name, input.getAttribute("data-testid"), input.getAttribute("aria-label")]
+      .filter(Boolean).join(" ").toLowerCase();
+    if (/(file|attach|upload|composer|prompt)/.test(marker)) score += 20;
+    return score;
+  }
+
+  function attachmentInput() {
+    const root = composerRoot();
+    const inputs = uniqueElements([
+      ...(root ? root.querySelectorAll('input[type="file"]') : []),
+      ...document.querySelectorAll('input[type="file"]')
+    ]).filter((input) => input instanceof HTMLInputElement);
+    return inputs
+      .map((input) => ({ input, score: scoreAttachmentInput(input, root) }))
+      .filter((entry) => entry.score >= 20)
+      .sort((a, b) => b.score - a.score)[0]?.input || null;
+  }
+
+  function findAttachmentButtons() {
+    const root = composerRoot();
+    const local = root ? [...root.querySelectorAll("button")] : [];
+    const global = [...document.querySelectorAll("button")];
+    return uniqueElements([...local, ...global]).filter((button) => {
+      const label = [button.getAttribute("aria-label"), button.getAttribute("title"), button.textContent]
+        .filter(Boolean).join(" ").toLowerCase();
+      return /(attach|upload|add files?|anexar|adicionar arquivo|arquivo)/i.test(label) && isEnabled(button);
+    });
+  }
+
+  function findUploadMenuAction() {
+    const candidates = [...document.querySelectorAll('button,[role="menuitem"],[role="option"]')].filter(isEnabled);
+    return candidates.find((element) => {
+      const label = [element.getAttribute("aria-label"), element.getAttribute("title"), element.textContent]
+        .filter(Boolean).join(" ").trim().toLowerCase();
+      return /(add photos? (and|&) files?|upload from computer|upload file|adicionar fotos? e arquivos?|carregar do computador|carregar arquivo|anexar arquivos?)/i.test(label);
+    }) || null;
+  }
+
+  async function waitForAttachmentInput(timeout = 15000) {
     const deadline = Date.now() + timeout;
+    let clickedAttach = false;
+    let clickedUploadAction = false;
+    const existing = new Set([...document.querySelectorAll('input[type="file"]')]);
     while (Date.now() < deadline) {
       const direct = attachmentInput();
       if (direct) return direct;
-      const buttons = [...document.querySelectorAll("button")].filter((button) => {
-        const label = [button.getAttribute("aria-label"), button.getAttribute("title"), button.textContent]
-          .filter(Boolean).join(" ").toLowerCase();
-        return /(attach|upload|add files?|anexar|arquivo)/i.test(label) && isEnabled(button);
-      });
-      if (buttons[0]) {
-        clickButton(buttons[0]);
-        await sleep(500);
-      } else {
-        await sleep(250);
+
+      if (!clickedAttach) {
+        const button = findAttachmentButtons()[0];
+        if (button) {
+          clickButton(button);
+          clickedAttach = true;
+          await sleep(700);
+        }
+      } else if (!clickedUploadAction) {
+        const action = findUploadMenuAction();
+        if (action) {
+          clickButton(action);
+          clickedUploadAction = true;
+          await sleep(500);
+        }
       }
+
+      const created = [...document.querySelectorAll('input[type="file"]')]
+        .find((input) => input instanceof HTMLInputElement && !existing.has(input));
+      if (created) return created;
+      await sleep(250);
     }
     throw new Error("ATTACHMENT_INPUT_NOT_FOUND");
   }
 
-  async function attachmentLoaded(name, timeout = 12000) {
+  function attachmentVisible(name) {
+    const expected = String(name || "").trim().toLowerCase();
+    if (!expected) return false;
+    const nodes = [...document.querySelectorAll("span,div,p,button")];
+    return nodes.some((node) => {
+      if (!isVisible(node)) return false;
+      const text = String(node.textContent || "").trim().toLowerCase();
+      return text === expected || (text.length < expected.length + 80 && text.includes(expected));
+    });
+  }
+
+  async function attachmentLoaded(name, timeout = 90000) {
     const deadline = Date.now() + timeout;
-    const expected = String(name || "").toLowerCase();
     while (Date.now() < deadline) {
-      const text = String(document.body?.innerText || document.body?.textContent || "").toLowerCase();
-      if (expected && text.includes(expected.toLowerCase())) return true;
-      await sleep(300);
+      if (attachmentVisible(name)) return true;
+      await sleep(350);
     }
     return false;
+  }
+
+  async function reportStage(jobId, state, message, extra = {}) {
+    await chrome.runtime.sendMessage({
+      type: "CORVO_GPT_STAGE",
+      payload: { jobId, state, message, ...extra }
+    }).catch(() => {});
   }
 
   async function fetchAttachmentDirect(attachment) {
@@ -200,10 +270,18 @@
     const attachments = Array.isArray(job?.meta?.attachments) ? job.meta.attachments : [];
     if (!attachments.length) return 0;
     let totalBytes = 0;
-    for (const attachment of attachments) {
+    for (let index = 0; index < attachments.length; index++) {
+      const attachment = attachments[index];
       const url = String(attachment?.url || "").trim();
       const name = String(attachment?.name || "arquivo").trim() || "arquivo";
       if (!url) continue;
+
+      if (attachmentVisible(name)) {
+        await reportStage(job.jobId, "ATTACHMENT_READY", `${name} já está anexado.`, { fileName:name, attachmentIndex:index + 1, attachmentTotal:attachments.length });
+        continue;
+      }
+
+      await reportStage(job.jobId, "FETCHING_ATTACHMENT", `Baixando ${name} para anexar ao GPT...`, { fileName:name, attachmentIndex:index + 1, attachmentTotal:attachments.length });
       let file;
       try {
         file = await fetchAttachmentDirect(attachment);
@@ -215,15 +293,20 @@
         if (!fetched?.ok || !fetched?.dataUrl) throw new Error(fetched?.error || directError?.message || "ATTACHMENT_FETCH_FAILED");
         file = dataUrlToFile(fetched.dataUrl, name, fetched.contentType);
       }
+
+      totalBytes += Number(file?.size || 0);
+      await reportStage(job.jobId, "ATTACHING_FILE", `Anexando ${name} ao editor do GPT...`, { fileName:name, fileBytes:file.size, attachmentIndex:index + 1, attachmentTotal:attachments.length });
       const input = await waitForAttachmentInput();
       const transfer = new DataTransfer();
       transfer.items.add(file);
-      totalBytes += Number(file?.size || 0);
       input.files = transfer.files;
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      input.dispatchEvent(new Event("change", { bubbles: true }));
-      const loadTimeout = Math.max(30000, Math.min(600000, 30000 + Math.floor(Number(file?.size || 0) / 2000)));
-      await attachmentLoaded(name, loadTimeout).catch(() => false);
+      input.dispatchEvent(new Event("input", { bubbles: true, composed:true }));
+      input.dispatchEvent(new Event("change", { bubbles: true, composed:true }));
+
+      const loadTimeout = Math.max(30000, Math.min(180000, 15000 + Math.floor(Number(file?.size || 0) / 250)));
+      const loaded = await attachmentLoaded(name, loadTimeout);
+      if (!loaded) throw new Error(`ATTACHMENT_NOT_CONFIRMED:${name}`);
+      await reportStage(job.jobId, "ATTACHMENT_READY", `${name} confirmado no editor.`, { fileName:name, fileBytes:file.size, attachmentIndex:index + 1, attachmentTotal:attachments.length });
       await sleep(700);
     }
     return totalBytes;
@@ -265,11 +348,9 @@
   async function waitForSendConfirmation(previousState, jobId, timeout = CONFIRM_TIMEOUT_MS) {
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
-      const currentComposer = findComposer();
-      if (currentComposer && composerText(currentComposer) === "") return true;
-
+      if (conversationHasJob(jobId)) return true;
       const currentState = userMessageState();
-      if (currentState.count > previousState.count) return true;
+      if (currentState.count > previousState.count && currentState.lastText.includes(jobId)) return true;
       if (currentState.lastText !== previousState.lastText && currentState.lastText.includes(jobId)) return true;
       await sleep(250);
     }
@@ -877,24 +958,36 @@
         return;
       }
 
-      const composer = await waitForComposer();
-      const attachmentBytes = await attachJobFiles(job);
+      await reportStage(job.jobId, "WAITING_COMPOSER", "Aguardando o editor do GPT ficar pronto...");
+      let composer = await waitForComposer();
       const message = compose(job);
       const previousState = userMessageState();
-      setComposerText(composer, message);
 
-      const fillDeadline = Date.now() + 4000;
-      while (Date.now() < fillDeadline && !composerText(findComposer()).includes(job.jobId)) await sleep(150);
+      await reportStage(job.jobId, "FILLING_COMPOSER", "Preenchendo a solicitação no GPT...");
+      setComposerText(composer, message);
+      const fillDeadline = Date.now() + 8000;
+      while (Date.now() < fillDeadline && !composerText(findComposer()).includes(job.jobId)) await sleep(180);
       if (!composerText(findComposer()).includes(job.jobId)) throw new Error("COMPOSER_FILL_FAILED");
 
+      const attachmentBytes = await attachJobFiles(job);
+      composer = await waitForComposer();
+      if (!composerText(composer).includes(job.jobId)) {
+        setComposerText(composer, message);
+        await sleep(500);
+      }
+      if (!composerText(findComposer()).includes(job.jobId)) throw new Error("COMPOSER_LOST_AFTER_ATTACHMENT");
+
+      await reportStage(job.jobId, "READY_TO_SEND", attachmentBytes ? "Arquivo anexado. Preparando envio ao GPT..." : "Solicitação pronta para envio...");
       const attachmentButtonTimeout = attachmentBytes
-        ? Math.max(BUTTON_TIMEOUT_MS, Math.min(600000, 30000 + Math.floor(attachmentBytes / 1500)))
+        ? Math.max(30000, Math.min(180000, 15000 + Math.floor(attachmentBytes / 250)))
         : BUTTON_TIMEOUT_MS;
       const buttons = await waitForEnabledButtons(findComposer(), attachmentButtonTimeout);
       for (const button of buttons) {
         if (!isEnabled(button)) continue;
+        await reportStage(job.jobId, "SENDING_MESSAGE", "Enviando a mensagem ao GPT...");
         clickButton(button);
-        if (await waitForSendConfirmation(previousState, job.jobId, 3500)) {
+        if (await waitForSendConfirmation(previousState, job.jobId, 12000)) {
+          await reportStage(job.jobId, "MESSAGE_CONFIRMED", "Mensagem confirmada na conversa. Aguardando o especialista...");
           await reportSent(job.jobId);
           return;
         }
@@ -905,8 +998,10 @@
         const form = currentComposer.closest("form");
         const submitButton = form?.querySelector('button[type="submit"]');
         if (form && submitButton && isEnabled(submitButton) && typeof form.requestSubmit === "function") {
+          await reportStage(job.jobId, "SENDING_MESSAGE", "Confirmando envio pelo formulário do GPT...");
           form.requestSubmit(submitButton);
-          if (await waitForSendConfirmation(previousState, job.jobId, 3500)) {
+          if (await waitForSendConfirmation(previousState, job.jobId, 12000)) {
+            await reportStage(job.jobId, "MESSAGE_CONFIRMED", "Mensagem confirmada na conversa. Aguardando o especialista...");
             await reportSent(job.jobId);
             return;
           }
@@ -915,16 +1010,16 @@
 
       const fallbackComposer = findComposer();
       if (fallbackComposer && composerText(fallbackComposer)) {
+        await reportStage(job.jobId, "SENDING_MESSAGE", "Tentando envio pelo teclado...");
         submitWithEnter(fallbackComposer);
-        if (await waitForSendConfirmation(previousState, job.jobId)) {
+        if (await waitForSendConfirmation(previousState, job.jobId, 15000)) {
+          await reportStage(job.jobId, "MESSAGE_CONFIRMED", "Mensagem confirmada na conversa. Aguardando o especialista...");
           await reportSent(job.jobId);
           return;
         }
       }
 
-      throw new Error("GPT_SEND_FAILED");
-    } catch (error) {
-      throw error;
+      throw new Error("GPT_SEND_NOT_CONFIRMED");
     } finally {
       busy = false;
     }
