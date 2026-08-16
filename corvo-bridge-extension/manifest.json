@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Corvo Bridge",
-  "version": "0.6.28",
-  "description": "Encaminha especialistas do CorvoQuiz em segundo plano, com checkpoints, retries sem roubar foco, diagnóstico, captura de arquivos, Central ao Vivo, batching, retomada persistente de anexos e Cleaner resiliente com STOP persistente e captura de galerias/variantes de imagem.",
+  "version": "0.6.30",
+  "description": "Encaminha especialistas do CorvoQuiz com checkpoints persistentes, Cleaner resiliente, captura recuperável e fechamento confirmado das abas automáticas.",
   "permissions": [
     "storage",
     "tabs",

@@ -1,0 +1,24 @@
+CORVOQUIZ V0.6.45 + CORVO BRIDGE V0.6.30
+
+BUGFIX: ABA DO ESPECIALISTA NÃO FECHAVA APÓS THUMB/ARQUIVO FINAL
+
+CAUSA IDENTIFICADA
+- O Bridge dependia de um segundo comando CORVO_JOB_COMPLETE enviado pelo app depois do polling.
+- Além disso, completeJobTab apagava o vínculo job -> tab ANTES de confirmar chrome.tabs.remove().
+- Se tabs.remove falhasse/transitasse ou o comando final se perdesse, a conversa permanecia aberta e o Bridge já não guardava tabId para tentar novamente.
+
+CORREÇÃO V0.6.30
+1. Quando /api/corvo/arquivo devolve status=DONE, o próprio background fecha automaticamente a aba criada pelo Bridge.
+2. FILE_DELIVERED é emitido antes do fechamento para o app não perder a confirmação do arquivo.
+3. O vínculo job -> tab só é apagado depois da confirmação do fechamento.
+4. tabs.remove tem até 3 tentativas e preserva closePending em caso de falha real.
+5. completeJobTab ficou idempotente: um registro de jobs concluídos conserva conversationUrl por 48h.
+6. Se app e auto-close tentarem fechar ao mesmo tempo, usam a mesma Promise (closeByJob), evitando corrida.
+7. Abas abertas manualmente pelo usuário continuam protegidas: só abas bridgeOwned/closeOnComplete são fechadas automaticamente.
+8. O timeout do ACK de complete no app passou de 3,5s para 10s.
+9. Na atualização/startup, jobs antigos em FILE_DELIVERED são consultados no CorvoQuiz; se já estiverem DONE, a aba bridgeOwned remanescente é fechada automaticamente.
+
+RESULTADO ESPERADO
+- THUMB: Action -> WAITING_FILE -> captura/upload -> DONE -> aba fecha sozinha.
+- GERADOR/REFINADOR: a aba fecha somente depois do ÚLTIMO arquivo esperado, quando o servidor retorna DONE.
+- Em caso de falha transitória no fechamento, o job conserva tabId e pode tentar novamente.

@@ -1,0 +1,24 @@
+CORVOQUIZ V0.6.44 + CORVO BRIDGE V0.6.29
+CAPTURA MV3 RESILIENTE + LOTE ANTI-MOSAICO
+
+PROBLEMA 1
+O Bridge mantinha um canal chrome.runtime.sendMessage aberto durante captura e upload. Em Manifest V3, navegação/reload/recriação do service worker podia fechar o canal antes de sendResponse, gerando:
+A listener indicated an asynchronous response by returning true, but the message channel closed before a response was received
+
+CORREÇÃO
+- ACK imediato para iniciar captura.
+- Conclusão via CORVO_BRIDGE_STATUS persistente.
+- Captura no ChatGPT em fatias curtas com retry/reinjeção.
+- Erros de canal passam a ser técnicos e retomam o mesmo trabalho lógico.
+
+PROBLEMA 2
+Gerador/Refinador podiam processar 4 IDs em lote, mas produzir UMA única imagem contendo um mosaico dos 4 resultados. O manifesto declarava 4 ARQUIVO=, porém fisicamente só existia 1 asset.
+
+CORREÇÃO
+- Contrato obrigatório 1 ID = 1 asset físico separado.
+- Bridge detecta manifesto multi-arquivo + único asset e retorna BATCH_COMPOSITE_IMAGE.
+- O mosaico não é salvo como o primeiro ID.
+- Fallback recebe regra específica para RETRY na origem com assets separados.
+
+RECUPERAÇÃO DE JOBS EXISTENTES
+Ao retomar um job antigo que já tenha manifesto multi-ID e apenas um mosaico, a V0.6.29 reconhece a saída inválida e permite que o scheduler siga para retry sem reconstruir Collector/Analista.

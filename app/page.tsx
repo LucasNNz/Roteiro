@@ -1366,7 +1366,7 @@ export default function Home() {
         jobId:result.jobId,
         prompt:result.prompt,
         specialist:"THUMB",
-        meta:{ projectId:project.id, uploadToken:result.uploadToken, expectedFile:fileName, format:project.format, aspectRatio:expectedAspect },
+        meta:{ projectId:project.id, uploadToken:result.uploadToken, expectedFile:fileName, format:project.format, aspectRatio:expectedAspect, forceNewConversation:true },
       });
       updateThumb(project.id, { thumbStatus:"CRIANDO THUMBNAIL" });
       await monitorThumbJob(project, result.jobId);
@@ -1638,7 +1638,10 @@ export default function Home() {
           for (const itemId of itemIds) updatePipelineItem(projectId, itemId, { status:`CAPTURANDO_LOTE_${captureType === "REFINED_IMAGE" ? "REFINADOR" : "GERADOR"}` });
           try { await captureCorvoBridgeFile(jobId, expectedFile, captureType, 180000); }
           catch (error) {
-            if (attempts >= 3) throw Object.assign(error instanceof Error ? error : new Error(String(error)), { corvoStatus:status });
+            const captureMessage = bridgeErrorMessage(error);
+            if (/BATCH_COMPOSITE_IMAGE_DETECTED/i.test(captureMessage) || attempts >= 3) {
+              throw Object.assign(error instanceof Error ? error : new Error(String(error)), { corvoStatus:status });
+            }
             await wait(5000);
           }
         }
@@ -1697,7 +1700,7 @@ export default function Home() {
 
   function isTechnicalPipelineFailure(errorCode?:string, reason?:string) {
     const text = `${errorCode || ""} ${reason || ""}`.toUpperCase();
-    return /(CORVO_BRIDGE|BRIDGE_BUSY|PROGRESS_TIMEOUT|HARD_TIMEOUT|ATTACHMENT_|GPT_SEND|COMPOSER_|SEND_CONTROL|SEND_BUTTON|CHATGPT_RATE_LIMITED|RATE_LIMITED|NETWORK|FETCH FAILED|TAB_CREATE|CONTENT_SCRIPT)/.test(text);
+    return /(CORVO_BRIDGE|BRIDGE_BUSY|PROGRESS_TIMEOUT|HARD_TIMEOUT|ATTACHMENT_|GPT_SEND|COMPOSER_|SEND_CONTROL|SEND_BUTTON|CHATGPT_RATE_LIMITED|RATE_LIMITED|NETWORK|FETCH FAILED|TAB_CREATE|CONTENT_SCRIPT|FILE_CAPTURE|CAPTURE_BRIDGE|CAPTURE_SLICE|GENERATED_IMAGE_CAPTURE_TIMEOUT|MESSAGE CHANNEL CLOSED|LISTENER INDICATED AN ASYNCHRONOUS RESPONSE|RECEIVING END DOES NOT EXIST|EXTENSION CONTEXT INVALIDATED)/.test(text);
   }
 
   async function dispatchPipelineJobResilient(payload:{jobId:string;prompt:string;specialist:string;meta:Record<string,unknown>}, projectId:string, itemIds:string[]) {
@@ -1729,8 +1732,14 @@ export default function Home() {
     const manifestItem = Array.isArray(status?.manifest?.items)
       ? status.manifest.items.find((candidate:any) => String(candidate?.id || "") === String(item.id))
       : undefined;
-    const errorCode = String(manifestItem?.errorCode || status?.manifest?.errorCode || (error instanceof Error && error.message.startsWith("SELECTED_FILE_MISMATCH") ? "SELECTED_FILE_MISMATCH" : "TOOL_ERROR")).toUpperCase();
-    const reason = String(manifestItem?.reason || status?.manifest?.reason || (error instanceof Error ? error.message : error) || "Falha sem motivo informado.");
+    const rawError = String(error instanceof Error ? error.message : error || "");
+    const inferredErrorCode = rawError.startsWith("SELECTED_FILE_MISMATCH")
+      ? "SELECTED_FILE_MISMATCH"
+      : rawError.startsWith("BATCH_COMPOSITE_IMAGE_DETECTED")
+        ? "BATCH_COMPOSITE_IMAGE"
+        : "TOOL_ERROR";
+    const errorCode = String(manifestItem?.errorCode || status?.manifest?.errorCode || inferredErrorCode).toUpperCase();
+    const reason = String(manifestItem?.reason || status?.manifest?.reason || rawError || "Falha sem motivo informado.");
     return { errorCode, reason, technical:isTechnicalPipelineFailure(errorCode, reason) };
 
   }
@@ -3203,8 +3212,8 @@ export default function Home() {
         <div className="downloads-head"><div><span>INSTALAÇÃO E SUPORTE</span><h3 id="downloads-title">ARQUIVOS PARA BAIXAR</h3></div><small>SE PRECISAR REINSTALAR</small></div>
         <div className="download-grid">
           <a className="download-card" href="/downloads/CORVO_COLLECTOR_V080_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.8.0</small></div><i>↓</i></a>
-          <a className="download-card" href="/downloads/CORVO_BRIDGE_V0628_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.28 · VARIANTES + STOP PERSISTENTE</small></div><i>↓</i></a>
-          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0643.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
+          <a className="download-card" href="/downloads/CORVO_BRIDGE_V0630_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.30 · AUTO-FECHAMENTO CONFIRMADO</small></div><i>↓</i></a>
+          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0645.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
         </div>
       </section>
       <details className="advanced-settings"><summary>CONFIGURAÇÕES AVANÇADAS</summary><div className="settings-grid"><label>CANDIDATAS COLETADAS/ID<input type="number" min="1" max="20" value={settings.maxCandidates} onChange={(event)=>setSettings({...settings,maxCandidates:Math.max(1,Math.min(20,Number(event.target.value)||20))})}/></label><label>CANDIDATAS/ID → ANALISTA<input type="number" min="1" max="30" value={settings.analystCandidatesPerId} onChange={(event)=>setSettings({...settings,analystCandidatesPerId:Math.max(1,Math.min(30,Number(event.target.value)||10))})}/></label><label>VARREDURA<input type="number" value={settings.scrollSteps} onChange={(event)=>setSettings({...settings,scrollSteps:Number(event.target.value)})}/></label><label>QUALIDADE JPEG<input type="number" step=".01" value={settings.jpegQuality} onChange={(event)=>setSettings({...settings,jpegQuality:Number(event.target.value)})}/></label><label>PREFIXO<input value={settings.prefix} onChange={(event)=>setSettings({...settings,prefix:event.target.value})}/></label></div><p>A busca coleta no máximo 20 candidatas únicas por ID. No modo Mesclado, a meta é dividida entre Google e Pinterest. Depois, o limite do Analista reduz apenas o transporte; o app não escolhe a vencedora.</p><label className="batch-label">COMANDOS EM LOTE — OPCIONAL<textarea value={settings.batchText} onChange={(event)=>setSettings({...settings,batchText:event.target.value})} placeholder={"01|primeira busca\n02|segunda busca"} /></label></details>

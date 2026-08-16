@@ -1,6 +1,6 @@
 (() => {
-  if (globalThis.__CORVO_CHATGPT_BRIDGE_V0628__) return;
-  globalThis.__CORVO_CHATGPT_BRIDGE_V0628__ = true;
+  if (globalThis.__CORVO_CHATGPT_BRIDGE_V0629__) return;
+  globalThis.__CORVO_CHATGPT_BRIDGE_V0629__ = true;
 
   let busy = false;
   const capturedImageAssignments = new Map();
@@ -1260,8 +1260,9 @@
   }
 
   async function captureGeneratedImage(payload = {}, timeout = 30000) {
-    const deadline = Date.now() + Math.max(5000, Number(payload?.timeout || timeout));
+    const deadline = Date.now() + Math.max(3000, Number(payload?.timeout || timeout));
     let lastError = "GENERATED_IMAGE_NOT_FOUND";
+    let singleCompositeSince = 0;
     const jobId = String(payload?.jobId || "");
     const requestedName = String(payload?.name || "");
     const assignments = capturedImageAssignments.get(jobId) || new Map();
@@ -1269,6 +1270,28 @@
     while (Date.now() < deadline) {
       const candidates = generatedImageCandidates(payload);
       const layout = logicalGeneratedImageSlots(candidates, payload);
+
+      // Um manifesto de lote com vários ARQUIVO= precisa ter vários assets físicos.
+      // Se existe apenas uma imagem grande por tempo suficiente, o especialista
+      // consolidou o lote em mosaico/contact sheet. Não anexamos esse mosaico como
+      // se fosse o primeiro ID e depois ficamos esperando arquivos inexistentes.
+      if (layout.expectedNames.length > 1 && candidates.length > 0 && candidates.length < layout.expectedNames.length) {
+        if (!singleCompositeSince) singleCompositeSince = Date.now();
+        if (Date.now() - singleCompositeSince >= 1600) {
+          const code = `BATCH_COMPOSITE_IMAGE_DETECTED:${layout.expectedNames.length}:${candidates.length}`;
+          reportDiagnostic(jobId, 'BATCH_COMPOSITE_IMAGE_DETECTED', {
+            requestedName,
+            expectedFiles:layout.expectedNames,
+            candidateCount:candidates.length,
+            candidateNatural:[candidates[0]?.naturalWidth || 0, candidates[0]?.naturalHeight || 0],
+            candidateRendered:[candidates[0]?.renderedWidth || 0, candidates[0]?.renderedHeight || 0]
+          }).catch(() => {});
+          if (requestedName) assignments.delete(requestedName);
+          throw new Error(code);
+        }
+      } else {
+        singleCompositeSince = 0;
+      }
       const assignedSrc = assignments.get(requestedName) || "";
       const used = new Set([...assignments.entries()].filter(([name]) => name !== requestedName).map(([,src]) => src));
       let candidate = assignedSrc ? candidates.find((item) => String(item.src || item.image.currentSrc || item.image.src || "") === assignedSrc) : null;
@@ -1491,7 +1514,7 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "CORVO_BRIDGE_PING") {
       chrome.runtime.sendMessage({ type: "CORVO_GPT_READY" }).catch(() => {});
-      sendResponse({ ok: true, version:"0.6.28", page:pageDiagnostic() });
+      sendResponse({ ok: true, version:"0.6.30", page:pageDiagnostic() });
       return;
     }
     if (message?.type === "CORVO_SEND_PROMPT") {

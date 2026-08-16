@@ -27,10 +27,12 @@ const CLEANER_LOG_KEY = "corvoBridgeCleanerLog";
 const CLEANER_ALARM = "corvoBridgeDailyCleaner";
 const CLEANER_CONTROL_KEY = "corvoBridgeCleanerControlV1";
 const CAPTURE_RECOVERY_KEY = "corvoBridgeCaptureRecovery";
+const COMPLETED_JOBS_KEY = "corvoBridgeCompletedJobsV1";
 const DIAGNOSTICS_KEY = "corvoBridgeDiagnosticsV1";
 const DIAGNOSTIC_MAX_JOBS = 12;
 const DIAGNOSTIC_MAX_EVENTS = 180;
 const captureByJob = new Map();
+const closeByJob = new Map();
 let cleanerRunning = false;
 let cleanerStopRequested = false;
 let activeCleanerTabId = null;
@@ -97,7 +99,7 @@ async function getDiagnostic(jobId) {
   const start = events[0]?.at || job.createdAt || Date.now();
   const lines = [
     "CORVO BRIDGE DIAGNÓSTICO V1",
-    `Bridge: V0.6.28`,
+    `Bridge: V0.6.30`,
     `JOB_ID: ${id}`,
     `Eventos: ${events.length}`,
     `Status atual: ${data.corvoBridgeStatus?.state || ""} | ${data.corvoBridgeStatus?.message || ""}`,
@@ -829,20 +831,78 @@ async function fetchCapturedBlob(captured) {
 async function ensureCaptureBridgeVersion(tabId, jobId) {
   let pong = null;
   try { pong = await chrome.tabs.sendMessage(tabId, { type:"CORVO_BRIDGE_PING" }); } catch {}
-  if (String(pong?.version || "") === "0.6.28") return pong;
+  if (String(pong?.version || "") === "0.6.30") return pong;
 
-  await appendDiagnostic(jobId, "CAPTURE_BRIDGE_VERSION_REFRESH", { tabId, foundVersion:String(pong?.version || "missing"), expectedVersion:"0.6.28" }, "background").catch(() => {});
+  await appendDiagnostic(jobId, "CAPTURE_BRIDGE_VERSION_REFRESH", { tabId, foundVersion:String(pong?.version || "missing"), expectedVersion:"0.6.30" }, "background").catch(() => {});
   // Uma extensão MV3 atualizada não substitui o content script já injetado numa
   // aba antiga. Recarregar a conversa preserva o conteúdo e garante que a lógica
-  // V0.6.28 de gallery/variantes esteja ativa antes da recuperação do arquivo.
+  // V0.6.30 de gallery/variantes esteja ativa antes da recuperação do arquivo.
   await reloadTabForBridge(tabId, { jobId });
   pong = await chrome.tabs.sendMessage(tabId, { type:"CORVO_BRIDGE_PING" }).catch(() => null);
-  if (String(pong?.version || "") !== "0.6.28") {
+  if (String(pong?.version || "") !== "0.6.30") {
     const injected = await injectChatGptBridge(tabId, { jobId });
     if (injected) pong = await chrome.tabs.sendMessage(tabId, { type:"CORVO_BRIDGE_PING" }).catch(() => null);
   }
-  if (String(pong?.version || "") !== "0.6.28") throw new Error("CAPTURE_BRIDGE_VERSION_NOT_READY");
+  if (String(pong?.version || "") !== "0.6.30") throw new Error("CAPTURE_BRIDGE_VERSION_NOT_READY");
   return pong;
+}
+
+function captureChannelError(error) {
+  const text = String(error?.message || error || "");
+  return /message channel closed|listener indicated an asynchronous response|receiving end does not exist|could not establish connection|extension context invalidated/i.test(text);
+}
+
+function captureRetryableError(error) {
+  const text = String(error?.message || error || "");
+  if (/BATCH_COMPOSITE_IMAGE_DETECTED/i.test(text)) return false;
+  return captureChannelError(error) || /GENERATED_IMAGE_NOT_FOUND|CAPTURE_SLICE_TIMEOUT|IMAGE_FETCH_TIMEOUT|IMAGE_FETCH_FAILED|CANVAS_CAPTURE_FAILED/i.test(text);
+}
+
+async function shortDelay(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function captureFromConversationResilient(record, jobId, payload = {}) {
+  const deadline = Date.now() + Math.max(12000, Number(payload.timeout || 32000));
+  let lastError = "GENERATED_IMAGE_NOT_FOUND";
+  let slice = 0;
+
+  while (Date.now() < deadline) {
+    slice += 1;
+    try {
+      await ensureCaptureBridgeVersion(record.tabId, jobId);
+      const remaining = Math.max(3000, deadline - Date.now());
+      const contentTimeout = Math.max(3000, Math.min(5200, remaining - 600));
+      const captured = await withTimeout(chrome.tabs.sendMessage(record.tabId, {
+        type: "CORVO_CAPTURE_GENERATED_IMAGE",
+        payload: { jobId, name:payload.name, timeout:contentTimeout }
+      }), Math.min(7000, contentTimeout + 1500), "CAPTURE_SLICE_TIMEOUT");
+
+      if (captured?.ok && (captured.dataUrl || captured.src)) return captured;
+      lastError = String(captured?.error || "GENERATED_IMAGE_NOT_FOUND");
+      if (/BATCH_COMPOSITE_IMAGE_DETECTED/i.test(lastError)) throw new Error(lastError);
+    } catch (error) {
+      lastError = String(error?.message || error || "GENERATED_IMAGE_NOT_FOUND");
+      await appendDiagnostic(jobId, "CAPTURE_SLICE_FAILED", { slice, error:lastError, tabId:record.tabId }, "background").catch(() => {});
+      if (/BATCH_COMPOSITE_IMAGE_DETECTED/i.test(lastError)) throw new Error(lastError);
+      if (!captureRetryableError(error)) throw error;
+
+      if (captureChannelError(error)) {
+        // A aba pode ter navegado/recarregado no meio da captura. Não mantemos um
+        // Port aberto por 30s: cada fatia é curta e o content script é revalidado.
+        let pong = await chrome.tabs.sendMessage(record.tabId, { type:"CORVO_BRIDGE_PING" }).catch(() => null);
+        if (String(pong?.version || "") !== "0.6.30") {
+          const injected = await injectChatGptBridge(record.tabId, { jobId }).catch(() => false);
+          if (injected) pong = await chrome.tabs.sendMessage(record.tabId, { type:"CORVO_BRIDGE_PING" }).catch(() => null);
+        }
+        if (String(pong?.version || "") !== "0.6.30") {
+          await reloadTabForBridge(record.tabId, { jobId }).catch(() => {});
+        }
+      }
+    }
+    if (Date.now() < deadline) await shortDelay(650);
+  }
+  throw new Error(lastError || "GENERATED_IMAGE_CAPTURE_TIMEOUT");
 }
 
 async function performCaptureAndUploadFile(jobId, payload = {}) {
@@ -853,13 +913,9 @@ async function performCaptureAndUploadFile(jobId, payload = {}) {
   const name = String(payload.name || "").trim();
   if (!name) throw new Error("FILE_NAME_REQUIRED");
   const fileType = String(payload.type || "THUMBNAIL").trim().toUpperCase();
-  await ensureCaptureBridgeVersion(record.tabId, jobId);
   await setCaptureRecovery(jobId, { name, type: fileType }, { stage: "CAPTURING", startedAt: Date.now() });
   await setStatus("CAPTURING_FILE", jobId, `Capturando ${name} na conversa...`, { fileName: name, fileType });
-  const captured = await withTimeout(chrome.tabs.sendMessage(record.tabId, {
-    type: "CORVO_CAPTURE_GENERATED_IMAGE",
-    payload: { jobId, name, timeout: 30000 }
-  }), 38000, "GENERATED_IMAGE_CAPTURE_TIMEOUT");
+  const captured = await captureFromConversationResilient(record, jobId, { ...payload, name, timeout:32000 });
   if (!captured?.ok || (!captured.dataUrl && !captured.src)) throw new Error(captured?.error || "GENERATED_IMAGE_NOT_FOUND");
   const blob = await fetchCapturedBlob(captured);
   if (blob.size > 8 * 1024 * 1024) throw new Error("IMAGE_TOO_LARGE");
@@ -880,6 +936,13 @@ async function performCaptureAndUploadFile(jobId, payload = {}) {
   if (!upload.ok || !result?.ok) throw new Error(result?.message || `FILE_UPLOAD_${upload.status}`);
   await clearCaptureRecovery(jobId);
   await setStatus("FILE_DELIVERED", jobId, `${name} associado ao trabalho.`, { file: result.file, fileName: name, fileType });
+  if (String(result.status || "").toUpperCase() === "DONE") {
+    // FILE_DELIVERED é emitido primeiro para liberar o app; em seguida o próprio
+    // background fecha a aba owned. Assim o fechamento não depende do polling/UI.
+    await autoCloseDeliveredJob(jobId, result.status).catch(async (error) => {
+      await appendDiagnostic(jobId, "FILE_DONE_AUTO_CLOSE_FAILED", { error:String(error?.message || error || "TAB_CLOSE_FAILED") }, "background").catch(() => {});
+    });
+  }
   return { ok: true, jobId, file: result.file, status: result.status };
 }
 
@@ -909,16 +972,44 @@ async function retryLastCapture() {
 }
 
 
-async function completeJobTab(jobId) {
+async function rememberCompletedJob(jobId, result = {}) {
+  const data = await chrome.storage.local.get(COMPLETED_JOBS_KEY);
+  const store = data[COMPLETED_JOBS_KEY] && typeof data[COMPLETED_JOBS_KEY] === "object" ? data[COMPLETED_JOBS_KEY] : {};
+  const now = Date.now();
+  for (const [id, item] of Object.entries(store)) {
+    if (now - Number(item?.completedAt || 0) > 48 * 60 * 60 * 1000) delete store[id];
+  }
+  store[jobId] = {
+    ok:true,
+    closed:result.closed === true,
+    conversationUrl:String(result.conversationUrl || ""),
+    completedAt:now,
+  };
+  const entries = Object.entries(store).sort((a,b) => Number(a[1]?.completedAt || 0) - Number(b[1]?.completedAt || 0));
+  while (entries.length > 80) {
+    const [id] = entries.shift();
+    delete store[id];
+  }
+  await chrome.storage.local.set({ [COMPLETED_JOBS_KEY]:store });
+}
+
+async function getRememberedCompletedJob(jobId) {
+  const data = await chrome.storage.local.get(COMPLETED_JOBS_KEY);
+  const item = data[COMPLETED_JOBS_KEY]?.[jobId];
+  if (!item) return null;
+  return { ok:true, closed:item.closed === true, conversationUrl:String(item.conversationUrl || ""), alreadyCompleted:true };
+}
+
+async function performCompleteJobTab(jobId) {
   const data = await chrome.storage.local.get([JOB_TABS_KEY, OWNED_TABS_KEY]);
   const jobs = data[JOB_TABS_KEY] || {};
   const record = jobs[jobId];
-  if (!record) return { ok: true, closed: false, conversationUrl:"" };
+  if (!record) return await getRememberedCompletedJob(jobId) || { ok: true, closed: false, conversationUrl:"" };
 
   // Captura a URL FINAL antes de fechar a aba. Ela também volta ao app para que
-  // um RETRY SEMÂNTICO do mesmo lote possa continuar NA MESMA CONVERSA, em vez
-  // de poluir o histórico com uma conversa nova.
+  // um RETRY SEMÂNTICO do mesmo lote possa continuar NA MESMA CONVERSA.
   let finalConversationUrl = String(record.conversationUrl || "");
+  let tabMissing = false;
   try {
     const tab = await chrome.tabs.get(record.tabId);
     const conversationUrl = String(tab?.url || "");
@@ -926,15 +1017,100 @@ async function completeJobTab(jobId) {
       finalConversationUrl = conversationUrl;
       await patchEligibleCleanerRecord(jobId, { conversationUrl, completedAt: Date.now() });
     }
-  } catch {}
+  } catch {
+    tabMissing = true;
+  }
 
-  delete jobs[jobId];
   const owned = new Set(Array.isArray(data[OWNED_TABS_KEY]) ? data[OWNED_TABS_KEY] : []);
-  if (record.closeOnComplete) owned.delete(record.tabId);
-  await chrome.storage.local.set({ [JOB_TABS_KEY]: jobs, [OWNED_TABS_KEY]: [...owned] });
-  if (!record.closeOnComplete) return { ok: true, closed: false, conversationUrl:finalConversationUrl };
-  await chrome.tabs.remove(record.tabId).catch(() => {});
-  return { ok: true, closed: true, conversationUrl:finalConversationUrl };
+
+  // Nunca fecha uma aba que não pertence ao Bridge. Apenas encerra o vínculo lógico.
+  if (!record.closeOnComplete) {
+    delete jobs[jobId];
+    await chrome.storage.local.set({ [JOB_TABS_KEY]:jobs, [OWNED_TABS_KEY]:[...owned] });
+    const result = { ok:true, closed:false, conversationUrl:finalConversationUrl };
+    await rememberCompletedJob(jobId, result);
+    return result;
+  }
+
+  let closed = tabMissing;
+  let lastCloseError = "";
+  if (!closed) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await chrome.tabs.remove(record.tabId);
+        closed = true;
+        await appendDiagnostic(jobId, "JOB_TAB_CLOSE_OK", { tabId:record.tabId, attempt, auto:record.autoCloseRequested === true }, "background").catch(() => {});
+        break;
+      } catch (error) {
+        lastCloseError = String(error?.message || error || "TAB_CLOSE_FAILED");
+        await appendDiagnostic(jobId, "JOB_TAB_CLOSE_RETRY", { tabId:record.tabId, attempt, error:lastCloseError }, "background").catch(() => {});
+        // Se a aba desapareceu entre a consulta e o remove, já está efetivamente fechada.
+        try { await chrome.tabs.get(record.tabId); } catch { closed = true; break; }
+        if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 450 * attempt));
+      }
+    }
+  }
+
+  if (!closed) {
+    jobs[jobId] = { ...record, closePending:true, closeAttempts:Number(record.closeAttempts || 0) + 1, lastCloseError, savedAt:Date.now() };
+    await chrome.storage.local.set({ [JOB_TABS_KEY]:jobs });
+    throw new Error(`TAB_CLOSE_FAILED:${lastCloseError || "UNKNOWN"}`);
+  }
+
+  // Só esquece o vínculo DEPOIS que o fechamento foi confirmado. Na versão anterior
+  // o registro era apagado antes de tabs.remove(); uma falha transitória deixava a aba
+  // aberta para sempre e já não havia tabId para uma nova tentativa.
+  delete jobs[jobId];
+  owned.delete(record.tabId);
+  await chrome.storage.local.set({ [JOB_TABS_KEY]:jobs, [OWNED_TABS_KEY]:[...owned] });
+  const result = { ok:true, closed:true, conversationUrl:finalConversationUrl };
+  await rememberCompletedJob(jobId, result);
+  return result;
+}
+
+async function completeJobTab(jobId) {
+  if (closeByJob.has(jobId)) return closeByJob.get(jobId);
+  const operation = performCompleteJobTab(jobId).finally(() => closeByJob.delete(jobId));
+  closeByJob.set(jobId, operation);
+  return operation;
+}
+
+async function autoCloseDeliveredJob(jobId, uploadStatus) {
+  if (String(uploadStatus || "").toUpperCase() !== "DONE") return { ok:true, skipped:true };
+  const data = await chrome.storage.local.get(JOB_TABS_KEY);
+  const record = data[JOB_TABS_KEY]?.[jobId];
+  if (!record?.closeOnComplete) return { ok:true, skipped:true };
+  // O servidor só devolve DONE quando o manifesto já chegou e TODOS os arquivos
+  // esperados foram anexados. Portanto este é o ponto seguro para fechar Thumb,
+  // Gerador ou Refinador sem depender de um segundo comando do app.
+  const jobs = data[JOB_TABS_KEY] || {};
+  jobs[jobId] = { ...record, autoCloseRequested:true, savedAt:Date.now() };
+  await chrome.storage.local.set({ [JOB_TABS_KEY]:jobs });
+  await patchEligibleCleanerRecord(jobId, { done:true, completedAt:Date.now() }).catch(() => {});
+  const result = await completeJobTab(jobId);
+  await clearRememberedJobPayload(jobId).catch(() => {});
+  await appendDiagnostic(jobId, "FILE_DONE_AUTO_CLOSE", { closed:result.closed, conversationUrl:diagnosticUrl(result.conversationUrl || "") }, "background").catch(() => {});
+  return result;
+}
+
+async function recoverCompletedOwnedTabs() {
+  const [config, data] = await Promise.all([getConfig(), chrome.storage.local.get(JOB_TABS_KEY)]);
+  const jobs = data[JOB_TABS_KEY] || {};
+  for (const [jobId, record] of Object.entries(jobs)) {
+    if (!record?.closeOnComplete) continue;
+    const state = String(record.lastState || "").toUpperCase();
+    if (state !== "FILE_DELIVERED" && record.closePending !== true) continue;
+    try {
+      const response = await withTimeout(fetch(`${config.appOrigin}/api/corvo/resultado?jobId=${encodeURIComponent(jobId)}`, { cache:"no-store" }), 7000, "RECOVERY_STATUS_TIMEOUT");
+      const status = await response.json().catch(() => ({}));
+      if (!response.ok || String(status?.status || "").toUpperCase() !== "DONE") continue;
+      await appendDiagnostic(jobId, "STARTUP_RECOVER_DONE_TAB", { tabId:record.tabId, lastState:state }, "background").catch(() => {});
+      await completeJobTab(jobId);
+      await clearRememberedJobPayload(jobId).catch(() => {});
+    } catch (error) {
+      await appendDiagnostic(jobId, "STARTUP_RECOVER_DONE_TAB_FAILED", { tabId:record.tabId, error:String(error?.message || error || "RECOVERY_FAILED") }, "background").catch(() => {});
+    }
+  }
 }
 
 async function forgetTab(tabId) {
@@ -1501,26 +1677,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "CORVO_CAPTURE_AND_UPLOAD") {
     const jobId = String(message.payload?.jobId || "").trim();
+    const fileName = String(message.payload?.name || "").trim();
+    const fileType = String(message.payload?.type || "THUMBNAIL").trim().toUpperCase();
     if (!jobId) { sendResponse({ ok: false, error: "JOB_ID_REQUIRED" }); return; }
-    captureAndUploadFile(jobId, message.payload)
-      .then(sendResponse)
-      .catch(async (error) => {
-        await setStatus("ERROR", jobId, `Falha ao capturar arquivo: ${error.message}`);
-        sendResponse({ ok: false, error: error.message || "FILE_CAPTURE_FAILED" });
-      });
-    return true;
+
+    // ACK imediato: o app não mantém um canal runtime.sendMessage aberto durante
+    // captura + upload. O resultado final chega por CORVO_BRIDGE_STATUS. Isso
+    // elimina o erro MV3 "listener returned true / message channel closed".
+    captureAndUploadFile(jobId, message.payload).catch(async (error) => {
+      await setStatus("ERROR", jobId, `Falha ao capturar arquivo: ${error.message}`, { fileName, fileType });
+    });
+    sendResponse({ ok:true, accepted:true, jobId, fileName, fileType });
+    return;
   }
 
 
   if (message.type === "CORVO_RETRY_LAST_CAPTURE") {
-    retryLastCapture()
-      .then(sendResponse)
-      .catch(async (error) => {
-        const data = await chrome.storage.local.get("corvoBridgeStatus");
-        const jobId = data.corvoBridgeStatus?.jobId || null;
-        await setStatus("ERROR", jobId, `Falha ao capturar arquivo: ${error.message}`);
-        sendResponse({ ok: false, error: error.message || "FILE_CAPTURE_FAILED" });
+    const dataPromise = chrome.storage.local.get(["corvoBridgeStatus", CAPTURE_RECOVERY_KEY]);
+    dataPromise.then((data) => {
+      const status = data.corvoBridgeStatus || lastStatus || {};
+      const jobId = String(status?.jobId || "").trim();
+      const recovery = (data[CAPTURE_RECOVERY_KEY] || {})[jobId] || {};
+      const fileName = String(recovery.name || status.fileName || "").trim();
+      const fileType = String(recovery.type || status.fileType || "THUMBNAIL").trim().toUpperCase();
+      if (!jobId) { sendResponse({ ok:false, error:"CAPTURE_JOB_NOT_FOUND" }); return; }
+      retryLastCapture().catch(async (error) => {
+        await setStatus("ERROR", jobId, `Falha ao capturar arquivo: ${error.message}`, { fileName, fileType });
       });
+      sendResponse({ ok:true, accepted:true, jobId, fileName, fileType });
+    }).catch((error) => sendResponse({ ok:false, error:error.message || "FILE_CAPTURE_FAILED" }));
     return true;
   }
 
@@ -1569,9 +1754,13 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === CLEANER_ALARM) runCleaner().catch(() => {});
 });
 
-chrome.runtime.onInstalled.addListener(() => { scheduleCleaner().catch(() => {}); });
+chrome.runtime.onInstalled.addListener(() => {
+  scheduleCleaner().catch(() => {});
+  recoverCompletedOwnedTabs().catch(() => {});
+});
 chrome.runtime.onStartup.addListener(() => {
   scheduleCleaner().catch(() => {});
+  recoverCompletedOwnedTabs().catch(() => {});
   getConfig().then(async (config) => {
     if (!config.cleanerEnabled) return;
     const [h, m] = String(config.cleanerHour || "22:00").split(":").map(Number);

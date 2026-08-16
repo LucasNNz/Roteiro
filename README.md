@@ -1,4 +1,19 @@
-# CorvoQuiz Produção V0.6.43
+# CorvoQuiz Produção V0.6.45
+
+
+## V0.6.45 — fechamento garantido após arquivo final + captura MV3 resiliente
+
+- Bridge V0.6.30 não mantém mais um `runtime.sendMessage` aberto durante dezenas de segundos para captura/upload. O pedido recebe ACK imediato e o resultado final chega por status persistente.
+
+- **Novo:** quando o último arquivo de Thumb/Gerador/Refinador faz o servidor retornar `DONE`, o próprio background encerra a aba criada pelo Bridge; não depende mais de um segundo comando do app.
+- **Novo:** o vínculo `jobId → tabId` só é removido depois de o `chrome.tabs.remove()` ser confirmado; fechamento falho preserva o `tabId` para retry.
+- **Novo:** Thumb usa `forceNewConversation=true`, portanto não cai em uma aba manual/reutilizada que o Bridge não teria permissão lógica para fechar.
+- A captura dentro do ChatGPT usa janelas curtas e revalida/reinjeta o content script quando a aba navega ou o canal é recriado.
+- O erro do Chrome `A listener indicated an asynchronous response... message channel closed` passa a ser tratado como falha técnica recuperável, sem enviar automaticamente o conteúdo ao Fallback.
+- Se um manifesto de lote declara vários `ARQUIVO=` mas existe apenas um asset visual, o Bridge detecta `BATCH_COMPOSITE_IMAGE` e não salva o mosaico como se fosse o primeiro ID.
+- Gerador e Refinador recebem regra explícita: **1 ID = 1 asset físico separado**, nunca grade/colagem/mosaico/contact sheet.
+- O Fallback trata `BATCH_COMPOSITE_IMAGE` como recuperável e pede retry para a origem com assets separados.
+- Preserva todas as regras da V0.6.43: Automático Reels 9:16 / Vídeo Completo 16:9 e migração de thumbs legadas.
 
 ## V0.6.43 — Automático Reels / Vídeo Completo + Thumb por formato
 
@@ -112,7 +127,7 @@ A V0.6.40 corrige o AUTOMÁTICO TOTAL para avançar sozinho desde a ideia até o
 - ZIP/mensagem só começam depois de `PING_OK`.
 - Checkpoint do Analista continua preservado durante a recuperação.
 
-## V0.6.29 — diagnóstico completo do envio ao Analista
+## V0.6.30 — diagnóstico completo do envio ao Analista
 
 - Bridge V0.6.16 registra uma linha do tempo persistente por JOB_ID para descobrir exatamente onde o envio ao GPT quebra.
 - O diagnóstico cobre abertura da aba, content script, composer, preenchimento, download do ZIP, descoberta do input de arquivo, dispatch do File, confirmação visual do anexo, descoberta/clique do botão de envio e confirmação do JOB_ID na conversa.

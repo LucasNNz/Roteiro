@@ -5,7 +5,7 @@ export type CorvoBridgePayload = {
   meta?: Record<string, unknown>;
 };
 
-type BridgeAck = { ok?: boolean; jobId?: string; error?: string; conversationUrl?: string; closed?: boolean };
+type BridgeAck = { ok?: boolean; accepted?: boolean; jobId?: string; error?: string; conversationUrl?: string; closed?: boolean; fileName?: string; fileType?: string; state?: string };
 
 export function dispatchCorvoBridge(payload: CorvoBridgePayload, timeoutMs?: number) {
   const hasAttachments = Array.isArray(payload.meta?.attachments) && payload.meta.attachments.length > 0;
@@ -55,7 +55,7 @@ export function dispatchCorvoBridge(payload: CorvoBridgePayload, timeoutMs?: num
   });
 }
 
-export function completeCorvoBridgeJob(jobId: string, timeoutMs = 3500) {
+export function completeCorvoBridgeJob(jobId: string, timeoutMs = 10000) {
   return new Promise<BridgeAck>((resolve, reject) => {
     const timer = window.setTimeout(() => {
       window.removeEventListener("message", onMessage);
@@ -79,19 +79,51 @@ export function completeCorvoBridgeJob(jobId: string, timeoutMs = 3500) {
 
 export function captureCorvoBridgeFile(jobId: string, name: string, type = "THUMBNAIL", timeoutMs = 180000) {
   return new Promise<BridgeAck>((resolve, reject) => {
-    const timer = window.setTimeout(() => {
-      window.removeEventListener("message", onMessage);
-      reject(new Error("CORVO_BRIDGE_CAPTURE_TIMEOUT"));
-    }, timeoutMs);
+    let accepted = false;
+    const expectedName = String(name || "").trim().toLowerCase();
+    const timer = window.setTimeout(() => finishError("CORVO_BRIDGE_CAPTURE_TIMEOUT"), timeoutMs);
 
-    function onMessage(event: MessageEvent) {
-      if (event.source !== window || event.data?.source !== "CORVO_BRIDGE" || event.data?.type !== "CORVO_BRIDGE_CAPTURE_ACK") return;
-      const ack = (event.data.payload || {}) as BridgeAck;
-      if (ack.jobId && ack.jobId !== jobId) return;
+    function cleanup() {
       window.clearTimeout(timer);
       window.removeEventListener("message", onMessage);
-      if (ack.ok) resolve(ack);
-      else reject(new Error(ack.error || "CORVO_BRIDGE_CAPTURE_ERROR"));
+    }
+
+    function finishError(code:string) {
+      cleanup();
+      reject(new Error(code));
+    }
+
+    function fileMatches(payload:any) {
+      const statusName = String(payload?.fileName || "").trim().toLowerCase();
+      return !statusName || !expectedName || statusName === expectedName;
+    }
+
+    function onMessage(event: MessageEvent) {
+      if (event.source !== window || event.data?.source !== "CORVO_BRIDGE") return;
+
+      if (event.data?.type === "CORVO_BRIDGE_CAPTURE_ACK") {
+        const ack = (event.data.payload || {}) as BridgeAck;
+        if (ack.jobId && ack.jobId !== jobId) return;
+        if (!ack.ok) return finishError(ack.error || "CORVO_BRIDGE_CAPTURE_ERROR");
+        if (ack.accepted) { accepted = true; return; }
+        cleanup();
+        resolve(ack);
+        return;
+      }
+
+      if (event.data?.type === "CORVO_BRIDGE_STATUS") {
+        const status = (event.data.payload || {}) as BridgeAck & { message?:string };
+        if (String(status.jobId || "") !== jobId || !fileMatches(status)) return;
+        const state = String(status.state || "").toUpperCase();
+        if (state === "FILE_DELIVERED") {
+          cleanup();
+          resolve({ ok:true, jobId, fileName:name, fileType:type, state });
+          return;
+        }
+        if (state === "ERROR" && accepted) {
+          finishError(String(status.message || status.error || "FILE_CAPTURE_FAILED"));
+        }
+      }
     }
 
     window.addEventListener("message", onMessage);

@@ -88,7 +88,9 @@ function buildPipelinePrompt(request: CorvoJobRequest) {
       "Entregue o manifesto [CORVO_IMAGE_ANALYSIS] VERSION=1.1.",
     ],
     REFINADOR: [
-      "Este trabalho pode conter um LOTE de até 10 IDs/imagens. Processe TODOS os IDs recebidos na mesma conversa; não crie uma execução separada por imagem.",
+      "Este trabalho pode conter um LOTE de até 10 IDs/imagens. Processe TODOS os IDs recebidos na mesma conversa; não crie uma conversa separada por imagem.",
+      "REGRA FÍSICA OBRIGATÓRIA: cada ID deve resultar em UMA imagem/asset separado na conversa. Nunca reúna dois ou mais IDs em uma única imagem, grade, colagem, mosaico, contact sheet, storyboard ou painel.",
+      "Mesmo trabalhando em lote na mesma conversa, faça a edição/refinamento de cada ID como geração visual independente. Se a ferramenta oferecer variantes do mesmo ID, mantenha apenas uma opção final para aquele ID antes do manifesto.",
       "Refine somente as imagens aprovadas recebidas, preservando identidade, personagem, jogo, objeto e conceito.",
       "Quando ARQUIVO_SELECIONADO_IMUTAVEL estiver informado, use exatamente essa candidata e jamais a substitua por outro arquivo do mesmo ID.",
       "REFINAMENTO=LEVE pede melhoria técnica; REFINAMENTO=FORTE também pode reenquadrar para 16:9.",
@@ -96,7 +98,9 @@ function buildPipelinePrompt(request: CorvoJobRequest) {
       "Entregue o manifesto [CORVO_IMAGE_REFINEMENT] VERSION=1.1.",
     ],
     GERADOR: [
-      "Este trabalho pode conter um LOTE de até 10 IDs. Processe TODOS os IDs recebidos na mesma conversa; não abra ou peça uma execução separada por item.",
+      "Este trabalho pode conter um LOTE de até 10 IDs. Processe TODOS os IDs recebidos na mesma conversa; não abra ou peça uma conversa separada por item.",
+      "REGRA FÍSICA OBRIGATÓRIA: cada ID deve resultar em UMA imagem/asset separado na conversa. Nunca reúna dois ou mais IDs em uma única imagem, grade, colagem, mosaico, contact sheet, storyboard ou painel.",
+      "Mesmo trabalhando em lote na mesma conversa, faça uma geração visual independente por ID. Se a ferramenta oferecer variantes do mesmo ID, mantenha apenas uma opção final para aquele ID antes do manifesto.",
       "Gere somente os IDs reprovados recebidos, respeitando PROMPT_GERACAO, identidade esperada e nome final.",
       "Cada imagem gerada com sucesso é FINAL e não deve voltar ao Refinador.",
       "Para cada ID devolva um bloco [ID:...] próprio. Se um item falhar, informe ERROR_CODE e MOTIVO naquele ID e continue os demais.",
@@ -105,6 +109,7 @@ function buildPipelinePrompt(request: CorvoJobRequest) {
     FALLBACK: [
       "Este trabalho pode conter um LOTE de até 10 falhas. Analise TODAS na mesma conversa, sem gerar ou editar imagens e sem tentar burlar políticas.",
       "Para cada ID decida RETRY ou NAO_RECUPERAVEL em seu próprio bloco [ID:...]. Em RETRY, informe DESTINO e PROMPT_RETRY completo.",
+      "Se ERROR_CODE=BATCH_COMPOSITE_IMAGE, a falha é recuperável: use RETRY para a ORIGEM (GERADOR ou REFINADOR) e determine no PROMPT_RETRY que cada ID seja produzido como asset físico separado, nunca em grade, mosaico, colagem, contact sheet, storyboard ou painel conjunto.",
       "ARQUIVO_SELECIONADO_IMUTAVEL, quando presente, é uma trava: o retry não pode trocar a candidata escolhida pelo Analista.",
       "Uma falha de um ID não deve impedir decisões para os demais IDs do lote.",
       "Entregue o manifesto [CORVO_IMAGE_FALLBACK] VERSION=1.0.",
