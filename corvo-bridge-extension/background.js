@@ -99,7 +99,7 @@ async function getDiagnostic(jobId) {
   const start = events[0]?.at || job.createdAt || Date.now();
   const lines = [
     "CORVO BRIDGE DIAGNÓSTICO V1",
-    `Bridge: V0.6.32`,
+    `Bridge: V0.6.33`,
     `JOB_ID: ${id}`,
     `Eventos: ${events.length}`,
     `Status atual: ${data.corvoBridgeStatus?.state || ""} | ${data.corvoBridgeStatus?.message || ""}`,
@@ -707,6 +707,9 @@ async function rememberJobTab(jobId, tabId, openedByBridge, meta = {}) {
     batchId: String(meta.batchId || jobs[jobId]?.batchId || ""),
     batchSize: Number(meta.batchSize || jobs[jobId]?.batchSize || 0),
     logicalBatch: meta.logicalBatch === true || jobs[jobId]?.logicalBatch === true,
+    capturePlan: meta.capturePlan && typeof meta.capturePlan === "object"
+      ? { ...(jobs[jobId]?.capturePlan || {}), ...meta.capturePlan }
+      : (jobs[jobId]?.capturePlan || undefined),
     savedAt: Date.now()
   };
   await chrome.storage.local.set({ [JOB_TABS_KEY]: jobs, [OWNED_TABS_KEY]: [...owned] });
@@ -859,6 +862,215 @@ async function cropCapturedBlob(blob, crop = {}) {
   }
 }
 
+
+function normalizeExpectedCaptureFiles(values) {
+  return Array.isArray(values)
+    ? [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))]
+    : [];
+}
+
+function inferCaptureType(record = {}, specialist = "", name = "") {
+  const key = String(specialist || record?.specialist || "").trim().toUpperCase();
+  if (key === "THUMB" || key === "THUMBNAIL") return "THUMBNAIL";
+  if (key === "GERADOR" || key === "GENERATOR" || key === "GENERATION") return "GENERATED_IMAGE";
+  if (key === "REFINADOR" || key === "REFINER" || key === "REFINEMENT") return "REFINED_IMAGE";
+  if (/^thumb_/i.test(String(name || ""))) return "THUMBNAIL";
+  return "OTHER";
+}
+
+async function rememberJobCapturePlan(jobId, payload = {}, patch = {}) {
+  if (!jobId) return null;
+  const data = await chrome.storage.local.get(JOB_TABS_KEY);
+  const jobs = data[JOB_TABS_KEY] || {};
+  const record = jobs[jobId] || {};
+  const current = record.capturePlan && typeof record.capturePlan === "object" ? record.capturePlan : {};
+  const expectedFiles = normalizeExpectedCaptureFiles(
+    Array.isArray(payload.expectedFiles) && payload.expectedFiles.length
+      ? payload.expectedFiles
+      : current.expectedFiles
+  );
+  const name = String(payload.name || current.name || "").trim();
+  let expectedIndex = Number.isInteger(payload.expectedIndex)
+    ? Number(payload.expectedIndex)
+    : (Number.isInteger(current.expectedIndex) ? Number(current.expectedIndex) : undefined);
+  if (!Number.isInteger(expectedIndex) && name && expectedFiles.length) {
+    const idx = expectedFiles.findIndex((item) => item.toLocaleLowerCase("pt-BR") === name.toLocaleLowerCase("pt-BR"));
+    if (idx >= 0) expectedIndex = idx;
+  }
+  const plan = {
+    ...current,
+    name,
+    type:String(payload.type || current.type || inferCaptureType(record, "", name)).trim().toUpperCase(),
+    expectedFiles,
+    ...(Number.isInteger(expectedIndex) ? { expectedIndex } : {}),
+    compositeSplitMode:String(payload.compositeSplitMode || current.compositeSplitMode || "AUTO").trim().toUpperCase(),
+    ...(Number.isInteger(payload.compositeColumns)
+      ? { compositeColumns:Number(payload.compositeColumns) }
+      : (Number.isInteger(current.compositeColumns) ? { compositeColumns:Number(current.compositeColumns) } : {})),
+    updatedAt:Date.now(),
+    ...patch,
+  };
+  jobs[jobId] = {
+    ...record,
+    uploadToken:String(payload.uploadToken || record.uploadToken || ""),
+    conversationUrl:String(payload.conversationUrl || record.conversationUrl || ""),
+    specialist:String(payload.specialist || record.specialist || ""),
+    capturePlan:plan,
+    savedAt:Date.now()
+  };
+  await chrome.storage.local.set({ [JOB_TABS_KEY]:jobs });
+  return plan;
+}
+
+async function fetchServerCapturePlan(jobId, record = {}) {
+  const config = await getConfig();
+  const response = await withTimeout(
+    fetch(`${config.appOrigin}/api/corvo/resultado?jobId=${encodeURIComponent(jobId)}`, { cache:"no-store", credentials:"omit" }),
+    8000,
+    "CAPTURE_PLAN_STATUS_TIMEOUT"
+  );
+  const status = await response.json().catch(() => ({}));
+  if (!response.ok || !status?.ok) {
+    const error = new Error(status?.message || `CAPTURE_PLAN_STATUS_${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+  const expectedFiles = normalizeExpectedCaptureFiles(
+    Array.isArray(status.expectedFiles) && status.expectedFiles.length
+      ? status.expectedFiles
+      : [status.expectedFile].filter(Boolean)
+  );
+  const received = new Set(
+    (Array.isArray(status.files) ? status.files : [])
+      .map((file) => String(file?.name || "").trim().toLocaleLowerCase("pt-BR"))
+      .filter(Boolean)
+  );
+  const missing = expectedFiles.filter((name) => !received.has(name.toLocaleLowerCase("pt-BR")));
+  return {
+    status:String(status.status || "").toUpperCase(),
+    specialist:String(status.specialist || record?.specialist || "").toUpperCase(),
+    expectedFiles,
+    missing,
+    files:Array.isArray(status.files) ? status.files : [],
+  };
+}
+
+async function resolveRetryCapturePlan(jobId, { allowServer = true } = {}) {
+  const data = await chrome.storage.local.get(["corvoBridgeStatus", CAPTURE_RECOVERY_KEY, JOB_TABS_KEY]);
+  const status = data.corvoBridgeStatus || lastStatus || {};
+  const recovery = (data[CAPTURE_RECOVERY_KEY] || {})[jobId] || {};
+  const record = (data[JOB_TABS_KEY] || {})[jobId] || {};
+  const storedPlan = record.capturePlan && typeof record.capturePlan === "object" ? record.capturePlan : {};
+
+  let expectedFiles = normalizeExpectedCaptureFiles(
+    recovery.expectedFiles?.length ? recovery.expectedFiles : storedPlan.expectedFiles
+  );
+  let name = String(recovery.name || status.fileName || storedPlan.name || "").trim();
+  let expectedIndex = Number.isInteger(recovery.expectedIndex)
+    ? Number(recovery.expectedIndex)
+    : (Number.isInteger(storedPlan.expectedIndex) ? Number(storedPlan.expectedIndex) : undefined);
+  let server = null;
+
+  if (allowServer) {
+    try {
+      server = await fetchServerCapturePlan(jobId, record);
+      if (server.status === "DONE") {
+        return { ok:true, done:true, jobId, record, server };
+      }
+      if (server.expectedFiles.length) expectedFiles = server.expectedFiles;
+      if (server.missing.length) name = server.missing[0];
+      else if (server.status === "WAITING_FILE" && server.expectedFiles.length) {
+        return { ok:false, done:false, jobId, error:"CAPTURE_NO_PENDING_FILE", record, expectedFiles, server };
+      }
+    } catch (error) {
+      await appendDiagnostic(jobId, "CAPTURE_PLAN_SERVER_RECOVERY_FAILED", {
+        error:String(error?.message || error || "CAPTURE_PLAN_STATUS_FAILED"),
+      }, "background").catch(() => {});
+    }
+  }
+
+  if (!name && expectedFiles.length) {
+    if (Number.isInteger(expectedIndex) && expectedFiles[expectedIndex]) name = expectedFiles[expectedIndex];
+    if (!name) name = expectedFiles[0];
+  }
+
+  if (server && server.missing.length) {
+    const lowerMissing = new Set(server.missing.map((item) => item.toLocaleLowerCase("pt-BR")));
+    if (!name || !lowerMissing.has(name.toLocaleLowerCase("pt-BR"))) name = server.missing[0];
+  }
+
+  if (name && expectedFiles.length) {
+    const idx = expectedFiles.findIndex((item) => item.toLocaleLowerCase("pt-BR") === name.toLocaleLowerCase("pt-BR"));
+    if (idx >= 0) expectedIndex = idx;
+  }
+
+  const type = String(
+    recovery.type ||
+    status.fileType ||
+    storedPlan.type ||
+    inferCaptureType(record, server?.specialist || "", name)
+  ).trim().toUpperCase();
+
+  if (!name) {
+    return {
+      ok:false,
+      done:false,
+      jobId,
+      error:"CAPTURE_NO_PENDING_FILE",
+      record,
+      expectedFiles,
+    };
+  }
+
+  const plan = {
+    name,
+    type:type || "OTHER",
+    expectedFiles,
+    ...(Number.isInteger(expectedIndex) ? { expectedIndex } : {}),
+    compositeSplitMode:String(recovery.compositeSplitMode || storedPlan.compositeSplitMode || "AUTO").trim().toUpperCase(),
+    ...(Number.isInteger(recovery.compositeColumns)
+      ? { compositeColumns:Number(recovery.compositeColumns) }
+      : (Number.isInteger(storedPlan.compositeColumns) ? { compositeColumns:Number(storedPlan.compositeColumns) } : {})),
+  };
+  await setCaptureRecovery(jobId, plan, { stage:"RECOVERED_PLAN" }).catch(() => {});
+  await rememberJobCapturePlan(jobId, plan, { recoveredAt:Date.now() }).catch(() => {});
+  return { ok:true, done:false, jobId, record, plan, server };
+}
+
+async function resolveCaptureRecord(jobId) {
+  const data = await chrome.storage.local.get([JOB_TABS_KEY, CLEANER_RECORDS_KEY]);
+  const jobs = data[JOB_TABS_KEY] || {};
+  let record = jobs[jobId] || null;
+  let tab = record?.tabId ? await chrome.tabs.get(record.tabId).catch(() => null) : null;
+  if (tab?.id) return { record, tab };
+
+  const cleaner = Array.isArray(data[CLEANER_RECORDS_KEY]) ? data[CLEANER_RECORDS_KEY] : [];
+  const clean = cleaner.find((item) => item?.jobId === jobId) || {};
+  const conversationUrl = String(record?.conversationUrl || clean?.conversationUrl || "").trim();
+  if (!/^https:\/\/chatgpt\.com\//i.test(conversationUrl)) {
+    throw new Error("JOB_TAB_NOT_FOUND");
+  }
+
+  tab = await chrome.tabs.create({ url:conversationUrl, active:false });
+  if (!tab?.id) throw new Error("JOB_TAB_REOPEN_FAILED");
+  const openedByBridge = record?.bridgeOwned === true || clean?.eligible === true;
+  await rememberJobTab(jobId, tab.id, openedByBridge, {
+    uploadToken:String(record?.uploadToken || ""),
+    projectId:String(record?.projectId || ""),
+    specialist:String(record?.specialist || ""),
+    batchId:String(record?.batchId || ""),
+    batchSize:Number(record?.batchSize || 0),
+    logicalBatch:record?.logicalBatch === true,
+    capturePlan:record?.capturePlan || undefined,
+  });
+  const refreshed = (await chrome.storage.local.get(JOB_TABS_KEY))[JOB_TABS_KEY]?.[jobId] || record || {};
+  await appendDiagnostic(jobId, "CAPTURE_TAB_REOPENED", {
+    tabId:tab.id,
+    conversationUrl:diagnosticUrl(conversationUrl),
+  }, "background").catch(() => {});
+  return { record:refreshed, tab };
+}
+
 async function fetchCapturedBlob(captured) {
   let blob;
   if (captured?.dataUrl) {
@@ -880,19 +1092,19 @@ async function fetchCapturedBlob(captured) {
 async function ensureCaptureBridgeVersion(tabId, jobId) {
   let pong = null;
   try { pong = await chrome.tabs.sendMessage(tabId, { type:"CORVO_BRIDGE_PING" }); } catch {}
-  if (String(pong?.version || "") === "0.6.32") return pong;
+  if (String(pong?.version || "") === "0.6.33") return pong;
 
-  await appendDiagnostic(jobId, "CAPTURE_BRIDGE_VERSION_REFRESH", { tabId, foundVersion:String(pong?.version || "missing"), expectedVersion:"0.6.32" }, "background").catch(() => {});
+  await appendDiagnostic(jobId, "CAPTURE_BRIDGE_VERSION_REFRESH", { tabId, foundVersion:String(pong?.version || "missing"), expectedVersion:"0.6.33" }, "background").catch(() => {});
   // Uma extensão MV3 atualizada não substitui o content script já injetado numa
   // aba antiga. Recarregar a conversa preserva o conteúdo e garante que a lógica
-  // V0.6.32 de gallery/variantes esteja ativa antes da recuperação do arquivo.
+  // V0.6.33 de gallery/variantes esteja ativa antes da recuperação do arquivo.
   await reloadTabForBridge(tabId, { jobId });
   pong = await chrome.tabs.sendMessage(tabId, { type:"CORVO_BRIDGE_PING" }).catch(() => null);
-  if (String(pong?.version || "") !== "0.6.32") {
+  if (String(pong?.version || "") !== "0.6.33") {
     const injected = await injectChatGptBridge(tabId, { jobId });
     if (injected) pong = await chrome.tabs.sendMessage(tabId, { type:"CORVO_BRIDGE_PING" }).catch(() => null);
   }
-  if (String(pong?.version || "") !== "0.6.32") throw new Error("CAPTURE_BRIDGE_VERSION_NOT_READY");
+  if (String(pong?.version || "") !== "0.6.33") throw new Error("CAPTURE_BRIDGE_VERSION_NOT_READY");
   return pong;
 }
 
@@ -947,11 +1159,11 @@ async function captureFromConversationResilient(record, jobId, payload = {}) {
         // A aba pode ter navegado/recarregado no meio da captura. Não mantemos um
         // Port aberto por 30s: cada fatia é curta e o content script é revalidado.
         let pong = await chrome.tabs.sendMessage(record.tabId, { type:"CORVO_BRIDGE_PING" }).catch(() => null);
-        if (String(pong?.version || "") !== "0.6.32") {
+        if (String(pong?.version || "") !== "0.6.33") {
           const injected = await injectChatGptBridge(record.tabId, { jobId }).catch(() => false);
           if (injected) pong = await chrome.tabs.sendMessage(record.tabId, { type:"CORVO_BRIDGE_PING" }).catch(() => null);
         }
-        if (String(pong?.version || "") !== "0.6.32") {
+        if (String(pong?.version || "") !== "0.6.33") {
           await reloadTabForBridge(record.tabId, { jobId }).catch(() => {});
         }
       }
@@ -962,13 +1174,14 @@ async function captureFromConversationResilient(record, jobId, payload = {}) {
 }
 
 async function performCaptureAndUploadFile(jobId, payload = {}) {
-  const data = await chrome.storage.local.get(JOB_TABS_KEY);
-  const record = (data[JOB_TABS_KEY] || {})[jobId];
+  const resolved = await resolveCaptureRecord(jobId);
+  const record = resolved.record || {};
   if (!record?.tabId) throw new Error("JOB_TAB_NOT_FOUND");
   if (!record.uploadToken) throw new Error("UPLOAD_TOKEN_MISSING");
   const name = String(payload.name || "").trim();
   if (!name) throw new Error("FILE_NAME_REQUIRED");
-  const fileType = String(payload.type || "THUMBNAIL").trim().toUpperCase();
+  const fileType = String(payload.type || inferCaptureType(record, "", name)).trim().toUpperCase();
+  await rememberJobCapturePlan(jobId, { ...payload, name, type:fileType }, { stage:"CAPTURING" }).catch(() => {});
   await setCaptureRecovery(jobId, { ...payload, name, type: fileType }, { stage: "CAPTURING", startedAt: Date.now() });
   await setStatus("CAPTURING_FILE", jobId, `Capturando ${name} na conversa...`, { fileName: name, fileType });
   const captured = await captureFromConversationResilient(record, jobId, { ...payload, name, timeout:32000 });
@@ -990,9 +1203,32 @@ async function performCaptureAndUploadFile(jobId, payload = {}) {
   }), 45000, "FILE_UPLOAD_TIMEOUT");
   const result = await upload.json().catch(() => ({}));
   if (!upload.ok || !result?.ok) throw new Error(result?.message || `FILE_UPLOAD_${upload.status}`);
-  await clearCaptureRecovery(jobId);
+  const normalizedUploadStatus = String(result.status || "").toUpperCase();
+  if (normalizedUploadStatus === "DONE") {
+    await clearCaptureRecovery(jobId);
+  } else {
+    const currentPlan = await rememberJobCapturePlan(jobId, { ...payload, name, type:fileType }, {
+      stage:"FILE_DELIVERED_WAITING_NEXT",
+      lastDeliveredName:name,
+      lastDeliveredAt:Date.now(),
+    }).catch(() => null);
+    const expected = normalizeExpectedCaptureFiles(currentPlan?.expectedFiles || payload.expectedFiles);
+    const idx = expected.findIndex((item) => item.toLocaleLowerCase("pt-BR") === name.toLocaleLowerCase("pt-BR"));
+    const nextName = idx >= 0 ? String(expected[idx + 1] || "") : "";
+    await setCaptureRecovery(jobId, {
+      ...payload,
+      name:nextName || name,
+      type:fileType,
+      expectedFiles:expected,
+      expectedIndex:nextName ? idx + 1 : (Number.isInteger(payload.expectedIndex) ? payload.expectedIndex : undefined),
+    }, {
+      stage:"FILE_DELIVERED_WAITING_NEXT",
+      lastDeliveredName:name,
+      lastDeliveredAt:Date.now(),
+    }).catch(() => {});
+  }
   await setStatus("FILE_DELIVERED", jobId, `${name} associado ao trabalho.`, { file: result.file, fileName: name, fileType });
-  if (String(result.status || "").toUpperCase() === "DONE") {
+  if (normalizedUploadStatus === "DONE") {
     // FILE_DELIVERED é emitido primeiro para liberar o app; em seguida o próprio
     // background fecha a aba owned. Assim o fechamento não depende do polling/UI.
     await autoCloseDeliveredJob(jobId, result.status).catch(async (error) => {
@@ -1011,26 +1247,28 @@ async function captureAndUploadFile(jobId, payload = {}) {
 }
 
 async function retryLastCapture() {
-  const data = await chrome.storage.local.get(["corvoBridgeStatus", CAPTURE_RECOVERY_KEY, JOB_TABS_KEY]);
-  const status = data.corvoBridgeStatus || lastStatus;
+  const statusData = await chrome.storage.local.get("corvoBridgeStatus");
+  const status = statusData.corvoBridgeStatus || lastStatus || {};
   const jobId = String(status?.jobId || "").trim();
   if (!jobId) throw new Error("CAPTURE_JOB_NOT_FOUND");
-  const recovery = (data[CAPTURE_RECOVERY_KEY] || {})[jobId] || {};
-  let name = String(recovery.name || status.fileName || "").trim();
-  if (!name) {
-    const match = String(status.message || "").match(/(?:Capturando|Enviando)\s+(.+?)\s+(?:na conversa|ao CorvoQuiz)/i);
-    name = String(match?.[1] || "").trim();
+
+  const resolved = await resolveRetryCapturePlan(jobId, { allowServer:true });
+  if (resolved?.done) {
+    await autoCloseDeliveredJob(jobId, "DONE").catch(() => {});
+    await setStatus("COMPLETED", jobId, "O trabalho já estava concluído no CorvoQuiz.").catch(() => {});
+    return { ok:true, jobId, alreadyDone:true };
   }
-  if (!name) throw new Error("CAPTURE_FILE_NAME_UNKNOWN");
-  let type = String(recovery.type || status.fileType || "").trim().toUpperCase();
-  if (!type) type = /^thumb_/i.test(name) ? "THUMBNAIL" : "OTHER";
-  return captureAndUploadFile(jobId, {
-    name, type,
-    expectedFiles:Array.isArray(recovery.expectedFiles) ? recovery.expectedFiles : [],
-    expectedIndex:Number.isInteger(recovery.expectedIndex) ? recovery.expectedIndex : undefined,
-    compositeSplitMode:String(recovery.compositeSplitMode || "AUTO"),
-    compositeColumns:Number.isInteger(recovery.compositeColumns) ? recovery.compositeColumns : undefined
-  });
+  if (!resolved?.ok || !resolved?.plan?.name) {
+    throw new Error(resolved?.error || "CAPTURE_NO_PENDING_FILE");
+  }
+
+  await appendDiagnostic(jobId, "CAPTURE_MANUAL_RETRY_PLAN", {
+    fileName:resolved.plan.name,
+    expectedFiles:resolved.plan.expectedFiles,
+    expectedIndex:resolved.plan.expectedIndex,
+    source:resolved.server ? "server+storage" : "storage",
+  }, "background").catch(() => {});
+  return captureAndUploadFile(jobId, resolved.plan);
 }
 
 
@@ -1179,7 +1417,19 @@ async function forgetTab(tabId) {
   const data = await chrome.storage.local.get([JOB_TABS_KEY, OWNED_TABS_KEY]);
   const jobs = data[JOB_TABS_KEY] || {};
   for (const [jobId, record] of Object.entries(jobs)) {
-    if (record?.tabId === tabId) delete jobs[jobId];
+    if (record?.tabId !== tabId) continue;
+    jobs[jobId] = {
+      ...record,
+      tabId:null,
+      tabClosedAt:Date.now(),
+      savedAt:Date.now(),
+    };
+    appendDiagnostic(jobId, "JOB_TAB_DETACHED_PRESERVED", {
+      oldTabId:tabId,
+      state:String(record?.lastState || ""),
+      hasConversationUrl:Boolean(record?.conversationUrl),
+      hasCapturePlan:Boolean(record?.capturePlan),
+    }, "background").catch(() => {});
   }
   const owned = new Set(Array.isArray(data[OWNED_TABS_KEY]) ? data[OWNED_TABS_KEY] : []);
   owned.delete(tabId);
@@ -1670,10 +1920,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "CORVO_GET_STATUS") {
-    chrome.storage.local.get(["corvoBridgeStatus", CAPTURE_RECOVERY_KEY]).then((data) => {
-      const status = data.corvoBridgeStatus || lastStatus;
-      const recovery = status?.jobId ? (data[CAPTURE_RECOVERY_KEY] || {})[status.jobId] : null;
-      sendResponse({ ...status, canRetryCapture: Boolean(status?.jobId && (["CAPTURING_FILE", "UPLOADING_FILE", "ERROR"].includes(status.state))), captureRecovery: recovery ? { stage: recovery.stage, updatedAt: recovery.updatedAt } : null });
+    chrome.storage.local.get(["corvoBridgeStatus", CAPTURE_RECOVERY_KEY, JOB_TABS_KEY]).then((data) => {
+      const status = data.corvoBridgeStatus || lastStatus || {};
+      const jobId = String(status?.jobId || "").trim();
+      const recovery = jobId ? (data[CAPTURE_RECOVERY_KEY] || {})[jobId] : null;
+      const record = jobId ? (data[JOB_TABS_KEY] || {})[jobId] : null;
+      const plan = record?.capturePlan || {};
+      const hasCaptureHint = Boolean(
+        String(recovery?.name || status?.fileName || plan?.name || "").trim() ||
+        normalizeExpectedCaptureFiles(recovery?.expectedFiles || plan?.expectedFiles).length
+      );
+      const state = String(status?.state || "").toUpperCase();
+      const captureState = ["CAPTURING_FILE", "UPLOADING_FILE"].includes(state);
+      const captureError = state === "ERROR" &&
+        /captur|arquivo|image|file|generated_image|capture/i.test(String(status?.message || ""));
+      sendResponse({
+        ...status,
+        canRetryCapture:Boolean(jobId && (captureState ? hasCaptureHint : captureError)),
+        captureRecovery:recovery ? {
+          stage:recovery.stage,
+          updatedAt:recovery.updatedAt,
+          fileName:String(recovery.name || plan?.name || ""),
+          expectedCount:normalizeExpectedCaptureFiles(recovery.expectedFiles || plan?.expectedFiles).length,
+        } : null
+      });
     });
     return true;
   }
@@ -1742,11 +2012,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const fileName = String(message.payload?.name || "").trim();
     const fileType = String(message.payload?.type || "THUMBNAIL").trim().toUpperCase();
     if (!jobId) { sendResponse({ ok: false, error: "JOB_ID_REQUIRED" }); return; }
+    if (!fileName) { sendResponse({ ok:false, error:"FILE_NAME_REQUIRED" }); return; }
 
-    // ACK imediato: o app não mantém um canal runtime.sendMessage aberto durante
-    // captura + upload. O resultado final chega por CORVO_BRIDGE_STATUS. Isso
-    // elimina o erro MV3 "listener returned true / message channel closed".
-    captureAndUploadFile(jobId, message.payload).catch(async (error) => {
+    (async () => {
+      await setCaptureRecovery(jobId, { ...message.payload, name:fileName, type:fileType }, { stage:"QUEUED", queuedAt:Date.now() });
+      await rememberJobCapturePlan(jobId, { ...message.payload, name:fileName, type:fileType }, { stage:"QUEUED" });
+      await captureAndUploadFile(jobId, { ...message.payload, name:fileName, type:fileType });
+    })().catch(async (error) => {
       await setStatus("ERROR", jobId, `Falha ao capturar arquivo: ${error.message}`, { fileName, fileType });
     });
     sendResponse({ ok:true, accepted:true, jobId, fileName, fileType });
@@ -1755,15 +2027,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 
   if (message.type === "CORVO_RETRY_LAST_CAPTURE") {
-    const dataPromise = chrome.storage.local.get(["corvoBridgeStatus", CAPTURE_RECOVERY_KEY]);
-    dataPromise.then((data) => {
+    chrome.storage.local.get("corvoBridgeStatus").then(async (data) => {
       const status = data.corvoBridgeStatus || lastStatus || {};
       const jobId = String(status?.jobId || "").trim();
-      const recovery = (data[CAPTURE_RECOVERY_KEY] || {})[jobId] || {};
-      const fileName = String(recovery.name || status.fileName || "").trim();
-      const fileType = String(recovery.type || status.fileType || "THUMBNAIL").trim().toUpperCase();
       if (!jobId) { sendResponse({ ok:false, error:"CAPTURE_JOB_NOT_FOUND" }); return; }
-      retryLastCapture().catch(async (error) => {
+
+      const resolved = await resolveRetryCapturePlan(jobId, { allowServer:true });
+      if (resolved?.done) {
+        autoCloseDeliveredJob(jobId, "DONE").catch(() => {});
+        sendResponse({ ok:true, accepted:false, alreadyDone:true, jobId });
+        return;
+      }
+      if (!resolved?.ok || !resolved?.plan?.name) {
+        sendResponse({ ok:false, error:resolved?.error || "CAPTURE_NO_PENDING_FILE", jobId });
+        return;
+      }
+
+      const fileName = resolved.plan.name;
+      const fileType = resolved.plan.type || "OTHER";
+      captureAndUploadFile(jobId, resolved.plan).catch(async (error) => {
         await setStatus("ERROR", jobId, `Falha ao capturar arquivo: ${error.message}`, { fileName, fileType });
       });
       sendResponse({ ok:true, accepted:true, jobId, fileName, fileType });

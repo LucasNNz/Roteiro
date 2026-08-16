@@ -1,0 +1,29 @@
+CORVO BRIDGE V0.6.33 — RECUPERAÇÃO DE CAPTURA POR JOB
+
+Correções:
+1. CAPTURE_FILE_NAME_UNKNOWN não depende mais apenas do status do popup.
+   - o Bridge consulta /api/corvo/resultado pelo JOB;
+   - reconstrói expectedFiles;
+   - compara com files já recebidos;
+   - escolhe automaticamente o primeiro arquivo ainda pendente.
+2. Cada solicitação de captura grava capturePlan persistente com:
+   - name;
+   - type;
+   - expectedFiles;
+   - expectedIndex;
+   - compositeSplitMode;
+   - compositeColumns.
+3. Em lotes de vários arquivos, o plano de recuperação não é apagado após o primeiro upload.
+   Só é removido quando o servidor confirma DONE.
+4. Fechar/recarregar manualmente a aba do ChatGPT não apaga mais o registro do JOB.
+   uploadToken, conversationUrl e capturePlan permanecem no storage.
+5. Se a aba sumiu, o Bridge pode reabrir a conversationUrl conhecida e continuar a captura.
+6. O botão 'Tentar captura novamente' só aparece quando existe contexto real de captura.
+   Erros genéricos do GPT não são mais tratados como captura.
+7. O popup não usa mais console.error para falhas recuperáveis do botão, evitando poluir
+   chrome://extensions com erros que são apenas estado do JOB.
+8. A recuperação do botão identifica também JOB já DONE e evita recaptura desnecessária.
+
+Compatibilidade:
+- mantém V0.6.32: preset OU A/B, grid 2 colunas e expectedFiles/expectedIndex.
+- mantém Cleaner e fechamento automático das versões anteriores.

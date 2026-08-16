@@ -82,7 +82,15 @@ export function captureCorvoBridgeFile(
   name: string,
   type = "THUMBNAIL",
   timeoutMs = 180000,
-  captureContext: { expectedFiles?:string[]; expectedIndex?:number; compositeSplitMode?:"ROWS"|"AUTO"|"GRID"; compositeColumns?:number } = {}
+  captureContext: {
+    expectedFiles?:string[];
+    expectedIndex?:number;
+    compositeSplitMode?:"ROWS"|"AUTO"|"GRID";
+    compositeColumns?:number;
+    uploadToken?:string;
+    conversationUrl?:string;
+    specialist?:string;
+  } = {}
 ) {
   return new Promise<BridgeAck>((resolve, reject) => {
     let accepted = false;
@@ -141,7 +149,10 @@ export function captureCorvoBridgeFile(
         expectedFiles:Array.isArray(captureContext.expectedFiles) ? captureContext.expectedFiles : undefined,
         expectedIndex:Number.isInteger(captureContext.expectedIndex) ? captureContext.expectedIndex : undefined,
         compositeSplitMode:captureContext.compositeSplitMode || "AUTO",
-        compositeColumns:Number.isInteger(captureContext.compositeColumns) ? captureContext.compositeColumns : undefined
+        compositeColumns:Number.isInteger(captureContext.compositeColumns) ? captureContext.compositeColumns : undefined,
+        uploadToken:String(captureContext.uploadToken || "") || undefined,
+        conversationUrl:String(captureContext.conversationUrl || "") || undefined,
+        specialist:String(captureContext.specialist || "") || undefined
       }
     }, "*");
   });

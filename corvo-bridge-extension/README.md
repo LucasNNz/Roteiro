@@ -1,3 +1,11 @@
+# CORVO BRIDGE V0.6.33 — RECUPERAÇÃO DE CAPTURA POR JOB
+
+- Corrige `CAPTURE_FILE_NAME_UNKNOWN`.
+- Persiste `capturePlan` por JOB e reconstrói o arquivo pendente pelo servidor.
+- Não perde mais o JOB quando a aba do ChatGPT é fechada/recarregada.
+- Reabre a conversa conhecida quando necessário para recapturar.
+- O botão de retry só aparece quando há contexto real de captura.
+
 # CORVO BRIDGE V0.6.32 — PRESET OU A/B + GRID 2 COLUNAS
 
 - Recebe a lista oficial de arquivos/índices do app em todas as fatias de captura.

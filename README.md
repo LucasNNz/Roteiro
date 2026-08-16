@@ -1,4 +1,27 @@
-# CORVOQUIZ V0.6.47 + BRIDGE V0.6.32 — PRESET OU COM 2 SLOTS FÍSICOS
+# CORVOQUIZ V0.6.49 + BRIDGE V0.6.33 — RECUPERAÇÃO REAL DA CAPTURA
+
+## V0.6.49 / Bridge V0.6.33
+
+- Corrige `CAPTURE_FILE_NAME_UNKNOWN` no Bridge.
+- O plano de captura (`name`, `expectedFiles`, `expectedIndex`, grid/rows) passa a ser persistido por JOB.
+- O retry consulta `/api/corvo/resultado` e escolhe o primeiro arquivo ainda pendente no servidor.
+- Fechar/recarregar uma aba do ChatGPT não apaga mais `uploadToken`, `conversationUrl` nem o plano do JOB.
+- Se a conversa conhecida perdeu a aba, o Bridge pode reabri-la e continuar.
+- O app também repassa `uploadToken` para a captura de Gerador/Refinador e persiste `thumbUploadToken` para a Thumb.
+- Em lotes multi-arquivo, o recovery só é apagado quando o servidor confirma `DONE`.
+- O botão de recaptura não polui mais `chrome://extensions` com `console.error` de falhas recuperáveis.
+- Mantém todas as correções V0.6.48/V0.6.32, inclusive retry manual terminal e preset OU A/B.
+
+# CORVOQUIZ V0.6.48 + BRIDGE V0.6.32 — RETRY MANUAL DE FALHAS TERMINAIS
+
+## V0.6.48 — TENTAR NOVAMENTE agora reabre de verdade
+- O botão de erro detecta itens com `finalFailure`, `FALHA_FINAL`, `NAO_RECUPERAVEL` ou `SELECTED_FILE_MISMATCH`.
+- Ao clicar, somente esses itens são reabertos; resultados já concluídos são preservados.
+- O novo ciclo volta `tentativaAtual` para 1, limpa JOB/lote/conversa antigos e cria novos JOBs para Gerador/Refinador.
+- Collector e Analista não são refeitos quando o checkpoint roteado já existe.
+- Histórico anterior é preservado e recebe `RETRY_MANUAL_REABERTO`.
+- Se a produção automática havia parado em ERROR, ela volta para RUNNING na etapa IMAGENS e continua depois do sucesso.
+- O botão passa a mostrar `REABRIR N FALHA(S)` para deixar explícito o que será reprocessado.
 
 ## V0.6.47 / V0.6.32
 - O preset Forma `QUAL_VOCE_PREFERE` (OU/comparação) agora é modelado como **dois assets físicos por cena**: `IMAGEM_A` e `IMAGEM_B`.

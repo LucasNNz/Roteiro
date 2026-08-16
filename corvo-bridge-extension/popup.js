@@ -75,7 +75,28 @@ async function refresh(){
   }finally{refreshing=false;}
 }
 document.querySelector("#options").addEventListener("click",()=>chrome.runtime.openOptionsPage());
-document.querySelector("#retryCapture").addEventListener("click",async(e)=>{const b=e.currentTarget;b.disabled=true;b.textContent="Tentando...";try{const r=await chrome.runtime.sendMessage({type:"CORVO_RETRY_LAST_CAPTURE"});if(!r?.ok)throw new Error(r?.error||"Falha na captura");}catch(err){console.error(err);}finally{b.disabled=false;b.textContent="Tentar captura novamente";await refresh().catch(()=>{});}});
+document.querySelector("#retryCapture").addEventListener("click",async(e)=>{
+  const b=e.currentTarget,job=document.querySelector("#job");
+  b.disabled=true;b.textContent="Recuperando...";
+  try{
+    const r=await chrome.runtime.sendMessage({type:"CORVO_RETRY_LAST_CAPTURE"});
+    if(!r?.ok)throw new Error(r?.error||"Falha na captura");
+    if(r?.alreadyDone){
+      job.textContent=[job.textContent,"O CorvoQuiz já registrou todos os arquivos deste JOB."].filter(Boolean).join("\n");
+    }else{
+      const target=r?.fileName?` (${r.fileName})`:"";
+      job.textContent=[job.textContent,`Recaptura aceita${target}.`].filter(Boolean).join("\n");
+    }
+  }catch(err){
+    // Não usa console.error: erros recuperáveis do botão não devem poluir
+    // chrome://extensions como falhas da própria extensão.
+    const message=String(err?.message||"Falha na captura");
+    job.textContent=[job.textContent,`Recaptura: ${message}`].filter(Boolean).join("\n");
+  }finally{
+    b.disabled=false;b.textContent="Tentar captura novamente";
+    setTimeout(()=>refresh().catch(()=>{}),350);
+  }
+});
 document.querySelector("#deleteMapped").addEventListener("click",async(e)=>{
   const b=e.currentTarget;
   if(mappedPending<1)return;

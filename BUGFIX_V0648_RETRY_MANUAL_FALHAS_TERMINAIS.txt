@@ -1,0 +1,14 @@
+CORVOQUIZ V0.6.48 + CORVO BRIDGE V0.6.32
+
+BUG: a tela NÃO FOI POSSÍVEL CONTINUAR chamava startImageFlow(), mas o checkpoint continuava com finalFailure=true / NAO_RECUPERAVEL. A retomada classificava os mesmos itens como terminais imediatamente e o botão parecia não fazer nada.
+
+CORREÇÃO:
+1. Botão detecta falhas terminais e executa REABERTURA MANUAL.
+2. Reabre somente itens falhos e preserva itens CONCLUIDO/outputUrl.
+3. Zera tentativaAtual para 1 em um novo ciclo manual.
+4. Limpa jobId, fallbackJobId, batchId e URLs de conversa dos itens reabertos para forçar JOBs novos.
+5. Preserva selectedFile/sourceUrl e demais travas de identidade.
+6. Mantém histórico e registra RETRY_MANUAL_REABERTO.
+7. Não volta ao Collector nem ao Analista.
+8. Se automático havia parado em ERROR, retoma RUNNING na etapa IMAGENS.
+9. UI exibe REABRIR N FALHA(S).

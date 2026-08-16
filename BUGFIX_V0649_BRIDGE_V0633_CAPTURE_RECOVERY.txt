@@ -1,0 +1,17 @@
+CORVOQUIZ V0.6.49 + CORVO BRIDGE V0.6.33
+BUGFIX: CAPTURE_FILE_NAME_UNKNOWN / JOB PERDIDO AO FECHAR ABA
+
+CAUSA RAIZ
+- A V0.6.32 removia o registro inteiro JOB->tab quando a aba do ChatGPT era fechada.
+- O popup ainda lembrava o jobId, mas uploadToken/conversationUrl podiam ter desaparecido.
+- O retry tentava obter o nome apenas de captureRecovery/status.fileName.
+- Em lotes, captureRecovery era apagado após cada arquivo, mesmo se o JOB continuasse WAITING_FILE.
+
+CORREÇÃO
+- JOB perde apenas tabId quando a aba some; restante do checkpoint permanece.
+- capturePlan persistente por JOB.
+- retry reconstrói expectedFiles no servidor e seleciona o primeiro arquivo faltante.
+- conversationUrl conhecida pode ser reaberta automaticamente.
+- uploadToken pode ser reforçado pelo app na própria solicitação de captura.
+- recovery multi-arquivo só é apagado quando o servidor retorna DONE.
+- botão de retry só aparece para erro de captura e não usa console.error.

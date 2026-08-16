@@ -1371,7 +1371,7 @@
       const candidates = generatedImageCandidates(payload);
       const layout = logicalGeneratedImageSlots(candidates, payload);
 
-      // Novo fallback V0.6.32: se o lote declara N arquivos mas a UI contém
+      // Novo fallback V0.6.33: se o lote declara N arquivos mas a UI contém
       // um único contact sheet, usamos a lista OFICIAL recebida do CorvoQuiz e
       // recortamos uma faixa por ID. Assim uma resposta 4-em-1 continua utilizável.
       const maxRenderedArea = candidates.reduce((max, item) => Math.max(max, Number(item?.renderedArea || 0)), 0);
@@ -1643,7 +1643,7 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "CORVO_BRIDGE_PING") {
       chrome.runtime.sendMessage({ type: "CORVO_GPT_READY" }).catch(() => {});
-      sendResponse({ ok: true, version:"0.6.32", page:pageDiagnostic() });
+      sendResponse({ ok: true, version:"0.6.33", page:pageDiagnostic() });
       return;
     }
     if (message?.type === "CORVO_SEND_PROMPT") {

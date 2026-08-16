@@ -1,3 +1,11 @@
+# V0.6.49 / BRIDGE V0.6.33 — CAPTURA RECUPERÁVEL POR JOB
+
+O Bridge não deve depender do texto visual do popup para reconstruir uma captura. Cada JOB persiste `capturePlan` e, em retry, o Bridge consulta o status do CorvoQuiz para descobrir `expectedFiles`, arquivos já recebidos e o próximo arquivo pendente. Uma aba do ChatGPT fechada/recarregada não pode apagar o JOB.
+
+# V0.6.48 / BRIDGE V0.6.32 — RETRY MANUAL
+
+O app agora permite reabrir falhas terminais manualmente sem refazer Collector/Analista. Bridge permanece V0.6.32.
+
 # V0.6.47 / BRIDGE V0.6.32 — PRESET OU
 
 O contrato do Forma usa `TIPO: QUAL_VOCE_PREFERE` com `IMAGEM_A` e `IMAGEM_B`. No CorvoQuiz, cada uma vira um slot físico independente (`01_A`, `01_B`). O Bridge pode capturar esses slots como imagens separadas ou recortar uma grade técnica 2-colunas, mas o pacote final nunca deve fundir A e B em um único arquivo.

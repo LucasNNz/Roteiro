@@ -45,7 +45,7 @@ type PipelineItem = {
 type Project = {
   id:string; title:string; topic:string; format:Format; quantity:Quantity; mode:Mode;
   stage:number; createdAt:string; ideaText?:string; scriptText?:string; promptText?:string; packageCode?:string; imageCount?:number;
-  thumbJobId?:string; thumbStatus?:string; thumbUrl?:string; thumbFileName?:string; thumbError?:string; thumbFormat?:Format; thumbAspectRatio?:"9:16"|"16:9";
+  thumbJobId?:string; thumbUploadToken?:string; thumbStatus?:string; thumbUrl?:string; thumbFileName?:string; thumbError?:string; thumbFormat?:Format; thumbAspectRatio?:"9:16"|"16:9";
   analysisJobId?:string; analysisStatus?:string; analysisZipUrl?:string; analysisZipName?:string; analysisManifest?:string; analysisExpectedIds?:string[];
   analysisPrompt?:string; analysisUploadToken?:string; analysisPreparedAt?:string; analysisLastDispatchAt?:string; analysisRetryAt?:string; analysisRetryCount?:number; analysisLastError?:string;
   analysisBridgeStage?:string; analysisBridgeUpdatedAt?:string; analysisZipDownloadUrl?:string;
@@ -114,6 +114,14 @@ function thumbMatchesProjectFormat(project?:Project | null) {
   // Antes da V0.6.43 toda thumb legada era 16:9. Para vídeo completo ela continua válida.
   if (!project.thumbAspectRatio) return project.format === "VÍDEO COMPLETO";
   return project.thumbAspectRatio === expected && (!project.thumbFormat || project.thumbFormat === project.format);
+}
+
+const TERMINAL_PIPELINE_STATUSES = new Set(["FALHA_FINAL", "NAO_RECUPERAVEL", "SELECTED_FILE_MISMATCH"]);
+function isTerminalPipelineFailure(item:PipelineItem) {
+  return Boolean(item.finalFailure || TERMINAL_PIPELINE_STATUSES.has(String(item.status || "").toUpperCase()));
+}
+function terminalPipelineFailures(project?:Project | null) {
+  return (project?.pipelineItems || []).filter(isTerminalPipelineFailure);
 }
 
 function analysisRetryDelay(retryCount:number) {
@@ -443,6 +451,7 @@ function migrateThumbnailCheckpoint(project:Project):Project {
     return {
       ...project,
       thumbJobId:undefined,
+      thumbUploadToken:undefined,
       thumbStatus:`PENDENTE · REFAZER THUMB ${expectedAspect}`,
       thumbUrl:undefined,
       thumbFileName:undefined,
@@ -742,6 +751,7 @@ export default function Home() {
   const workflowOutput = active ? (workflowKind === "ROTEIRO" ? active.scriptText : active.promptText) || "" : "";
   const artifactContent = active ? artifactKind === "IDEIA" ? active.ideaText || "" : artifactKind === "ROTEIRO" ? active.scriptText || "" : active.promptText || "" : "";
   const artifactRedoMessage = artifactKind === "IDEIA" ? "REFAZ ROTEIRO, PROMPTS E IMAGENS" : artifactKind === "ROTEIRO" ? "REFAZ PROMPTS E IMAGENS" : "DESCARTA AS IMAGENS ATUAIS";
+  const terminalFailureCount = terminalPipelineFailures(active).length;
 
   function latestProject(projectId:string) {
     return projectsRef.current.find((project) => project.id === projectId);
@@ -838,7 +848,7 @@ export default function Home() {
         ...previous,
         title:project.title, topic:project.topic, format:project.format, quantity:project.quantity, mode:project.mode,
         ideaText:project.ideaText, stage:2, scriptText:undefined, promptText:undefined,
-        thumbJobId:undefined, thumbStatus:undefined, thumbUrl:undefined, thumbFileName:undefined, thumbError:undefined,
+        thumbJobId:undefined, thumbUploadToken:undefined, thumbStatus:undefined, thumbUrl:undefined, thumbFileName:undefined, thumbError:undefined,
         thumbFormat:project.format, thumbAspectRatio:thumbAspectRatioForFormat(project.format),
         ...EMPTY_IMAGE_PIPELINE,
       };
@@ -1435,7 +1445,14 @@ export default function Home() {
         updateThumb(project.id, { thumbStatus:"CAPTURANDO ARQUIVO", thumbFileName:expectedFile, thumbError:undefined });
         captureAttempts += 1;
         try {
-          await captureCorvoBridgeFile(jobId, expectedFile, "THUMBNAIL", 180000, { expectedFiles:[expectedFile], expectedIndex:0, compositeSplitMode:"AUTO" });
+          const liveThumbProject = latestProject(project.id) || project;
+          await captureCorvoBridgeFile(jobId, expectedFile, "THUMBNAIL", 180000, {
+            expectedFiles:[expectedFile],
+            expectedIndex:0,
+            compositeSplitMode:"AUTO",
+            uploadToken:String(liveThumbProject.thumbUploadToken || ""),
+            specialist:"THUMB"
+          });
         } catch (error) {
           if (captureAttempts >= 3) throw error;
           updateThumb(project.id, { thumbStatus:"AGUARDANDO CAPTURA", thumbError:bridgeErrorMessage(error) });
@@ -1461,11 +1478,11 @@ export default function Home() {
     if (thumbMatchesProjectFormat(project) || thumbRuns.current.has(project.id)) return;
     if (project.thumbUrl || (project.format === "REELS" && project.thumbJobId && !project.thumbAspectRatio) || (project.thumbAspectRatio && project.thumbAspectRatio !== expectedAspect)) {
       updateThumb(project.id, {
-        thumbJobId:undefined, thumbStatus:`PREPARANDO THUMB ${expectedAspect}`, thumbUrl:undefined, thumbFileName:undefined, thumbError:undefined,
+        thumbJobId:undefined, thumbUploadToken:undefined, thumbStatus:`PREPARANDO THUMB ${expectedAspect}`, thumbUrl:undefined, thumbFileName:undefined, thumbError:undefined,
         finalZipStatus:undefined, finalZipError:undefined, finalZipGeneratedAt:undefined,
         thumbFormat:project.format, thumbAspectRatio:expectedAspect,
       });
-      project = { ...project, thumbJobId:undefined, thumbUrl:undefined, thumbFileName:undefined, thumbError:undefined, thumbFormat:project.format, thumbAspectRatio:expectedAspect };
+      project = { ...project, thumbJobId:undefined, thumbUploadToken:undefined, thumbUrl:undefined, thumbFileName:undefined, thumbError:undefined, thumbFormat:project.format, thumbAspectRatio:expectedAspect };
     }
     thumbRuns.current.add(project.id);
     try {
@@ -1474,7 +1491,7 @@ export default function Home() {
         await monitorThumbJob(project, project.thumbJobId);
         return;
       }
-      if (project.thumbStatus === "FALHOU") updateThumb(project.id, { thumbJobId:undefined, thumbStatus:"NOVA TENTATIVA", thumbError:undefined });
+      if (project.thumbStatus === "FALHOU") updateThumb(project.id, { thumbJobId:undefined, thumbUploadToken:undefined, thumbStatus:"NOVA TENTATIVA", thumbError:undefined });
       const fileName = `thumb_${project.id.toLowerCase()}.png`;
       updateThumb(project.id, { thumbStatus:`PREPARANDO THUMBNAIL ${expectedAspect}`, thumbFileName:fileName, thumbError:undefined, thumbFormat:project.format, thumbAspectRatio:expectedAspect });
       const response = await fetch("/api/corvo/job", {
@@ -1507,7 +1524,7 @@ export default function Home() {
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok || !result?.jobId || !result?.prompt || !result?.uploadToken) throw new Error(result?.message || "Não foi possível criar o trabalho da thumbnail.");
-      updateThumb(project.id, { thumbJobId:result.jobId, thumbStatus:"ENVIANDO AO CORVO THUMB" });
+      updateThumb(project.id, { thumbJobId:result.jobId, thumbUploadToken:result.uploadToken, thumbStatus:"ENVIANDO AO CORVO THUMB" });
       await dispatchCorvoBridge({
         jobId:result.jobId,
         prompt:result.prompt,
@@ -1794,7 +1811,20 @@ export default function Home() {
           const liveCaptureProject = latestProject(projectId);
           const batchItems = (liveCaptureProject?.pipelineItems || []).filter((item) => officialFiles.some((file:string) => file.toLowerCase() === String(item.finalFile || item.outputFile || "").toLowerCase()));
           const comparisonGrid = officialFiles.length > 1 && batchItems.length === officialFiles.length && batchItems.every((item) => item.preset === "QUAL_VOCE_PREFERE" && (item.slot === "A" || item.slot === "B"));
-          try { await captureCorvoBridgeFile(jobId, expectedFile, captureType, 180000, { expectedFiles:officialFiles, expectedIndex, compositeSplitMode:comparisonGrid ? "GRID" : "ROWS", compositeColumns:comparisonGrid ? 2 : undefined }); }
+          const captureToken = String(batchItems[0]?.jobUploadToken || orderedBatchItems[0]?.jobUploadToken || "");
+          const captureConversationUrl = String(batchItems[0]?.routeConversationUrl || orderedBatchItems[0]?.routeConversationUrl || "");
+          const captureSpecialist = captureType === "REFINED_IMAGE" ? "REFINADOR" : "GERADOR";
+          try {
+            await captureCorvoBridgeFile(jobId, expectedFile, captureType, 180000, {
+              expectedFiles:officialFiles,
+              expectedIndex,
+              compositeSplitMode:comparisonGrid ? "GRID" : "ROWS",
+              compositeColumns:comparisonGrid ? 2 : undefined,
+              uploadToken:captureToken,
+              conversationUrl:captureConversationUrl,
+              specialist:captureSpecialist,
+            });
+          }
           catch (error) {
             const captureMessage = bridgeErrorMessage(error);
             if (attempts >= 3) {
@@ -3175,8 +3205,76 @@ export default function Home() {
     }
   }
 
+  async function reopenTerminalPipelineFailures(project:Project) {
+    const terminalItems = terminalPipelineFailures(project);
+    if (!terminalItems.length) return false;
+    const terminalIds = new Set(terminalItems.map((item) => String(item.id)));
+    const reopenedAt = new Date().toISOString();
+    const reopenedItems:PipelineItem[] = (project.pipelineItems || []).map((item) => {
+      if (!terminalIds.has(String(item.id))) return item;
+      const manualEvent:PipelineHistoryEvent = {
+        at:reopenedAt,
+        attempt:1,
+        specialist:item.route,
+        status:"RETRY_MANUAL_REABERTO",
+        reason:"Usuário solicitou TENTAR NOVAMENTE após falha terminal. Novo ciclo de tentativas iniciado sem refazer Collector/Analista.",
+        logicalJobId:item.logicalJobId || `${project.id}:ITEM:${item.id}`,
+      };
+      return {
+        ...item,
+        tentativaAtual:1,
+        status:"RETRY_MANUAL_PENDENTE",
+        finalFailure:false,
+        error:undefined,
+        errorCode:undefined,
+        outputUrl:undefined,
+        outputFile:undefined,
+        jobId:undefined,
+        fallbackJobId:undefined,
+        jobPrompt:undefined,
+        jobUploadToken:undefined,
+        batchId:undefined,
+        batchIndex:undefined,
+        batchSize:undefined,
+        routeConversationUrl:undefined,
+        fallbackConversationUrl:undefined,
+        history:[...(item.history || []), manualEvent],
+      };
+    });
+    const resumeAutomatic = project.autoRunStatus === "ERROR" || project.autoRunStatus === "RUNNING";
+    const reopenedProject:Project = {
+      ...project,
+      pipelineItems:reopenedItems,
+      pipelineStatus:`RETRY MANUAL · ${terminalItems.length} ITEM(NS) REABERTO(S)`,
+      finalZipStatus:undefined,
+      finalZipError:undefined,
+      finalZipGeneratedAt:undefined,
+      autoRunStatus:project.autoRunStatus === "ERROR" ? "RUNNING" : project.autoRunStatus,
+      autoRunStep:resumeAutomatic ? "IMAGENS" : project.autoRunStep,
+      autoRunMessage:resumeAutomatic ? `${terminalItems.length} falha(s) terminal(is) reaberta(s) manualmente. Retomando somente Gerador/Refinador.` : project.autoRunMessage,
+      autoRunError:undefined,
+      autoRunRetryAt:undefined,
+      autoRunRetryCount:resumeAutomatic ? 0 : project.autoRunRetryCount,
+    };
+    packageRetryRef.current = null;
+    patchProject(project.id, reopenedProject);
+    setImageOpen(true);
+    setImagePhase("searching");
+    setImageProgress(1);
+    setImageMessage(`Reabrindo ${terminalItems.length} falha(s). O que já foi concluído será preservado.`);
+    setImageStatusLine("RETRY MANUAL · LIMPANDO BLOQUEIO TERMINAL · NOVO CICLO DE TENTATIVAS");
+    await wait(80);
+    const routed = await runRoutedPipeline(reopenedProject, reopenedItems);
+    if (routed && resumeAutomatic) setTimeout(() => void runAutomaticProduction(project.id), 120);
+    return true;
+  }
+
   async function retryImageFlow() {
     const currentProject = latestProject(active?.id || "");
+    if (currentProject && terminalPipelineFailures(currentProject).length) {
+      await reopenTerminalPipelineFailures(currentProject);
+      return;
+    }
     if (hasPreparedAnalysis(currentProject)) {
       await resumePreparedAnalysis(String(currentProject?.id), true);
       return;
@@ -3397,8 +3495,8 @@ export default function Home() {
         <div className="downloads-head"><div><span>INSTALAÇÃO E SUPORTE</span><h3 id="downloads-title">ARQUIVOS PARA BAIXAR</h3></div><small>SE PRECISAR REINSTALAR</small></div>
         <div className="download-grid">
           <a className="download-card" href="/downloads/CORVO_COLLECTOR_V080_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.8.0</small></div><i>↓</i></a>
-          <a className="download-card" href="/downloads/CORVO_BRIDGE_V0632_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.32 · PRESET OU A/B + GRID 2 COLUNAS</small></div><i>↓</i></a>
-          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0647.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
+          <a className="download-card" href="/downloads/CORVO_BRIDGE_V0633_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.33 · CAPTURA RECUPERÁVEL POR JOB</small></div><i>↓</i></a>
+          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0649.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
         </div>
       </section>
       <details className="advanced-settings"><summary>CONFIGURAÇÕES AVANÇADAS</summary><div className="settings-grid"><label>CANDIDATAS COLETADAS/ID<input type="number" min="1" max="20" value={settings.maxCandidates} onChange={(event)=>setSettings({...settings,maxCandidates:Math.max(1,Math.min(20,Number(event.target.value)||20))})}/></label><label>CANDIDATAS/ID → ANALISTA<input type="number" min="1" max="30" value={settings.analystCandidatesPerId} onChange={(event)=>setSettings({...settings,analystCandidatesPerId:Math.max(1,Math.min(30,Number(event.target.value)||10))})}/></label><label>VARREDURA<input type="number" value={settings.scrollSteps} onChange={(event)=>setSettings({...settings,scrollSteps:Number(event.target.value)})}/></label><label>QUALIDADE JPEG<input type="number" step=".01" value={settings.jpegQuality} onChange={(event)=>setSettings({...settings,jpegQuality:Number(event.target.value)})}/></label><label>PREFIXO<input value={settings.prefix} onChange={(event)=>setSettings({...settings,prefix:event.target.value})}/></label></div><p>A busca coleta no máximo 20 candidatas únicas por ID. No modo Mesclado, a meta é dividida entre Google e Pinterest. Depois, o limite do Analista reduz apenas o transporte; o app não escolhe a vencedora.</p><label className="batch-label">COMANDOS EM LOTE — OPCIONAL<textarea value={settings.batchText} onChange={(event)=>setSettings({...settings,batchText:event.target.value})} placeholder={"01|primeira busca\n02|segunda busca"} /></label></details>
@@ -3436,7 +3534,7 @@ export default function Home() {
       {imagePhase==="review" && currentGroup && currentRank ? <>
         <div className="review-top"><div><span className="modal-kicker">SELEÇÃO RÁPIDA · {groupIndex+1}/{groups.length}</span><h2>{currentGroup.query}</h2></div><div className="review-counter">CENA {String(groupIndex+1).padStart(2,"0")}</div></div>
         <div className="review-layout"><div className="candidate-stage"><img src={currentRank.candidate.previewUrl} alt={currentGroup.query} referrerPolicy="no-referrer" /><div className="image-quality"><span>{currentRank.candidate.width||"—"} × {currentRank.candidate.height||"—"}</span><span>OPÇÃO {candidatePos+1}/{currentGroup.ranked.length}</span></div></div><aside className="review-side"><span className="review-label">ESTA IMAGEM FUNCIONA?</span><p>Escolha rapidamente. O Corvo guarda reservas e prepara os nomes automaticamente.</p><button className="use-image" onClick={useCurrentCandidate}>✓ USAR ESTA IMAGEM</button><button className="next-image" onClick={()=>setCandidatePos((value)=>Math.min(value+1,currentGroup.ranked.length-1))}>VER PRÓXIMA <span>→</span></button><button className="search-more" disabled={searchingMore} onClick={searchMore}>{searchingMore?"PROCURANDO...":"↻ PROCURAR MAIS"}</button><div className="thumb-strip">{currentGroup.ranked.slice(0,4).map((rank,index)=><button className={candidatePos===index?"active":""} onClick={()=>setCandidatePos(index)} key={candidateUrl(rank.candidate)}><img src={rank.candidate.previewUrl} alt="" referrerPolicy="no-referrer"/></button>)}</div></aside></div>
-      </> : <div className="image-status-view"><div className={`status-orb ${imagePhase}`}>{imagePhase==="done"?"✓":imagePhase==="error"?"!":"⌁"}</div><span className="modal-kicker">{imagePhase==="connecting"?"CONECTANDO":imagePhase==="searching"?"BUSCANDO IMAGENS":imagePhase==="packaging"?"ORGANIZANDO":imagePhase==="done"?"PACOTE PRONTO":"PRECISAMOS AJUSTAR"}</span><h2>{imagePhase==="done"?"TUDO CERTO.":imagePhase==="error"?"NÃO FOI POSSÍVEL CONTINUAR":imageMessage}</h2>{!["searching","packaging"].includes(imagePhase)&&<p>{imageMessage}</p>}<div className="image-progress"><i style={{width:`${imageProgress}%`}} /></div>{imagePhase==="searching"&&<div className="collector-live-status"><b>{imageStatusLine}</b><small>SEM LIMITE CURTO DE TEMPO · VOCÊ PODE OCULTAR ESTA JANELA E VOLTAR DEPOIS</small><button onClick={cancelImageFlow}>CANCELAR BUSCA</button></div>}{imagePhase==="packaging"&&<div className="collector-live-status"><b>{imageStatusLine||"CHECKPOINT SALVO · PREPARANDO PACOTE"}</b><small>{active?.analysisPreparationError||"O COLLECTOR NÃO SERÁ REFEITO ENQUANTO EXISTIR UM CHECKPOINT RECUPERÁVEL."}</small>{active&&hasAnalysisPreparationCheckpoint(active)&&<button onClick={()=>void resumeAnalysisPreparation(active.id,true)}>RETOMAR AGORA</button>}</div>}{imagePhase==="done"&&<><div className="package-summary"><span>✓ IMAGENS</span><span>✓ NOMES CONFERIDOS</span><span>✓ PIPELINE</span><b>{packageCode||active?.packageCode}</b></div><button className="modal-submit success" onClick={()=>setImageOpen(false)}>CONCLUIR ETAPA <span>→</span></button><details className="package-options"><summary>OPÇÕES DO PACOTE</summary><button onClick={savePackageCopy}>SALVAR ZIP ORIGINAL DO COLLECTOR</button></details></>}{imagePhase==="error"&&<><button className="modal-submit" onClick={retryImageFlow}>{packageRetryRef.current?.length?"REENVIAR AS IMAGENS":"TENTAR NOVAMENTE"} <span>↻</span></button><button className="plain-close" onClick={()=>setImageOpen(false)}>FECHAR</button></>}</div>}
+      </> : <div className="image-status-view"><div className={`status-orb ${imagePhase}`}>{imagePhase==="done"?"✓":imagePhase==="error"?"!":"⌁"}</div><span className="modal-kicker">{imagePhase==="connecting"?"CONECTANDO":imagePhase==="searching"?"BUSCANDO IMAGENS":imagePhase==="packaging"?"ORGANIZANDO":imagePhase==="done"?"PACOTE PRONTO":"PRECISAMOS AJUSTAR"}</span><h2>{imagePhase==="done"?"TUDO CERTO.":imagePhase==="error"?"NÃO FOI POSSÍVEL CONTINUAR":imageMessage}</h2>{!["searching","packaging"].includes(imagePhase)&&<p>{imageMessage}</p>}<div className="image-progress"><i style={{width:`${imageProgress}%`}} /></div>{imagePhase==="searching"&&<div className="collector-live-status"><b>{imageStatusLine}</b><small>SEM LIMITE CURTO DE TEMPO · VOCÊ PODE OCULTAR ESTA JANELA E VOLTAR DEPOIS</small><button onClick={cancelImageFlow}>CANCELAR BUSCA</button></div>}{imagePhase==="packaging"&&<div className="collector-live-status"><b>{imageStatusLine||"CHECKPOINT SALVO · PREPARANDO PACOTE"}</b><small>{active?.analysisPreparationError||"O COLLECTOR NÃO SERÁ REFEITO ENQUANTO EXISTIR UM CHECKPOINT RECUPERÁVEL."}</small>{active&&hasAnalysisPreparationCheckpoint(active)&&<button onClick={()=>void resumeAnalysisPreparation(active.id,true)}>RETOMAR AGORA</button>}</div>}{imagePhase==="done"&&<><div className="package-summary"><span>✓ IMAGENS</span><span>✓ NOMES CONFERIDOS</span><span>✓ PIPELINE</span><b>{packageCode||active?.packageCode}</b></div><button className="modal-submit success" onClick={()=>setImageOpen(false)}>CONCLUIR ETAPA <span>→</span></button><details className="package-options"><summary>OPÇÕES DO PACOTE</summary><button onClick={savePackageCopy}>SALVAR ZIP ORIGINAL DO COLLECTOR</button></details></>}{imagePhase==="error"&&<><button className="modal-submit" onClick={retryImageFlow}>{terminalFailureCount ? `REABRIR ${terminalFailureCount} FALHA(S)` : packageRetryRef.current?.length ? "REENVIAR AS IMAGENS" : "TENTAR NOVAMENTE"} <span>↻</span></button><button className="plain-close" onClick={()=>setImageOpen(false)}>FECHAR</button></>}</div>}
     </section></div>}
   </main>;
 }

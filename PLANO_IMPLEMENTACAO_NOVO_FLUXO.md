@@ -1,3 +1,16 @@
+## V0.6.49 / Bridge V0.6.33 — recuperação da captura
+
+- persistir capturePlan por JOB;
+- reconstruir arquivo pendente via `/api/corvo/resultado`;
+- preservar registro do JOB ao perder a aba;
+- reabrir conversationUrl conhecida;
+- repassar uploadToken do app ao Bridge durante captura;
+- manter recovery até o último arquivo do lote (`DONE`).
+
+## V0.6.48 / Bridge V0.6.32 — reabertura manual
+
+O app agora permite reabrir falhas terminais manualmente sem refazer Collector/Analista. Bridge permanece V0.6.32.
+
 ## V0.6.47 / Bridge V0.6.32 — contrato de comparação Forma
 
 - `QUAL_VOCE_PREFERE` = 2 slots físicos por cena (`IMAGEM_A`, `IMAGEM_B`).
