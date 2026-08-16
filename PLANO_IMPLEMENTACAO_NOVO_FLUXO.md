@@ -1,3 +1,15 @@
+## Alteração V0.6.34 — R2 alinhado às variáveis reais da Cloudflare
+
+O armazenamento físico do pipeline migra para Cloudflare R2. Redis continua responsável por estados/jobs/checkpoints; Vercel continua hospedando o app e as Functions.
+
+Regras:
+- nenhum upload novo usa `@vercel/blob`;
+- lotes, ZIP do Analista, imagens finais e thumb são gravados em R2 sob `corvoquiz/<JOB_ID>/...`;
+- o bucket pode ser privado e URLs GET são assinadas temporariamente;
+- `/api/corvo/download` valida JOB_ID + token e faz proxy do objeto R2 quando a leitura direta do browser falhar;
+- checkpoints `CANDIDATES_STORED` e `ZIP_SAVED` continuam válidos na nova store;
+- lifecycle recomendado: apagar prefixo `corvoquiz/` após 7 dias.
+
 ## Alteração V0.6.32 — checkpoint fino do envio ao Analista
 
 O despacho do Analista deixa de usar um timeout único e passa a persistir microestados: editor pronto, rascunho preenchido, anexo recuperado, anexo confirmado, controle de envio pronto, envio disparado, mensagem commitada e resposta iniciada.
@@ -34,7 +46,7 @@ Bases: `CORVOQUIZ_ESPECIFICACAO_NOVO_FLUXO_APP_BRIDGE` e `CORVOQUIZ_MUDANCA_MODO
 
 ## Fase 2 — Arquivos e ramos paralelos
 
-- [x] Vercel Blob + `POST /api/corvo/arquivo`.
+- [x] Cloudflare R2 + `POST /api/corvo/arquivo` (V0.6.34; usa R2_BUCKET_NAME + R2_ENDPOINT).
 - [x] Thumb paralela e captura pelo Bridge.
 - [x] YouTube/Metadados opcional em paralelo.
 - [ ] Validar a captura da Thumb no deploy real com Blob conectado.
@@ -59,14 +71,14 @@ Bases: `CORVOQUIZ_ESPECIFICACAO_NOVO_FLUXO_APP_BRIDGE` e `CORVOQUIZ_MUDANCA_MODO
 - [x] Persistir `CANDIDATES_STORED` antes da montagem do ZIP.
 - [x] Persistir `ZIP_BUILDING` e `ZIP_SAVED`.
 - [x] Criar `GET/POST /api/corvo/checkpoint` para reconciliação após F5/reabertura.
-- [x] Falha em `CANDIDATES_STORED`/`ZIP_BUILDING` retoma somente `/api/corvo/pacote`, reutilizando os lotes no Blob/Redis.
+- [x] Falha em `CANDIDATES_STORED`/`ZIP_BUILDING` retoma somente `/api/corvo/pacote`, reutilizando os lotes no R2/Redis.
 - [x] Falha após `ZIP_SAVED` continua retentando somente o Analista.
 - [x] Retry automático usa backoff 1 min → 2 min → 5 min → 10 min também para a montagem do pacote.
 - [x] UI expõe `CHECKPOINT DO ANALISTA SALVO` e permite retomada manual sem Collector.
 
 ## Alteração V0.6.26 — checkpoint persistente antes do Analista
 
-- [x] Após a consolidação, o ZIP do Analista fica salvo no Vercel Blob e referenciado no projeto.
+- [x] Após a consolidação, o ZIP do Analista fica salvo no Cloudflare R2 e referenciado no projeto.
 - [x] Persistir `analysisJobId`, URL/nome do ZIP, IDs esperados, prompt, token e timestamps da tentativa.
 - [x] Falha de Bridge/Analista não volta ao Collector nem refaz compressão/lotes.
 - [x] Retry automático com backoff 1 min → 2 min → 5 min → 10 min.

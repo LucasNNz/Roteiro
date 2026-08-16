@@ -1,0 +1,52 @@
+CORVOQUIZ — CONFIGURAÇÃO CLOUDFLARE R2
+VERSION=1.1
+APP=V0.6.34
+
+VARIÁVEIS NA VERCEL
+====================
+
+Cadastre exatamente estas variáveis no projeto roteiro:
+
+R2_ACCOUNT_ID=<Account ID da Cloudflare>
+R2_ACCESS_KEY_ID=<Access Key ID do token R2>
+R2_SECRET_ACCESS_KEY=<Secret Access Key do token R2>
+R2_BUCKET_NAME=<nome do bucket, por exemplo corvoquiz>
+R2_ENDPOINT=<endpoint S3 fornecido pela Cloudflare, por exemplo https://ACCOUNT_ID.r2.cloudflarestorage.com>
+
+Nenhuma variável adicional é obrigatória.
+O CorvoQuiz usa 7 dias como TTL padrão das URLs assinadas.
+Se quiser alterar:
+R2_SIGNED_URL_TTL_SECONDS=<60 até 604800>
+
+IMPORTANTE
+==========
+- Não use NEXT_PUBLIC_ nas credenciais.
+- O token R2 deve ter Object Read & Write no bucket.
+- R2_BUCKET_NAME é o nome oficial usado pelo kit V0.6.34.
+- R2_BUCKET antigo continua aceito apenas para compatibilidade.
+- R2_ENDPOINT é usado diretamente pelo assinador S3; o app não precisa reconstruir o endpoint.
+
+CORS RECOMENDADO DO BUCKET
+==========================
+[
+  {
+    "AllowedOrigins": [
+      "https://roteiro-mu.vercel.app",
+      "https://chatgpt.com",
+      "http://localhost:3000"
+    ],
+    "AllowedMethods": ["GET", "PUT", "HEAD"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3600
+  }
+]
+
+LIFECYCLE RECOMENDADO
+=====================
+Prefixo: corvoquiz/
+Expiração: 7 dias para temporários/checkpoints, ajustável conforme sua política.
+
+APÓS CONFIGURAR
+================
+Faça um novo deploy da Vercel para as variáveis entrarem em Production.

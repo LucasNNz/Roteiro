@@ -1,8 +1,8 @@
-import { put } from "@vercel/blob";
 import JSZip from "jszip";
 import { NextRequest, NextResponse } from "next/server";
 import { attachCollectorCandidatesBatch, getCorvoJob, listCollectorCandidates, updateCorvoAnalysisPreparation, type CorvoCollectorCandidate } from "../../../../lib/corvo-jobs";
 import { storageFailure } from "../../../../lib/corvo-api";
+import { isCorvoObjectStorageConfigured, putCorvoObject } from "../../../../lib/corvo-blob";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -12,10 +12,6 @@ const MAX_BATCH_ITEMS = 50;
 
 function safeName(value:string) {
   return value.normalize("NFKD").replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^\.+/, "").slice(0, 180);
-}
-
-function blobAvailable() {
-  return Boolean(process.env.BLOB_READ_WRITE_TOKEN || (process.env.VERCEL_OIDC_TOKEN && process.env.BLOB_STORE_ID));
 }
 
 type BatchIndexItem = { id:string; name:string; contentType?:string; size?:number };
@@ -33,7 +29,7 @@ export async function POST(request:NextRequest) {
   if (!jobId || !token || !batchName || !rawIndex || !(file instanceof File)) {
     return NextResponse.json({ ok:false, message:"Envie jobId, token, nomeArquivo, indice e arquivo." }, { status:400 });
   }
-  if (!blobAvailable()) return NextResponse.json({ ok:false, message:"Vercel Blob não configurado. Conecte um Blob Store ao projeto." }, { status:503 });
+  if (!isCorvoObjectStorageConfigured()) return NextResponse.json({ ok:false, message:"Cloudflare R2 não configurado. Configure R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME e R2_ENDPOINT." }, { status:503 });
   if (!file.size || file.size > MAX_BATCH_BYTES) return NextResponse.json({ ok:false, message:`O lote deve ter até ${Math.round(MAX_BATCH_BYTES / 1_000_000 * 10) / 10} MB.` }, { status:413 });
   if (!/\.zip$/i.test(batchName)) return NextResponse.json({ ok:false, message:"O lote precisa ser um ZIP." }, { status:415 });
 
@@ -67,12 +63,9 @@ export async function POST(request:NextRequest) {
     const missing = index.filter((item) => !zipEntries.has(item.name.toLocaleLowerCase("pt-BR"))).map((item) => item.name);
     if (missing.length) return NextResponse.json({ ok:false, message:`O ZIP do lote não contém ${missing.length} arquivo(s) do índice.`, missing:missing.slice(0, 12) }, { status:409 });
 
-    const blob = await put(`corvoquiz/${jobId}/collector-batches/${batchName}`, Buffer.from(bytes), {
-      access:"public",
-      addRandomSuffix:false,
-      allowOverwrite:true,
+    const blob = await putCorvoObject(`corvoquiz/${jobId}/collector-batches/${batchName}`, Buffer.from(bytes), {
       contentType:"application/zip",
-      cacheControlMaxAge:60 * 60 * 24 * 7,
+      cacheControl:"private, max-age=0, no-store",
     });
     const createdAt = new Date().toISOString();
     const records:CorvoCollectorCandidate[] = index.map((item) => ({

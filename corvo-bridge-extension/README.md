@@ -1,6 +1,6 @@
-# CORVO BRIDGE V0.6.19 — CHECKPOINT DO ENVIO AO ANALISTA
+# CORVO BRIDGE V0.6.20 — CHECKPOINT DO ENVIO AO ANALISTA
 
-## V0.6.19 — retomada por progresso + diagnóstico de Blob
+## V0.6.20 — retomada por progresso + diagnóstico de storage/R2
 
 - Reutiliza rascunho do mesmo JOB_ID em vez de preencher novamente o composer.
 - Se o ZIP já estiver anexado, retoma diretamente do envio.

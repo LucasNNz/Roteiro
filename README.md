@@ -1,4 +1,16 @@
-# CorvoQuiz Produção — V0.6.32
+# CorvoQuiz Produção — V0.6.34
+
+## V0.6.34 — configuração R2 alinhada ao painel Cloudflare
+
+- O Vercel Blob deixa de ser usado como armazenamento operacional do pipeline.
+- Cloudflare R2 passa a armazenar lotes do Collector, ZIP do Analista, imagens refinadas/geradas, thumbnail e checkpoints físicos.
+- O bucket pode permanecer privado; o servidor gera URLs GET assinadas temporárias e o Bridge mantém `/api/corvo/download` como fallback autenticado.
+- A implementação usa somente APIs HTTP/S3 compatíveis e `node:crypto`; não adiciona SDK externo novo ao build.
+- `GET /api/corvo/diagnostico` agora expõe `storageProvider=R2` e `storageConfigured`.
+- Variáveis novas: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` e `R2_ENDPOINT`. O TTL assinado é opcional e usa 7 dias por padrão.
+- Configure CORS do R2 para o app e o ChatGPT e uma regra de lifecycle para remover `corvoquiz/` após 7 dias.
+- Corvo Bridge atualizado para **V0.6.20** e Collector permanece **V0.8.0**.
+- O app usa o `R2_ENDPOINT` fornecido pela Cloudflare e `R2_BUCKET_NAME`; `R2_BUCKET` fica apenas como fallback legado.
 
 ## V0.6.32 — envio robusto ao Analista por microcheckpoint
 
@@ -8,7 +20,7 @@
 - Se a mensagem já estiver no composer, o retry não reescreve o prompt; continua de onde parou.
 - Se o ZIP já estiver anexado, o retry não o baixa/anexa novamente.
 - A leitura de Blob usa origem autenticada no servidor e expõe erro estruturado caso a própria store recuse leitura.
-- Corvo Bridge atual: **V0.6.19**. Collector permanece **V0.8.0**.
+- Corvo Bridge atual: **V0.6.20**. Collector permanece **V0.8.0**.
 
 ## V0.6.31 — proxy autenticado para anexos do Analista
 
@@ -159,7 +171,7 @@ O **INICIAR AUTOMÁTICO** agora fica no topo, ao lado de **NOVA PRODUÇÃO**, e 
 
 Um único clique executa:
 
-1. valida Redis, Vercel Blob, Bridge e Collector;
+1. valida Redis, Cloudflare R2, Bridge e Collector;
 2. cria um projeto automático novo;
 3. chama o Corvo Scout sem tema obrigatório;
 4. o Scout ordena quatro ideias e coloca em **IDEIA 1** sua recomendação principal;
@@ -215,7 +227,7 @@ O modo manual continua disponível: o usuário escolhe uma candidata por ID e o 
 
 ## Armazenamento de candidatas
 
-Para não transformar o objeto principal do job em uma lista com milhares de URLs, as candidatas do Collector ficam em um registro separado no Upstash Redis, com TTL de 7 dias, enquanto os bytes ficam no Vercel Blob. O ZIP do Analista é montado a partir desse registro.
+Para não transformar o objeto principal do job em uma lista com milhares de URLs, as candidatas do Collector ficam em um registro separado no Upstash Redis, com TTL de 7 dias, enquanto os bytes ficam no Cloudflare R2. O ZIP do Analista é montado a partir desse registro.
 
 Novos/ajustados endpoints:
 
@@ -253,7 +265,7 @@ A Consolidação só libera o ZIP quando todos os IDs possuem arquivo final real
 
 ### V0.6.10 / Collector V0.7.6 — diagnóstico de upload
 
-Antes do empacotamento, o app verifica Redis + Vercel Blob. O Collector preserva o primeiro erro real de upload e interrompe repetição inútil quando detecta erro fatal de armazenamento.
+Antes do empacotamento, o app verifica Redis + Cloudflare R2. O Collector preserva o primeiro erro real de upload e interrompe repetição inútil quando detecta erro fatal de armazenamento.
 
 ### Bridge V0.6.3/V0.6.7 — captura e anexos grandes
 
@@ -273,26 +285,26 @@ Configure no projeto:
 
 1. `CorvoAPI_KEY_IDEIA`;
 2. Upstash Redis (`UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`, ou o par `KV_*`);
-3. Vercel Blob;
+3. Cloudflare R2;
 4. novo deploy após conectar os recursos.
 
-`GET /api/corvo/diagnostico` informa se Redis e Blob estão configurados sem expor segredos.
+`GET /api/corvo/diagnostico` informa se Redis e Cloudflare R2 estão configurados sem expor segredos.
 
 ## Instalação
 
-### Corvo Bridge V0.6.19
+### Corvo Bridge V0.6.20
 
-Use `public/downloads/CORVO_BRIDGE_V0619_EXTENSION.zip` ou carregue a pasta `corvo-bridge-extension` em `chrome://extensions`.
+Use `public/downloads/CORVO_BRIDGE_V0620_EXTENSION.zip` ou carregue a pasta `corvo-bridge-extension` em `chrome://extensions`.
 
 ### Corvo Collector V0.8.0
 
-Use `public/downloads/CORVO_COLLECTOR_V077_EXTENSION.zip` ou carregue a pasta `corvo-collector-extension`. Autorize a origem exata do deploy no popup.
+Use `public/downloads/CORVO_COLLECTOR_V080_EXTENSION.zip` ou carregue a pasta `corvo-collector-extension`. Autorize a origem exata do deploy no popup.
 
 ## Downloads dentro do app
 
 - Corvo Collector V0.8.0;
-- Corvo Bridge V0.6.19;
-- Kit completo CorvoQuiz V0.6.32.
+- Corvo Bridge V0.6.20;
+- Kit completo CorvoQuiz V0.6.34.
 
 ## Fora do escopo atual
 

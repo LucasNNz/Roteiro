@@ -97,8 +97,8 @@ function analysisRetryDelayForError(error:unknown, retryCount:number) {
     const quick = [20_000, 45_000, 90_000, 120_000];
     return quick[Math.min(Math.max(0, retryCount), quick.length - 1)];
   }
-  // 403 de conteúdo do Blob não melhora com retry agressivo; mantém o checkpoint sem martelar a store.
-  if (/(BLOB_CONTENT_READ_FORBIDDEN|ATTACHMENT_FETCH_403|ATTACHMENT_PROXY_FETCH_503)/.test(text)) return 10 * 60_000;
+  // 403 de conteúdo do R2 não melhora com retry agressivo; mantém o checkpoint sem martelar a store.
+  if (/(R2_CONTENT_READ_FORBIDDEN|ATTACHMENT_FETCH_403|ATTACHMENT_PROXY_FETCH_503)/.test(text)) return 10 * 60_000;
   return analysisRetryDelay(retryCount);
 }
 
@@ -922,7 +922,7 @@ export default function Home() {
     if (message.includes("JOB_ALREADY_RUNNING_DIFFERENT")) return "O Collector está trabalhando em outra produção. Aguarde essa busca terminar ou cancele-a antes de iniciar esta.";
     if (message.includes("JOB_ALREADY_RUNNING")) return "Já existe uma busca em andamento. Abra novamente esta etapa para acompanhar o trabalho atual.";
     if (message.includes("PACKAGE_ALREADY_RUNNING")) return "O Collector já está montando o pacote de outra produção. O pacote da produção atual será retomado automaticamente quando for o mesmo trabalho; se for outro projeto, aguarde a montagem atual terminar.";
-    if (message.includes("VERCEL_BLOB_NOT_CONFIGURED") || message.toLowerCase().includes("vercel blob não configurado")) return "O Vercel Blob ainda não está conectado ao projeto. As imagens foram salvas pelo Collector, mas o app não tem onde armazená-las. Conecte um Blob Store ao projeto roteiro na Vercel e tente novamente.";
+    if (message.includes("R2_NOT_CONFIGURED") || message.toLowerCase().includes("cloudflare r2 não configurado")) return "O Cloudflare R2 ainda não está configurado no projeto. Configure R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME e R2_ENDPOINT na Vercel e tente novamente.";
     if (message.includes("TRATAMENTO_MANUAL_NECESSARIO")) return "Uma ou mais imagens chegaram ao limite de tentativas ou foram marcadas como não recuperáveis. O automático parou para tratamento manual.";
     return message || "Não foi possível concluir esta etapa.";
   }
@@ -932,7 +932,7 @@ export default function Home() {
     const status = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(status?.message || "Não foi possível verificar o armazenamento do pipeline.");
     if (!status?.configured) throw new Error("O Upstash Redis não está configurado para os jobs do Corvo.");
-    if (!status?.blobConfigured) throw new Error("VERCEL_BLOB_NOT_CONFIGURED");
+    if (!status?.storageConfigured) throw new Error("R2_NOT_CONFIGURED");
     return status;
   }
 
@@ -1777,7 +1777,7 @@ export default function Home() {
       pipelineStatus:"ANALISANDO IMAGENS",
     });
     updateAutoRun(project.id, "ANALISTA", `Corvo Analista comparando a shortlist de candidatas de ${expectedIds.length} IDs...`);
-    setImagePhase("searching"); setImageProgress(90); setImageMessage("Enviando o pacote persistente ao Corvo Analista..."); setImageStatusLine("ZIP SALVO NO BLOB · ANALISTA ESCOLHENDO POR ID");
+    setImagePhase("searching"); setImageProgress(90); setImageMessage("Enviando o pacote persistente ao Corvo Analista..."); setImageStatusLine("ZIP SALVO NO R2 · ANALISTA ESCOLHENDO POR ID");
     await dispatchCorvoBridge({
       jobId:analysisJob.jobId,
       prompt:[
@@ -2233,7 +2233,7 @@ export default function Home() {
     </section>
 
     <section className="projects" id="projetos"><div className="section-heading"><div><span className="section-number">02</span><h2>PROJETOS RECENTES</h2></div><span className="project-count">{String(projects.length).padStart(2,"0")} PRODUÇÕES</span></div><div className="project-list">{projects.map((project) => <button className={`project-row ${project.id===activeId?"selected":""}`} key={project.id} onClick={() => setActiveId(project.id)}><span className="project-icon">{project.format==="REELS"?"▯":"▭"}</span><span className="project-name"><b>{project.title}</b><small>{project.id}</small></span><span className="project-format">{project.format}</span><span className="progress"><i style={{width:`${project.stage*20}%`}} /></span><span className="stage-label">ETAPA {project.stage}/5</span><span className="row-arrow">→</span></button>)}</div></section>
-    <footer><span>CORVOQUIZ PRODUÇÃO <i>V0.6.32</i></span><span>ENVIO DO ANALISTA COM CHECKPOINT · RETOMADA POR PROGRESSO · V0.6.32</span></footer>
+    <footer><span>CORVOQUIZ PRODUÇÃO <i>V0.6.34</i></span><span>R2 ENDPOINT NATIVO + CHECKPOINT DO ANALISTA · V0.6.34</span></footer>
     {notice && <div className="toast">{notice}</div>}
 
     {createOpen && <div className="modal-backdrop" onMouseDown={(event) => event.target===event.currentTarget&&closeCreationModal()}><section className="creation-modal idea-modal" role="dialog" aria-modal="true" aria-labelledby="new-production-title"><button className="modal-close" disabled={ideaLoading} onClick={closeCreationModal} aria-label="Fechar">×</button><div className="modal-symbol">✦</div><span className="modal-kicker">{ideaRevisionProjectId?"REFAZER IDEIA":"NOVA PRODUÇÃO"}</span><h2 id="new-production-title">{ideaRevisionProjectId?"ESCOLHA UMA NOVA DIREÇÃO":"O QUE VAMOS CRIAR?"}</h2><p>{ideaRevisionProjectId?"Ao confirmar, roteiro, prompts e imagens serão refeitos automaticamente.":"Comece sem tema e peça ideias ao Corvo, ou informe uma direção opcional."}</p>
@@ -2275,8 +2275,8 @@ export default function Home() {
         <div className="downloads-head"><div><span>INSTALAÇÃO E SUPORTE</span><h3 id="downloads-title">ARQUIVOS PARA BAIXAR</h3></div><small>SE PRECISAR REINSTALAR</small></div>
         <div className="download-grid">
           <a className="download-card" href="/downloads/CORVO_COLLECTOR_V080_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.8.0</small></div><i>↓</i></a>
-          <a className="download-card" href="/downloads/CORVO_BRIDGE_V0619_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.19 · RETOMADA DO ENVIO + DIAGNÓSTICO</small></div><i>↓</i></a>
-          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0632.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
+          <a className="download-card" href="/downloads/CORVO_BRIDGE_V0620_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.20 · R2 + RETOMADA DO ENVIO + DIAGNÓSTICO</small></div><i>↓</i></a>
+          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0634.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
         </div>
       </section>
       <details className="advanced-settings"><summary>CONFIGURAÇÕES AVANÇADAS</summary><div className="settings-grid"><label>CANDIDATAS COLETADAS/ID<input type="number" min="1" max="20" value={settings.maxCandidates} onChange={(event)=>setSettings({...settings,maxCandidates:Math.max(1,Math.min(20,Number(event.target.value)||20))})}/></label><label>CANDIDATAS/ID → ANALISTA<input type="number" min="1" max="30" value={settings.analystCandidatesPerId} onChange={(event)=>setSettings({...settings,analystCandidatesPerId:Math.max(1,Math.min(30,Number(event.target.value)||10))})}/></label><label>VARREDURA<input type="number" value={settings.scrollSteps} onChange={(event)=>setSettings({...settings,scrollSteps:Number(event.target.value)})}/></label><label>QUALIDADE JPEG<input type="number" step=".01" value={settings.jpegQuality} onChange={(event)=>setSettings({...settings,jpegQuality:Number(event.target.value)})}/></label><label>PREFIXO<input value={settings.prefix} onChange={(event)=>setSettings({...settings,prefix:event.target.value})}/></label></div><p>A busca coleta no máximo 20 candidatas únicas por ID. No modo Mesclado, a meta é dividida entre Google e Pinterest. Depois, o limite do Analista reduz apenas o transporte; o app não escolhe a vencedora.</p><label className="batch-label">COMANDOS EM LOTE — OPCIONAL<textarea value={settings.batchText} onChange={(event)=>setSettings({...settings,batchText:event.target.value})} placeholder={"01|primeira busca\n02|segunda busca"} /></label></details>

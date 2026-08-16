@@ -1,7 +1,7 @@
-import { put } from "@vercel/blob";
 import { NextRequest, NextResponse } from "next/server";
 import { attachCollectorCandidate, attachCorvoFile, getCorvoJob, listCollectorCandidates, updateCorvoAnalysisPreparation } from "../../../../lib/corvo-jobs";
 import { storageFailure } from "../../../../lib/corvo-api";
+import { isCorvoObjectStorageConfigured, putCorvoObject } from "../../../../lib/corvo-blob";
 
 export const runtime = "nodejs";
 
@@ -17,10 +17,6 @@ function fileType(value: FormDataEntryValue | null) {
   return ["THUMBNAIL", "GENERATED_IMAGE", "REFINED_IMAGE", "COLLECTOR_IMAGE", "OTHER"].includes(normalized)
     ? normalized as "THUMBNAIL" | "GENERATED_IMAGE" | "REFINED_IMAGE" | "COLLECTOR_IMAGE" | "OTHER"
     : "OTHER";
-}
-
-function blobAvailable() {
-  return Boolean(process.env.BLOB_READ_WRITE_TOKEN || (process.env.VERCEL_OIDC_TOKEN && process.env.BLOB_STORE_ID));
 }
 
 export async function POST(request: NextRequest) {
@@ -39,7 +35,7 @@ export async function POST(request: NextRequest) {
   }
   if (!ALLOWED_TYPES.has(file.type)) return NextResponse.json({ ok: false, message: "Formato de imagem não permitido." }, { status: 415 });
   if (!file.size || file.size > MAX_FILE_SIZE) return NextResponse.json({ ok: false, message: "A imagem deve ter entre 1 byte e 4 MB." }, { status: 413 });
-  if (!blobAvailable()) return NextResponse.json({ ok: false, message: "Vercel Blob não configurado. Conecte um Blob Store ao projeto." }, { status: 503 });
+  if (!isCorvoObjectStorageConfigured()) return NextResponse.json({ ok: false, message: "Cloudflare R2 não configurado. Configure as credenciais R2 no projeto." }, { status: 503 });
 
   try {
     const job = await getCorvoJob(jobId);
@@ -57,12 +53,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: false, message: "Este trabalho não aceita uma imagem refinada." }, { status: 409 });
     }
     const blobPath = type === "COLLECTOR_IMAGE" ? `corvoquiz/${jobId}/collector/${name}` : `corvoquiz/${jobId}/${name}`;
-    const blob = await put(blobPath, file, {
-      access: "public",
-      addRandomSuffix: false,
-      allowOverwrite: true,
-      contentType: file.type,
-      cacheControlMaxAge: 60 * 60 * 24 * 365,
+    const bytes = Buffer.from(await file.arrayBuffer());
+    const blob = await putCorvoObject(blobPath, bytes, {
+      contentType:file.type,
+      cacheControl:"private, max-age=0, no-store",
     });
     if (type === "COLLECTOR_IMAGE") {
       if (!itemId) return NextResponse.json({ ok: false, message: "Imagens do Collector precisam informar o ID de origem." }, { status: 400 });

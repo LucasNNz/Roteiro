@@ -1,19 +1,14 @@
-import { put } from "@vercel/blob";
 import JSZip from "jszip";
 import { NextRequest, NextResponse } from "next/server";
 import { attachCorvoFile, getCorvoJob, listCollectorCandidates, updateCorvoAnalysisPreparation } from "../../../../lib/corvo-jobs";
 import { storageFailure } from "../../../../lib/corvo-api";
-import { readCorvoBlobBuffer } from "../../../../lib/corvo-blob";
+import { isCorvoObjectStorageConfigured, putCorvoObject, readCorvoBlobBuffer } from "../../../../lib/corvo-blob";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
 function safeName(value: string) {
   return value.normalize("NFKD").replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^\.+/, "").slice(0, 160);
-}
-
-function blobAvailable() {
-  return Boolean(process.env.BLOB_READ_WRITE_TOKEN || (process.env.VERCEL_OIDC_TOKEN && process.env.BLOB_STORE_ID));
 }
 
 export async function POST(request: NextRequest) {
@@ -26,7 +21,7 @@ export async function POST(request: NextRequest) {
   const requestedName = typeof body.fileName === "string" ? safeName(body.fileName) : "";
   const selectionMode = body.selectionMode === "AUTO" ? "AUTO" : "MANUAL";
   if (!jobId || !token) return NextResponse.json({ ok: false, message: "Informe jobId e token." }, { status: 400 });
-  if (!blobAvailable()) return NextResponse.json({ ok: false, message: "Vercel Blob não configurado." }, { status: 503 });
+  if (!isCorvoObjectStorageConfigured()) return NextResponse.json({ ok: false, message: "Cloudflare R2 não configurado." }, { status: 503 });
 
   try {
     const job = await getCorvoJob(jobId);
@@ -150,12 +145,9 @@ export async function POST(request: NextRequest) {
 
     const content = await zip.generateAsync({ type: "nodebuffer", compression: "STORE" });
     const fileName = requestedName || `${safeName(job.request.projetoId || jobId)}_COLLECTOR_CANDIDATAS.zip`;
-    const blob = await put(`corvoquiz/${jobId}/${fileName}`, content, {
-      access: "public",
-      addRandomSuffix: false,
-      allowOverwrite: true,
-      contentType: "application/zip",
-      cacheControlMaxAge: 60 * 60 * 24 * 7,
+    const blob = await putCorvoObject(`corvoquiz/${jobId}/${fileName}`, content, {
+      contentType:"application/zip",
+      cacheControl:"private, max-age=0, no-store",
     });
     const updated = await attachCorvoFile(jobId, token, {
       type: "COLLECTOR_ZIP",

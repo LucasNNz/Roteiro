@@ -412,7 +412,7 @@
       } catch (directError) {
         await reportDiagnostic(job.jobId, "ATTACHMENT_FETCH_DIRECT_FAIL", { fileName:name, error:String(directError?.message || directError || "") });
         try {
-          await reportStage(job.jobId, "FETCHING_ATTACHMENT_PROXY", `O Blob recusou leitura direta. Recuperando ${name} pelo CorvoQuiz...`, { fileName:name, attachmentIndex:index + 1, attachmentTotal:attachments.length });
+          await reportStage(job.jobId, "FETCHING_ATTACHMENT_PROXY", `O armazenamento recusou leitura direta. Recuperando ${name} pelo CorvoQuiz...`, { fileName:name, attachmentIndex:index + 1, attachmentTotal:attachments.length });
           await reportDiagnostic(job.jobId, "ATTACHMENT_PROXY_FETCH_START", { fileName:name, appOrigin:String(job?.meta?.appOrigin || "") });
           file = await fetchAttachmentThroughApp(job, attachment);
           await reportDiagnostic(job.jobId, "ATTACHMENT_PROXY_FETCH_OK", { fileName:name, bytes:file.size, type:file.type });
@@ -1245,7 +1245,7 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "CORVO_BRIDGE_PING") {
       chrome.runtime.sendMessage({ type: "CORVO_GPT_READY" }).catch(() => {});
-      sendResponse({ ok: true, version:"0.6.19", page:pageDiagnostic() });
+      sendResponse({ ok: true, version:"0.6.20", page:pageDiagnostic() });
       return;
     }
     if (message?.type === "CORVO_SEND_PROMPT") {

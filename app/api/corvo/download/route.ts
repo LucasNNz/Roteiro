@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCorvoJob } from "../../../../lib/corvo-jobs";
 import { storageFailure } from "../../../../lib/corvo-api";
-import { CorvoBlobReadError, openCorvoBlob } from "../../../../lib/corvo-blob";
+import { CorvoBlobReadError, corvoBlobPathname, openCorvoBlob } from "../../../../lib/corvo-blob";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,19 +23,6 @@ function safeDownloadName(value: string) {
   return cleaned || "corvo-arquivo";
 }
 
-function allowedBlobUrl(raw: string) {
-  try {
-    const url = new URL(raw);
-    const host = url.hostname.toLowerCase();
-    if (url.protocol !== "https:") return null;
-    if (!host.endsWith(".blob.vercel-storage.com")) return null;
-    if (!url.pathname.startsWith("/corvoquiz/")) return null;
-    return url;
-  } catch {
-    return null;
-  }
-}
-
 export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: corsHeaders() });
 }
@@ -50,9 +37,9 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ ok: false, message: "Informe jobId, token e url do arquivo." }, { status: 400, headers: corsHeaders() });
   }
 
-  const blobUrl = allowedBlobUrl(rawUrl);
-  if (!blobUrl) {
-    return NextResponse.json({ ok: false, message: "URL de Blob não permitida." }, { status: 400, headers: corsHeaders() });
+  const key = corvoBlobPathname(rawUrl);
+  if (!key || !key.startsWith(`corvoquiz/${jobId}/`)) {
+    return NextResponse.json({ ok: false, message: "Objeto R2 não permitido para este trabalho." }, { status: 400, headers: corsHeaders() });
   }
 
   try {
@@ -61,9 +48,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ ok: false, message: "Trabalho ou token inválido." }, { status: 404, headers: corsHeaders() });
     }
 
-    const result:any = await openCorvoBlob(blobUrl.toString());
+    const result:any = await openCorvoBlob(rawUrl);
     if (!result || result.statusCode !== 200 || !result.stream) {
-      return NextResponse.json({ ok: false, message: "Arquivo não encontrado no Blob." }, { status: 404, headers: corsHeaders() });
+      return NextResponse.json({ ok: false, message: "Arquivo não encontrado no Cloudflare R2." }, { status: 404, headers: corsHeaders() });
     }
 
     const size = Number(result.blob?.size || 0);
@@ -76,7 +63,7 @@ export async function GET(request: NextRequest) {
     headers.set("Content-Type", result.blob.contentType || "application/octet-stream");
     headers.set("Content-Disposition", `attachment; filename="${fileName.replaceAll('"', "")}"`);
     headers.set("X-Content-Type-Options", "nosniff");
-    headers.set("X-Corvo-Download-Source", String(result.source || "vercel-blob-proxy"));
+    headers.set("X-Corvo-Download-Source", String(result.source || "cloudflare-r2-proxy"));
     if (size) headers.set("Content-Length", String(size));
     if (result.blob.etag) headers.set("ETag", result.blob.etag);
 

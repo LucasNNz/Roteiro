@@ -1,9 +1,8 @@
-import { put } from "@vercel/blob";
 import JSZip from "jszip";
 import { NextRequest, NextResponse } from "next/server";
 import { getCollectorCandidatesByName, getCorvoJob } from "../../../../lib/corvo-jobs";
 import { storageFailure } from "../../../../lib/corvo-api";
-import { readCorvoBlobBuffer } from "../../../../lib/corvo-blob";
+import { putCorvoObject, readCorvoBlobBuffer } from "../../../../lib/corvo-blob";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -53,12 +52,9 @@ export async function POST(request: NextRequest) {
       const bytes = await entry.async("nodebuffer");
       if (!bytes.byteLength) return NextResponse.json({ ok:false, message:`A candidata ${requestedName} está vazia dentro do ZIP bruto.` }, { status:409 });
       const name = safeName(requestedName);
-      const blob = await put(`corvoquiz/${jobId}/selected/${name}`, bytes, {
-        access:"public",
-        addRandomSuffix:false,
-        allowOverwrite:true,
+      const blob = await putCorvoObject(`corvoquiz/${jobId}/selected/${name}`, bytes, {
         contentType:contentType(name),
-        cacheControlMaxAge:60 * 60 * 24 * 7,
+        cacheControl:"private, max-age=0, no-store",
       });
       extracted.push({
         id:registry.id,
