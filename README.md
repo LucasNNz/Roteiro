@@ -1,6 +1,13 @@
-# CorvoQuiz Produção — V0.6.13
+# CorvoQuiz Produção — V0.6.14
 
 Painel de produção do CorvoQuiz com orquestração multiespecialista via **Corvo Bridge**, coleta pelo **Corvo Collector**, seleção visual delegada ao **Corvo Analista**, roteamento por ID, Fallback e ZIP final.
+
+## V0.6.14 — Hotfix de build TypeScript
+
+- Corrige a inferência `string | undefined` do `autoWorkflowJobId` no Modo Automático Total.
+- O polling agora usa um `activeJobId` validado como `string` antes de chamar `encodeURIComponent`.
+- Mantém integralmente a shortlist de 10 candidatas/ID, batch upload, Collector V0.7.8 e Bridge V0.6.5.
+
 
 ## V0.6.13 — Automático Total: um clique até o ZIP
 
@@ -12,7 +19,7 @@ Ao clicar, o app:
 2. cria o roteiro se ainda não existir;
 3. cria os prompts se ainda não existirem;
 4. inicia o Collector;
-5. força o fluxo visual `AUTO`, enviando uma shortlist técnica de até 10 candidatas por ID ao Analista;
+5. força a seleção visual para `AUTO`, enviando todas as candidatas ao Analista;
 6. aguarda o manifesto do Analista;
 7. executa Refinador e Gerador automaticamente, com Fallback/retries;
 8. inicia Thumbnail e, quando ativado, YouTube/Metadados em paralelo;
@@ -26,9 +33,9 @@ Etapas que já estiverem prontas são reaproveitadas. O automático só interrom
 
 No modo automático, o app **não escolhe mais uma candidata por ID**. O fluxo agora é:
 
-`COLLECTOR → SHORTLIST TÉCNICA DE ATÉ 10/ID → ZIP → ANALISTA → ARQUIVO ESCOLHIDO POR ID → REFINADOR / GERADOR`
+`COLLECTOR → TODAS AS CANDIDATAS → ZIP BRUTO → ANALISTA → ARQUIVO ESCOLHIDO POR ID → REFINADOR / GERADOR`
 
-O Collector V0.7.8 envia por padrão até 10 candidatas técnicas por ID ao armazenamento do trabalho do Analista. O limite é configurável e cada candidata recebe nome único, por exemplo:
+O Collector V0.7.8 envia todas as candidatas disponíveis de cada ID ao armazenamento do trabalho do Analista. Cada candidata recebe nome único, por exemplo:
 
 - `video1_001_c001.jpg`
 - `video1_001_c002.jpg`
@@ -36,7 +43,7 @@ O Collector V0.7.8 envia por padrão até 10 candidatas técnicas por ID ao arma
 
 O servidor mantém o mapeamento `ID → candidatas`, monta o ZIP persistente e inclui `CORVO_ANALISE_INPUT.json` + `CORVO_ANALISE_GUIA.txt`.
 
-O Corvo Analista usa agora `CORVO_IMAGE_ANALYSIS VERSION=1.1`. Para cada ID ele compara todas as candidatas presentes no pacote e devolve:
+O Corvo Analista usa agora `CORVO_IMAGE_ANALYSIS VERSION=1.1`. Para cada ID ele compara todas as candidatas e devolve:
 
 - `PASSOU` + `ARQUIVO=<nome exato>` + `REFINAMENTO=LEVE`;
 - `PASSOU_COM_RESSALVAS` + `ARQUIVO=<nome exato>` + `REFINAMENTO=FORTE`;
@@ -52,10 +59,9 @@ Para não transformar o objeto principal do job em uma lista com milhares de URL
 
 Novos/ajustados endpoints:
 
-- `POST /api/corvo/candidatos-lote` — recebe ZIPs de até 36 candidatas, grava um Blob por lote e registra as entradas em lote no Redis;
-- `POST /api/corvo/arquivo` — continua recebendo arquivos individuais e permanece como compatibilidade para modo manual/arquivos finais;
-- `POST /api/corvo/pacote` — valida cobertura dos IDs, baixa cada lote uma única vez e monta o ZIP completo do Analista;
-- `POST /api/corvo/candidato` — resolve os nomes escolhidos pelo Analista para os arquivos físicos do pacote consolidado.
+- `POST /api/corvo/arquivo` — recebe cada candidata com `jobId`, `id`, `nomeArquivo` e arquivo;
+- `POST /api/corvo/pacote` — valida cobertura dos IDs e monta o ZIP completo de candidatas;
+- `POST /api/corvo/candidato` — resolve os nomes escolhidos pelo Analista para os arquivos físicos originais do Collector.
 
 ## Pipeline atual
 
@@ -120,7 +126,7 @@ Use `public/downloads/CORVO_BRIDGE_V065_EXTENSION.zip` ou carregue a pasta `corv
 
 ### Corvo Collector V0.7.8
 
-Use `public/downloads/CORVO_COLLECTOR_V078_EXTENSION.zip` ou carregue a pasta `corvo-collector-extension`. Autorize a origem exata do deploy no popup.
+Use `public/downloads/CORVO_COLLECTOR_V077_EXTENSION.zip` ou carregue a pasta `corvo-collector-extension`. Autorize a origem exata do deploy no popup.
 
 ## Downloads dentro do app
 

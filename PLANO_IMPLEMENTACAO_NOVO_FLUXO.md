@@ -45,7 +45,7 @@ Bases: `CORVOQUIZ_ESPECIFICACAO_NOVO_FLUXO_APP_BRIDGE` e `CORVOQUIZ_MUDANCA_MODO
 ## Alteração V0.6.11 — automático delegado ao Analista
 
 - [x] Remover seleção visual automática do app.
-- [x] No modo `AUTO`, criar shortlist técnica configurável (padrão 10/ID) sem escolher a vencedora; o Analista decide visualmente.
+- [x] No modo `AUTO`, incluir todas as candidatas retornadas pelo Collector.
 - [x] Nomear candidatas de forma única por `ID + índice`.
 - [x] Transportar `id` junto de cada `COLLECTOR_IMAGE`.
 - [x] Separar o registro das candidatas do objeto principal do job para suportar lotes grandes.
@@ -86,3 +86,10 @@ Bases: `CORVOQUIZ_ESPECIFICACAO_NOVO_FLUXO_APP_BRIDGE` e `CORVOQUIZ_MUDANCA_MODO
 - [x] Registrar dezenas de candidatas no Redis com um único HSET por lote.
 - [x] Montar o ZIP final do Analista baixando cada lote apenas uma vez.
 - [x] Preservar compatibilidade com candidatas individuais das versões anteriores.
+
+## HOTFIX V0.6.14 — BUILD TYPESCRIPT
+
+- `runAutomaticSpecialist` valida `jobId` após criação/recuperação.
+- O loop de polling usa `activeJobId:string`, eliminando o erro de build em `encodeURIComponent(jobId)`.
+- Sem alteração funcional no pipeline ou nas extensões.
+
