@@ -1,106 +1,137 @@
-# CorvoQuiz Produção — V0.6.5
+# CorvoQuiz Produção — V0.6.9
 
-Painel visual de pré-produção com três especialistas via **Corvo Bridge**, retorno genérico por **GPT Action** e coleta de imagens pelo **Corvo Collector**.
+Painel de produção do CorvoQuiz com orquestração multiespecialista via **Corvo Bridge**, retorno genérico por **GPT Action**, coleta de imagens pelo **Corvo Collector**, roteamento automático por ID, Fallback e ZIP final.
 
-## Fluxo completo sem redirecionamento
+## Pipeline atual
 
-1. O app cria um trabalho com `POST /api/corvo/job`.
-2. O Corvo Bridge escolhe o GPT de ideias, roteiro ou prompts e abre/reutiliza sua aba inativa.
-3. A mensagem enviada ao GPT já contém a solicitação completa e o `JOB_ID`.
-4. Ao terminar, o GPT chama `entregarResultadoCorvo` em `POST /api/corvo/resultado`, enviando `jobId + resultado`.
-5. O modal acompanha `GET /api/corvo/resultado?jobId=...` e preserva o resultado integral.
-6. A produção segue por `IDEIA → ROTEIRO → PROMPTS → IMAGENS`, sempre com revisão, nova tentativa ou aprovação.
-7. Quando o app confirma o resultado, o Bridge fecha automaticamente apenas a aba do GPT que ele próprio abriu.
+O fluxo implementado nesta versão é:
 
-## Memória de cada produção
+`IDEIA → ROTEIRO → PROMPTS → COLLECTOR → ANALISTA → REFINADOR / GERADOR → FALLBACK quando necessário → CONSOLIDAÇÃO → ZIP FINAL`
 
-Cada projeto mantém a ideia escolhida, o roteiro completo e os prompts de imagem no armazenamento do app. Os três conteúdos ficam disponíveis no painel **Memória da produção**, com visualização, cópia e download em TXT. O ZIP do projeto também inclui a pasta `ideia`, além de `roteiro` e `prompts`.
+Em paralelo ao início do Collector, o app pode iniciar:
 
-## Refazer etapas aprovadas
+- **Corvo Thumb** — gera a thumbnail e o Bridge captura o arquivo real;
+- **Corvo YouTube / Metadados** — opcional nas configurações; prepara o pacote editorial enquanto as imagens são processadas.
 
-Qualquer conteúdo da **Memória da produção** pode ser enviado novamente ao especialista correspondente. O app invalida automaticamente somente os arquivos dependentes:
+A imagem final do Gerador não passa novamente pelo Refinador. O Refinador e o Gerador entregam arquivos finais de seus próprios ramos.
 
-- refazer `PROMPTS` remove o pacote de imagens e volta para a aprovação dos prompts;
-- refazer `ROTEIRO` remove roteiro, prompts e imagens anteriores; ao aprovar o novo roteiro, os prompts são refeitos;
-- refazer `IDEIA` abre novas opções no mesmo projeto e, depois da escolha, reinicia roteiro, prompts e imagens.
+## Fase 3 — Analyst e roteamento real
 
-O botão **Pedir outro** dos modais usa a mesma regra de segurança, impedindo a mistura de arquivos de versões diferentes da produção.
+O Collector V0.7.5 continua criando o pacote original para o Forma, mas também envia ao app uma cópia JPEG leve de cada imagem escolhida. Essas cópias servem apenas ao Analista; o JPEG original do pacote do Collector não é reduzido por essa rotina.
 
-O app não redireciona para o ChatGPT e não precisa de `OPENAI_API_KEY`.
+O servidor recebe as imagens individualmente, associa todas ao `JOB_ID` do Analista e cria `POST /api/corvo/pacote`, que monta um ZIP persistente no Vercel Blob. O Bridge V0.6.2 baixa esse ZIP e o anexa à conversa do Corvo Analista.
 
-## Motor do Corvo Collector
+Depois do manifesto `CORVO_IMAGE_ANALYSIS`, o app valida os IDs e cria uma fila por imagem:
 
-Em **Configurações → Motor do coletor**, escolha entre:
+- `PASSOU` → Refinador leve;
+- `PASSOU_COM_RESSALVAS` → Refinador forte;
+- `NAO_PASSOU` → Gerador.
 
-- **Google Imagens** — todas as candidatas vêm do Google Imagens;
-- **Pinterest** — todas as candidatas vêm do Pinterest;
-- **Mesclado** — divide a quantidade de candidatas entre Google Imagens e Pinterest e reúne os resultados.
+Para o Refinador, o Bridge anexa a imagem real de origem. Para Refinador e Gerador, um manifesto de sucesso deixa o job em `WAITING_FILE` até o Bridge capturar a imagem final da conversa e enviá-la ao Blob.
 
-A opção fica salva no navegador, aparece no cartão de busca da produção e é enviada ao Collector tanto na busca inicial quanto em **Procurar mais**. O padrão para uma instalação nova é **Mesclado**.
+O Gerador possui fila global de **um único worker por vez**, inclusive para retries vindos do Fallback.
 
-## Produções longas e reconexão
+## Fase 4 — Fallback e tentativas
 
-A espera da coleta não possui mais o limite global de aproximadamente três minutos. O painel acompanha o job até `DONE`, mesmo em produções com 70, 100 ou mais imagens, e mostra quantidade concluída, posição atual e tempo decorrido.
+Falhas estruturadas de Refinador/Gerador são interpretadas por ID usando `FALHOU`, `ERROR_CODE` e `MOTIVO`.
 
-Se a comunicação oscilar, o app continua tentando se reconectar sem encerrar o trabalho. Ao abrir a etapa novamente, ele reconhece uma busca compatível que já esteja rodando e volta a acompanhá-la em vez de criar outro job. O botão `×` apenas oculta a janela; a interrupção exige o botão explícito **Cancelar busca**.
+O app envia a falha ao Corvo Fallback, que somente decide:
 
-## Cleaner integrado ao Corvo Bridge
+- `RETRY` + `DESTINO` + `PROMPT_RETRY`; ou
+- `NAO_RECUPERAVEL`.
 
-O pacote inclui o **Corvo Bridge V0.5.1**, que registra as conversas técnicas concluídas e pode limpá-las diariamente no horário escolhido.
+O app — e não o GPT — controla o limite. Esta versão aceita a tentativa original + até duas novas tentativas. Cada ID preserva histórico resumido de execução, erro, Fallback, destino e retry.
 
-- o Cleaner começa desativado;
-- o **Modo Teste** começa ativado e apenas informa o que seria removido;
-- somente conversas executadas em abas pertencentes ao Bridge são elegíveis;
-- abas compatíveis abertas manualmente podem ser reutilizadas para envio, mas nunca entram na limpeza;
-- apenas jobs confirmados como `DONE` podem ser candidatos;
-- a execução manual sem Modo Teste exige confirmação adicional;
-- exclusões reais são permanentes.
+Se o Fallback declarar `NAO_RECUPERAVEL`, devolver retry inválido ou o limite for atingido, o ID fica em tratamento manual e a Consolidação não libera o ZIP final.
 
-Configure em **Corvo Bridge → Configurações → Limpeza automática**. Faça primeiro alguns jobs mantendo o Modo Teste marcado.
+## Fase 5 — Consolidação / ZIP final
 
-## Configurar a Vercel
+A nova área **Consolidação / ZIP Final** mostra o estado de cada ID e só habilita a geração quando:
 
-1. Configure `CorvoAPI_KEY_IDEIA` com um segredo forte.
-2. No Marketplace da Vercel, conecte um banco **Upstash Redis** ao projeto.
-3. Confirme que existe um par completo: `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` ou `KV_REST_API_URL` + `KV_REST_API_TOKEN`.
-4. Faça um novo deploy.
+- todos os IDs possuem arquivo final real;
+- não existem IDs duplicados;
+- não existem nomes de arquivo duplicados;
+- os nomes finais possuem formato de imagem aceito.
 
-Sem Redis, o app usa memória apenas no desenvolvimento local. Em produção a rota informa claramente que o armazenamento precisa ser conectado.
+O ZIP final contém:
 
-O armazenamento usa o SDK oficial `@upstash/redis`. O cliente é criado de forma lazy com `new Redis({ url, token })`, priorizando o par `UPSTASH_*` e usando `KV_*` como fallback. Cada job é salvo como objeto em `corvoquiz:idea-job:<jobId>` e expira após uma hora.
+- `imagens/` — imagens finais ordenadas por ID;
+- `thumbnail/` — thumbnail real quando disponível, ou um arquivo de status;
+- `youtube/METADADOS.txt` — dados editoriais quando disponíveis, ou status;
+- `analise/CORVO_IMAGE_ANALYSIS.txt`;
+- `CORVO_FINAL_MANIFEST.json` — associação ID → arquivo, origem, tentativa final e histórico;
+- `LEIA-ME.txt`.
 
-`GET /api/corvo/diagnostico` retorna apenas `{ "configured": true }` ou `{ "configured": false }`. A rota nunca devolve nomes resolvidos, URL ou token.
+## Jobs longos
 
-## Configurar o GPT personalizado
+Os jobs continuam persistidos por 7 dias no Upstash Redis. O app não usa timeout curto para Gerador, Refinador ou Fallback e a Consolidação permanece aguardando até os arquivos finais existirem.
 
-1. Na mesma Action já existente para `roteiro-mu.vercel.app`, substitua o schema pelo conteúdo de `CORVOQUIZ_OPENAPI_GPT_ACTION.yaml`. Não crie outra Action para o mesmo domínio.
-2. Configure autenticação por API key personalizada no cabeçalho `x-api-key`, com o mesmo valor de `CorvoAPI_KEY_IDEIA`.
-3. Cole no GPT o bloco de `INSTRUCOES_GPT_CORVO_BRIDGE.md`.
-4. Teste `entregarResultadoCorvo` com um `jobId` criado pelo app e um texto preenchido no campo `resultado`.
+Ainda existe uma melhoria pendente: após uma **recarga completa da página durante um job em andamento**, o registro do job continua no servidor, porém esta versão ainda não religa automaticamente todos os pollers do pipeline. Essa reidratação fica registrada no plano de implementação.
 
-## Instalar as extensões
+## Thumbnail real
 
-### Corvo Bridge
+Uma Thumb com `STATUS=GERADA` não é considerada concluída apenas pelo manifesto. O Bridge captura a imagem grande mais recente da conversa, envia os bytes para `/api/corvo/arquivo`, e o job só muda para `DONE` quando manifesto + arquivo estão presentes.
 
-1. Extraia `corvo-bridge-extension`.
-2. Abra `chrome://extensions`, ative **Modo do desenvolvedor** e clique em **Carregar sem compactação**.
-3. Selecione a pasta da extensão.
-4. Abra as opções e cadastre as URLs dos GPTs de ideias, roteiro e prompts de imagem.
-5. Salve. Cada trabalho será encaminhado automaticamente ao especialista correto.
+A validação final dessa captura precisa ser feita no deploy de produção com **Vercel Blob conectado** e a URL real do GPT Thumb configurada no Bridge.
 
-### Corvo Collector
+## Armazenamento e Vercel
 
-1. Carregue `corvo-collector-extension` da mesma forma.
-2. No popup, autorize a origem exata do site.
+Configure no projeto:
 
-## Publicar
+1. `CorvoAPI_KEY_IDEIA`;
+2. Upstash Redis (`UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`, ou o par `KV_*`);
+3. Vercel Blob (`BLOB_READ_WRITE_TOKEN`, ou credenciais disponibilizadas pela integração do Blob);
+4. novo deploy após conectar os recursos.
 
-Envie o conteúdo deste projeto a um repositório do GitHub e importe-o no Vercel. O app usa Next.js e não exige configuração extra de framework.
+`GET /api/corvo/diagnostico` informa se Redis e Blob estão configurados sem expor segredos.
+
+## Endpoints principais
+
+- `POST /api/corvo/job` — cria jobs dos especialistas;
+- `POST /api/corvo/resultado` — recebe manifesto/texto da Action;
+- `GET /api/corvo/resultado?jobId=...` — acompanha estado, manifesto e arquivos;
+- `POST /api/corvo/arquivo` — recebe thumbnails, imagens do Collector e imagens finais capturadas;
+- `POST /api/corvo/pacote` — monta o ZIP de entrada persistente do Analista.
+
+## Especialistas do Bridge
+
+O Corvo Bridge possui URLs independentes para:
+
+- Ideias / Scout;
+- Roteiro;
+- Prompts;
+- Analista;
+- Refinador;
+- Gerador;
+- Fallback;
+- Thumb;
+- YouTube / Metadados.
+
+As URLs ficam nas opções da extensão e não são hardcoded na lógica do app.
+
+## Instalação
+
+### Corvo Bridge V0.6.2
+
+1. Extraia `corvo-bridge-extension` ou use `public/downloads/CORVO_BRIDGE_V062_EXTENSION.zip`.
+2. Abra `chrome://extensions`, ative **Modo do desenvolvedor** e carregue a pasta sem compactação.
+3. Cadastre as URLs dos GPTs nas opções.
+4. Mantenha a origem do app configurada para o deploy do CorvoQuiz.
+
+### Corvo Collector V0.7.5
+
+1. Extraia `corvo-collector-extension` ou use `public/downloads/CORVO_COLLECTOR_V075_EXTENSION.zip`.
+2. Carregue a extensão sem compactação.
+3. No popup, autorize a origem exata do site.
 
 ## Downloads dentro do app
 
-O menu de configurações oferece downloads diretos de três pacotes publicados em `public/downloads`:
+O menu de configurações aponta para:
 
-- Corvo Collector V0.7.4 — somente a extensão de imagens;
-- Corvo Bridge V0.5.1 — três GPTs, fechamento automático da aba e Cleaner protegido;
-- Kit completo CorvoQuiz — app, extensões, schema e instruções.
+- Corvo Collector V0.7.5;
+- Corvo Bridge V0.6.2;
+- Kit completo CorvoQuiz V0.6.9.
+
+## Fora do escopo atual
+
+A publicação automática no YouTube ainda não faz parte deste pacote. A evolução futura poderá receber o vídeo final do Forma e executar upload de vídeo, thumbnail, metadados, visibilidade e agendamento via YouTube API.

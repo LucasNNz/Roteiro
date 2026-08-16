@@ -1,7 +1,30 @@
 import { Redis } from "@upstash/redis";
+import { parseCorvoManifest, type CorvoManifestSummary } from "./corvo-manifests";
 
 export type CorvoIdea = { tema: string; titulo: string };
-export type CorvoSpecialist = "IDEIAS" | "ROTEIRO" | "PROMPTS";
+export type CorvoSpecialist =
+  | "IDEIAS"
+  | "ROTEIRO"
+  | "PROMPTS"
+  | "ANALISTA"
+  | "REFINADOR"
+  | "GERADOR"
+  | "FALLBACK"
+  | "THUMB"
+  | "YOUTUBE";
+
+export type CorvoJobStatus =
+  | "PENDING"
+  | "SENT"
+  | "PROCESSING"
+  | "WAITING_ACTION"
+  | "RESULT_RECEIVED"
+  | "WAITING_FILE"
+  | "WAITING_FALLBACK"
+  | "RETRY_PENDING"
+  | "DONE"
+  | "ERROR"
+  | "EXPIRED";
 
 export type CorvoJobRequest = {
   specialist: CorvoSpecialist;
@@ -13,20 +36,42 @@ export type CorvoJobRequest = {
   projetoId?: string;
   titulo?: string;
   roteiro?: string;
+  entrada?: string;
+  ids?: string[];
+  tentativaAtual?: number;
+  origem?: "GERADOR" | "REFINADOR";
 };
 
 export type CorvoJob = {
   id: string;
-  status: "PENDING" | "DONE" | "ERROR";
+  status: CorvoJobStatus;
   request: CorvoJobRequest;
   resultado?: string;
   ideias?: CorvoIdea[];
   error?: string;
+  resultadoRecebido?: boolean;
+  arquivoRecebido?: boolean;
+  expectedFile?: string;
+  expectedFiles?: string[];
+  manifest?: CorvoManifestSummary;
+  tentativaAtual?: number;
+  uploadToken?: string;
+  files?: CorvoJobFile[];
   createdAt: string;
   updatedAt: string;
 };
 
-const TTL_SECONDS = 60 * 60;
+export type CorvoJobFile = {
+  type: "THUMBNAIL" | "GENERATED_IMAGE" | "REFINED_IMAGE" | "COLLECTOR_IMAGE" | "COLLECTOR_ZIP" | "FINAL_ZIP" | "OTHER";
+  name: string;
+  url: string;
+  downloadUrl?: string;
+  contentType: string;
+  size: number;
+  createdAt: string;
+};
+
+const TTL_SECONDS = 60 * 60 * 24 * 7;
 const KEY_PREFIX = "corvoquiz:idea-job:";
 let redisClient: Redis | null = null;
 
@@ -87,11 +132,38 @@ export async function createCorvoJob(request: CorvoJobRequest) {
     id: `corvo_${crypto.randomUUID()}`,
     status: "PENDING",
     request,
+    tentativaAtual: request.tentativaAtual || 1,
+    uploadToken: crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", ""),
+    files: [],
     createdAt: now,
     updatedAt: now,
   };
   await writeJob(job);
   return job;
+}
+
+export async function attachCorvoFile(jobId: string, uploadToken: string, file: CorvoJobFile) {
+  const current = await getCorvoJob(jobId);
+  if (!current || !current.uploadToken || current.uploadToken !== uploadToken) return null;
+  const isInputFile = file.type === "COLLECTOR_IMAGE" || file.type === "COLLECTOR_ZIP";
+  const expected = current.expectedFiles?.length ? current.expectedFiles : current.expectedFile ? [current.expectedFile] : [];
+  if (!isInputFile && expected.length && !expected.some((name) => name.toLocaleLowerCase("pt-BR") === file.name.toLocaleLowerCase("pt-BR"))) {
+    throw new Error("FILE_NAME_MISMATCH");
+  }
+  const files = [...(current.files || []).filter((item) => !(item.type === file.type && item.name === file.name)), file];
+  const receivedExpected = expected.filter((name) => files.some((item) => item.name.toLocaleLowerCase("pt-BR") === name.toLocaleLowerCase("pt-BR")));
+  const hasAllExpected = expected.length > 0 && receivedExpected.length === expected.length;
+  const updated: CorvoJob = {
+    ...current,
+    files,
+    arquivoRecebido: isInputFile ? current.arquivoRecebido : hasAllExpected || current.arquivoRecebido,
+    status: isInputFile
+      ? current.status
+      : current.resultadoRecebido && hasAllExpected ? "DONE" : current.resultadoRecebido ? "WAITING_FILE" : current.status,
+    updatedAt: new Date().toISOString(),
+  };
+  await writeJob(updated);
+  return updated;
 }
 
 export async function getCorvoJob(jobId: string) {
@@ -110,11 +182,21 @@ export async function getCorvoJob(jobId: string) {
 export async function completeCorvoJob(jobId: string, resultado: string) {
   const current = await getCorvoJob(jobId);
   if (!current) return null;
+  const manifest = parseCorvoManifest(resultado);
+  const waitingFile = manifest.expectsBridgeFile;
+  const expectedFiles = manifest.expectedFiles || (manifest.expectedFile ? [manifest.expectedFile] : []);
+  const currentFiles = current.files || [];
+  const alreadyReceived = expectedFiles.length > 0 && expectedFiles.every((name) => currentFiles.some((file) => file.name.toLocaleLowerCase("pt-BR") === name.toLocaleLowerCase("pt-BR")));
   const updated: CorvoJob = {
     ...current,
-    status: "DONE",
+    status: manifest.failed ? "ERROR" : waitingFile && !alreadyReceived ? "WAITING_FILE" : "DONE",
     resultado,
-    error: undefined,
+    resultadoRecebido: true,
+    arquivoRecebido: waitingFile ? alreadyReceived : current.arquivoRecebido,
+    expectedFile: manifest.expectedFile,
+    expectedFiles,
+    manifest,
+    error: manifest.failed ? manifest.reason || manifest.errorCode || "O especialista informou uma falha." : undefined,
     updatedAt: new Date().toISOString(),
   };
   await writeJob(updated);

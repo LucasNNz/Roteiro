@@ -51,25 +51,67 @@ async function fetchBest(urls=[]) {
   return fallback;
 }
 
-async function convertToJpeg(blob, quality=0.92) {
+async function renderJpeg(blob, quality=0.92, maxDimension=0) {
   const bitmap=await createImageBitmap(blob);
+  let width=bitmap.width;
+  let height=bitmap.height;
+  if(maxDimension>0 && Math.max(width,height)>maxDimension){
+    const scale=maxDimension/Math.max(width,height);
+    width=Math.max(1,Math.round(width*scale));
+    height=Math.max(1,Math.round(height*scale));
+  }
   const canvas=document.createElement('canvas');
-  canvas.width=bitmap.width; canvas.height=bitmap.height;
+  canvas.width=width; canvas.height=height;
   const ctx=canvas.getContext('2d',{alpha:false});
   ctx.fillStyle='#ffffff';
   ctx.fillRect(0,0,canvas.width,canvas.height);
-  ctx.drawImage(bitmap,0,0);
+  ctx.drawImage(bitmap,0,0,width,height);
   bitmap.close?.();
   return await new Promise((resolve,reject)=>{
     canvas.toBlob(b=>b?resolve(b):reject(new Error('Falha convertendo JPEG.')),'image/jpeg',quality);
   });
 }
 
+async function convertToJpeg(blob, quality=0.92) {
+  return await renderJpeg(blob,quality,0);
+}
+
+async function collectorUploadBlob(jpeg) {
+  // Cópia exclusiva para análise: o ZIP do Forma mantém o JPEG original.
+  // Mantemos cada entrada pequena para que lotes grandes continuem anexáveis ao GPT Analista.
+  const maxBytes=450*1024;
+  for(const [quality,maxDimension] of [[0.78,1280],[0.72,1280],[0.66,1152],[0.60,1024],[0.54,960]]){
+    const resized=await renderJpeg(jpeg,quality,maxDimension);
+    if(resized.size<=maxBytes) return resized;
+  }
+  const smaller=await renderJpeg(jpeg,0.48,896);
+  if(smaller.size>maxBytes) throw new Error('COLLECTOR_ANALYSIS_IMAGE_TOO_LARGE');
+  return smaller;
+}
+
+async function uploadCollectorImage(pipelineUpload, name, jpeg) {
+  if(!pipelineUpload?.jobId || !pipelineUpload?.uploadToken || !pipelineUpload?.appOrigin) return {ok:false,skipped:true};
+  const uploadBlob=await collectorUploadBlob(jpeg);
+  const form=new FormData();
+  form.append('jobId',String(pipelineUpload.jobId));
+  form.append('tipo','COLLECTOR_IMAGE');
+  form.append('nomeArquivo',String(name));
+  form.append('arquivo',uploadBlob,String(name));
+  const response=await fetch(`${String(pipelineUpload.appOrigin).replace(/\/$/,'')}/api/corvo/arquivo`,{
+    method:'POST',
+    headers:{'x-corvo-upload-token':String(pipelineUpload.uploadToken)},
+    body:form
+  });
+  const result=await response.json().catch(()=>({}));
+  if(!response.ok || !result?.ok) throw new Error(result?.message || `COLLECTOR_UPLOAD_${response.status}`);
+  return result;
+}
+
 async function buildPackage(payload) {
-  const { packageId, packageCode, fileName, selections, jpegQuality=0.92, includeManifest=true } = payload;
+  const { packageId, packageCode, fileName, selections, jpegQuality=0.92, includeManifest=true, pipelineUpload=null } = payload;
   const zip=new JSZip();
   const manifestLines=['CORVO FORMA PACKAGE','',`PACKAGE_CODE=${packageCode || ''}`,`PACKAGE_ID=${packageId}`,`TOTAL=${selections.length}`,''];
-  let success=0,failed=0;
+  let success=0,failed=0,pipelineUploaded=0,pipelineUploadFailed=0;
   const packageFiles=[];
 
   for(let i=0;i<selections.length;i++){
@@ -80,8 +122,19 @@ async function buildPackage(payload) {
       if(!best) throw new Error('Nenhuma URL utilizável.');
       const jpeg=await convertToJpeg(best.blob,jpegQuality);
       zip.file(item.outputName,jpeg);
+      let pipelineStatus='SKIPPED';
+      if(pipelineUpload){
+        try{
+          await uploadCollectorImage(pipelineUpload,item.outputName,jpeg);
+          pipelineUploaded++;
+          pipelineStatus='UPLOADED';
+        }catch(error){
+          pipelineUploadFailed++;
+          pipelineStatus=`FAILED:${String(error?.message||error)}`;
+        }
+      }
       manifestLines.push(`${item.outputName}|${item.id}|${item.query}|${best.width}x${best.height}|${best.url}`);
-      packageFiles.push({fileName:item.outputName,itemId:item.id,query:item.query,width:best.width,height:best.height,sourceUrl:best.url,status:'OK'});
+      packageFiles.push({fileName:item.outputName,itemId:item.id,query:item.query,width:best.width,height:best.height,sourceUrl:best.url,status:'OK',pipelineStatus});
       success++;
     }catch(error){
       failed++;
@@ -92,16 +145,18 @@ async function buildPackage(payload) {
 
   if(includeManifest){
     zip.file('CORVO_FORMA_MANIFEST.txt',manifestLines.join('\n'));
-    zip.file('CORVO_PACKAGE.json',JSON.stringify({protocol:'corvo-package/1',packageCode:packageCode||'',packageId,fileName,generatedAt:new Date().toISOString(),total:selections.length,success,failed,files:packageFiles},null,2));
+    zip.file('CORVO_PACKAGE.json',JSON.stringify({protocol:'corvo-package/1',packageCode:packageCode||'',packageId,fileName,generatedAt:new Date().toISOString(),total:selections.length,success,failed,pipelineUploaded,pipelineUploadFailed,files:packageFiles},null,2));
   }
   zip.file('README.txt',[
-    'CORVO COLLECTOR V0.7.2 — PACOTE FORMA',
+    'CORVO COLLECTOR V0.7.5 — PACOTE FORMA / PIPELINE',
     '',
     `Código do pacote: ${packageCode || ''}`,
     `ID técnico: ${packageId}`,
     `Imagens previstas: ${selections.length}`,
     `Sucesso: ${success}`,
     `Falhas: ${failed}`,
+    `Enviadas ao app para análise: ${pipelineUploaded}`,
+    `Falhas de envio ao app: ${pipelineUploadFailed}`,
     '',
     'As imagens foram convertidas para JPEG e nomeadas na ordem enviada pela interface.'
   ].join('\n'));
@@ -109,7 +164,7 @@ async function buildPackage(payload) {
   const zipBlob=await zip.generateAsync({type:'blob',compression:'DEFLATE',compressionOptions:{level:6}});
   if(lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
   lastBlobUrl=URL.createObjectURL(zipBlob);
-  await chrome.runtime.sendMessage({type:'PACKAGE_DONE',packageId,packageCode,total:selections.length,success,failed,blobUrl:lastBlobUrl,fileName});
+  await chrome.runtime.sendMessage({type:'PACKAGE_DONE',packageId,packageCode,total:selections.length,success,failed,pipelineUploaded,pipelineUploadFailed,blobUrl:lastBlobUrl,fileName});
 }
 
 chrome.runtime.onMessage.addListener((message,sender,sendResponse)=>{

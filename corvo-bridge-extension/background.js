@@ -1,0 +1,568 @@
+const DEFAULTS = {
+  gptUrl: "",
+  gptIdeasUrl: "",
+  gptScriptUrl: "",
+  gptPromptsUrl: "",
+  gptAnalystUrl: "",
+  gptRefinerUrl: "",
+  gptGeneratorUrl: "",
+  gptFallbackUrl: "",
+  gptThumbUrl: "",
+  gptYoutubeUrl: "",
+  appOrigin: "https://roteiro-mu.vercel.app",
+  openMode: "reuse",
+  cleanerEnabled: false,
+  cleanerHour: "22:00",
+  cleanerDryRun: true
+};
+
+const pendingByTab = new Map();
+const sendingTabs = new Set();
+const deliveryByJob = new Map();
+const JOB_TABS_KEY = "corvoBridgeJobTabs";
+const OWNED_TABS_KEY = "corvoBridgeOwnedTabs";
+const CLEANER_RECORDS_KEY = "corvoBridgeCleanerRecords";
+const CLEANER_LOG_KEY = "corvoBridgeCleanerLog";
+const CLEANER_ALARM = "corvoBridgeDailyCleaner";
+let cleanerRunning = false;
+let lastStatus = {
+  state: "IDLE",
+  jobId: null,
+  message: "Aguardando trabalho do CorvoQuiz.",
+  updatedAt: Date.now()
+};
+
+
+function localDay(ts = Date.now()) {
+  const d = new Date(ts);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function conversationKey(url) {
+  try {
+    const u = new URL(url);
+    const match = u.pathname.match(/^\/c\/([^/?#]+)/);
+    return match ? match[1] : "";
+  } catch { return ""; }
+}
+
+async function getCleanerRecords() {
+  const data = await chrome.storage.local.get(CLEANER_RECORDS_KEY);
+  return Array.isArray(data[CLEANER_RECORDS_KEY]) ? data[CLEANER_RECORDS_KEY] : [];
+}
+
+async function saveCleanerRecords(records) {
+  await chrome.storage.local.set({ [CLEANER_RECORDS_KEY]: records.slice(-1000) });
+}
+
+async function upsertCleanerRecord(jobId, patch = {}) {
+  if (!jobId) return;
+  const records = await getCleanerRecords();
+  const index = records.findIndex((r) => r.jobId === jobId);
+  const now = Date.now();
+  const current = index >= 0 ? records[index] : { jobId, createdAt: now, day: localDay(now), done: false, deleted: false };
+  const next = { ...current, ...patch, jobId, updatedAt: now };
+  if (next.conversationUrl) next.conversationId = conversationKey(next.conversationUrl);
+  if (index >= 0) records[index] = next; else records.push(next);
+  await saveCleanerRecords(records);
+}
+
+async function patchEligibleCleanerRecord(jobId, patch = {}) {
+  if (!jobId) return false;
+  const records = await getCleanerRecords();
+  const index = records.findIndex((record) => record.jobId === jobId && record.eligible === true);
+  if (index < 0) return false;
+  const next = { ...records[index], ...patch, jobId, updatedAt: Date.now() };
+  if (next.conversationUrl) next.conversationId = conversationKey(next.conversationUrl);
+  records[index] = next;
+  await saveCleanerRecords(records);
+  return true;
+}
+
+async function appendCleanerLog(entry) {
+  const data = await chrome.storage.local.get(CLEANER_LOG_KEY);
+  const log = Array.isArray(data[CLEANER_LOG_KEY]) ? data[CLEANER_LOG_KEY] : [];
+  log.push({ at: Date.now(), ...entry });
+  await chrome.storage.local.set({ [CLEANER_LOG_KEY]: log.slice(-300) });
+}
+
+async function scheduleCleaner() {
+  const config = await getConfig();
+  await chrome.alarms.clear(CLEANER_ALARM);
+  if (!config.cleanerEnabled) return;
+  const [h, m] = String(config.cleanerHour || "22:00").split(":").map(Number);
+  const now = new Date();
+  const next = new Date();
+  next.setHours(Number.isFinite(h) ? h : 22, Number.isFinite(m) ? m : 0, 0, 0);
+  if (next.getTime() <= now.getTime()) next.setDate(next.getDate() + 1);
+  chrome.alarms.create(CLEANER_ALARM, { when: next.getTime(), periodInMinutes: 1440 });
+}
+
+async function waitTabReady(tabId, timeout = 30000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (tab.status === "complete") {
+        await chrome.tabs.sendMessage(tabId, { type: "CORVO_BRIDGE_PING" }).catch(() => null);
+        return;
+      }
+    } catch {}
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error("CLEANER_TAB_TIMEOUT");
+}
+
+async function deleteConversationRecord(record, dryRun) {
+  if (!record.conversationUrl || !record.conversationId) throw new Error("CONVERSATION_URL_MISSING");
+  if (dryRun) return { ok: true, dryRun: true };
+  const tab = await chrome.tabs.create({ url: record.conversationUrl, active: false });
+  if (!tab.id) throw new Error("CLEANER_TAB_CREATE_FAILED");
+  try {
+    await waitTabReady(tab.id);
+    const result = await chrome.tabs.sendMessage(tab.id, {
+      type: "CORVO_DELETE_CURRENT_CHAT",
+      payload: { conversationUrl: record.conversationUrl, conversationId: record.conversationId }
+    });
+    if (!result?.ok) throw new Error(result?.error || "DELETE_FAILED");
+    return result;
+  } finally {
+    await chrome.tabs.remove(tab.id).catch(() => {});
+  }
+}
+
+async function runCleaner({ manual = false } = {}) {
+  if (cleanerRunning) return { ok: false, error: "CLEANER_BUSY" };
+  cleanerRunning = true;
+  try {
+    const config = await getConfig();
+    if (!manual && !config.cleanerEnabled) return { ok: true, skipped: true };
+    const records = await getCleanerRecords();
+    const candidates = records.filter((r) => r.eligible === true && r.done && !r.deleted && r.conversationUrl && r.conversationId);
+    let deleted = 0, failed = 0;
+    for (const record of candidates) {
+      try {
+        const result = await deleteConversationRecord(record, config.cleanerDryRun !== false);
+        await upsertCleanerRecord(record.jobId, { deleted: config.cleanerDryRun === false, lastCleanerAt: Date.now(), lastCleanerResult: result.dryRun ? "DRY_RUN" : "DELETED" });
+        await appendCleanerLog({ jobId: record.jobId, conversationId: record.conversationId, result: result.dryRun ? "DRY_RUN" : "DELETED" });
+        if (!result.dryRun) deleted++;
+      } catch (error) {
+        failed++;
+        await upsertCleanerRecord(record.jobId, { lastCleanerAt: Date.now(), lastCleanerResult: "ERROR", cleanerError: error.message });
+        await appendCleanerLog({ jobId: record.jobId, conversationId: record.conversationId, result: "ERROR", error: error.message });
+      }
+      await new Promise((r) => setTimeout(r, 1200));
+    }
+    await chrome.storage.local.set({ corvoBridgeCleanerStatus: { at: Date.now(), candidates: candidates.length, deleted, failed, dryRun: config.cleanerDryRun !== false } });
+    return { ok: failed === 0, candidates: candidates.length, deleted, failed, dryRun: config.cleanerDryRun !== false };
+  } finally {
+    cleanerRunning = false;
+  }
+}
+
+async function getConfig() {
+  const stored = await chrome.storage.sync.get(DEFAULTS);
+  const config = { ...DEFAULTS, ...stored };
+  if (!config.gptIdeasUrl && config.gptUrl) config.gptIdeasUrl = config.gptUrl;
+  return config;
+}
+
+async function rememberJobTab(jobId, tabId, openedByBridge, meta = {}) {
+  const data = await chrome.storage.local.get([JOB_TABS_KEY, OWNED_TABS_KEY]);
+  const jobs = data[JOB_TABS_KEY] || {};
+  const owned = new Set(Array.isArray(data[OWNED_TABS_KEY]) ? data[OWNED_TABS_KEY] : []);
+  if (openedByBridge) owned.add(tabId);
+  const bridgeOwned = openedByBridge || owned.has(tabId);
+  jobs[jobId] = {
+    tabId,
+    closeOnComplete: bridgeOwned,
+    bridgeOwned,
+    uploadToken: String(meta.uploadToken || ""),
+    projectId: String(meta.projectId || ""),
+    savedAt: Date.now()
+  };
+  await chrome.storage.local.set({ [JOB_TABS_KEY]: jobs, [OWNED_TABS_KEY]: [...owned] });
+  return { bridgeOwned };
+}
+
+async function fetchAttachmentForChat(payload = {}) {
+  const rawUrl = String(payload.url || "").trim();
+  if (!/^https:\/\//i.test(rawUrl)) throw new Error("ATTACHMENT_URL_INVALID");
+  const response = await fetch(rawUrl, { cache: "no-store", credentials: "omit" });
+  if (!response.ok) throw new Error(`ATTACHMENT_FETCH_${response.status}`);
+  const buffer = await response.arrayBuffer();
+  if (!buffer.byteLength) throw new Error("ATTACHMENT_EMPTY");
+  if (buffer.byteLength > 40 * 1024 * 1024) throw new Error("ATTACHMENT_TOO_LARGE");
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunk = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(offset, Math.min(bytes.length, offset + chunk)));
+  }
+  const contentType = response.headers.get("content-type") || String(payload.contentType || "application/octet-stream");
+  return {
+    ok: true,
+    name: String(payload.name || "arquivo").trim() || "arquivo",
+    contentType,
+    size: buffer.byteLength,
+    dataUrl: `data:${contentType};base64,${btoa(binary)}`
+  };
+}
+
+async function captureAndUploadFile(jobId, payload = {}) {
+  const data = await chrome.storage.local.get(JOB_TABS_KEY);
+  const record = (data[JOB_TABS_KEY] || {})[jobId];
+  if (!record?.tabId) throw new Error("JOB_TAB_NOT_FOUND");
+  if (!record.uploadToken) throw new Error("UPLOAD_TOKEN_MISSING");
+  const name = String(payload.name || "").trim();
+  if (!name) throw new Error("FILE_NAME_REQUIRED");
+  await setStatus("CAPTURING_FILE", jobId, `Capturando ${name} na conversa...`);
+  const captured = await chrome.tabs.sendMessage(record.tabId, {
+    type: "CORVO_CAPTURE_GENERATED_IMAGE",
+    payload: { jobId, name }
+  });
+  if (!captured?.ok || !captured.dataUrl) throw new Error(captured?.error || "GENERATED_IMAGE_NOT_FOUND");
+  const response = await fetch(captured.dataUrl);
+  const blob = await response.blob();
+  const config = await getConfig();
+  const form = new FormData();
+  form.append("jobId", jobId);
+  form.append("tipo", String(payload.type || "THUMBNAIL"));
+  form.append("nomeArquivo", name);
+  form.append("arquivo", blob, name);
+  await setStatus("UPLOADING_FILE", jobId, `Enviando ${name} ao CorvoQuiz...`);
+  const upload = await fetch(`${config.appOrigin}/api/corvo/arquivo`, {
+    method: "POST",
+    headers: { "x-corvo-upload-token": record.uploadToken },
+    body: form
+  });
+  const result = await upload.json().catch(() => ({}));
+  if (!upload.ok || !result?.ok) throw new Error(result?.message || `FILE_UPLOAD_${upload.status}`);
+  await setStatus("FILE_DELIVERED", jobId, `${name} associado ao trabalho.`, { file: result.file });
+  return { ok: true, jobId, file: result.file, status: result.status };
+}
+
+async function completeJobTab(jobId) {
+  const data = await chrome.storage.local.get([JOB_TABS_KEY, OWNED_TABS_KEY]);
+  const jobs = data[JOB_TABS_KEY] || {};
+  const record = jobs[jobId];
+  if (!record) return { ok: true, closed: false };
+  delete jobs[jobId];
+  const owned = new Set(Array.isArray(data[OWNED_TABS_KEY]) ? data[OWNED_TABS_KEY] : []);
+  if (record.closeOnComplete) owned.delete(record.tabId);
+  await chrome.storage.local.set({ [JOB_TABS_KEY]: jobs, [OWNED_TABS_KEY]: [...owned] });
+  if (!record.closeOnComplete) return { ok: true, closed: false };
+  await chrome.tabs.remove(record.tabId).catch(() => {});
+  return { ok: true, closed: true };
+}
+
+async function forgetTab(tabId) {
+  const data = await chrome.storage.local.get([JOB_TABS_KEY, OWNED_TABS_KEY]);
+  const jobs = data[JOB_TABS_KEY] || {};
+  for (const [jobId, record] of Object.entries(jobs)) {
+    if (record?.tabId === tabId) delete jobs[jobId];
+  }
+  const owned = new Set(Array.isArray(data[OWNED_TABS_KEY]) ? data[OWNED_TABS_KEY] : []);
+  owned.delete(tabId);
+  await chrome.storage.local.set({ [JOB_TABS_KEY]: jobs, [OWNED_TABS_KEY]: [...owned] });
+}
+
+function specialistConfig(job) {
+  const specialist = String(job?.specialist || "IDEIAS").toUpperCase();
+  if (["ROTEIRO", "SCRIPT"].includes(specialist)) return { key: "ROTEIRO", field: "gptScriptUrl", label: "GPT de roteiro" };
+  if (["PROMPTS", "PROMPT", "PROMPT_IMAGENS", "IMAGENS"].includes(specialist)) return { key: "PROMPTS", field: "gptPromptsUrl", label: "GPT de prompts de imagem" };
+  if (["ANALISTA", "ANALYSIS"].includes(specialist)) return { key: "ANALISTA", field: "gptAnalystUrl", label: "Corvo Analista de Imagens" };
+  if (["REFINADOR", "REFINER", "REFINEMENT"].includes(specialist)) return { key: "REFINADOR", field: "gptRefinerUrl", label: "Corvo Refinador" };
+  if (["GERADOR", "GENERATOR", "GENERATION"].includes(specialist)) return { key: "GERADOR", field: "gptGeneratorUrl", label: "Corvo Gerador de Imagens" };
+  if (["FALLBACK", "RECUPERACAO"].includes(specialist)) return { key: "FALLBACK", field: "gptFallbackUrl", label: "Corvo Fallback" };
+  if (["THUMB", "THUMBNAIL"].includes(specialist)) return { key: "THUMB", field: "gptThumbUrl", label: "Corvo Thumb" };
+  if (["YOUTUBE", "METADADOS", "METADATA"].includes(specialist)) return { key: "YOUTUBE", field: "gptYoutubeUrl", label: "Corvo YouTube" };
+  return { key: "IDEIAS", field: "gptIdeasUrl", label: "GPT de ideias" };
+}
+
+async function setStatus(state, jobId, message, extra = {}) {
+  lastStatus = { state, jobId: jobId || null, message, updatedAt: Date.now(), ...extra };
+  await chrome.storage.local.set({ corvoBridgeStatus: lastStatus });
+  const config = await getConfig();
+  try {
+    const appTabs = await chrome.tabs.query({ url: `${config.appOrigin}/*` });
+    for (const tab of appTabs) {
+      if (tab.id) chrome.tabs.sendMessage(tab.id, { type: "CORVO_BRIDGE_STATUS", payload: lastStatus }).catch(() => {});
+    }
+  } catch {}
+}
+
+function normalizeUrl(url) {
+  try { const u = new URL(url); u.hash = ""; return u.toString(); }
+  catch { return ""; }
+}
+
+function waitForDelivery(payload, tabId, reused, sourceTabId) {
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      deliveryByJob.delete(payload.jobId);
+      pendingByTab.delete(tabId);
+      sendingTabs.delete(tabId);
+      reject(new Error("GPT_SEND_FAILED"));
+    }, 100000);
+    deliveryByJob.set(payload.jobId, { resolve, reject, timeoutId, tabId, reused, sourceTabId });
+  });
+}
+
+function resolveDelivery(jobId, result) {
+  const delivery = deliveryByJob.get(jobId);
+  if (!delivery) return;
+  clearTimeout(delivery.timeoutId);
+  deliveryByJob.delete(jobId);
+  delivery.resolve(result);
+}
+
+function rejectDelivery(jobId, error) {
+  const delivery = deliveryByJob.get(jobId);
+  if (!delivery) return;
+  clearTimeout(delivery.timeoutId);
+  deliveryByJob.delete(jobId);
+  delivery.reject(error instanceof Error ? error : new Error(String(error || "GPT_SEND_FAILED")));
+}
+
+async function pingTabUntilReady(tabId) {
+  for (let attempt = 0; attempt < 80; attempt++) {
+    try {
+      await chrome.tabs.sendMessage(tabId, { type: "CORVO_BRIDGE_PING" });
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+  const pending = pendingByTab.get(tabId);
+  if (pending) rejectDelivery(pending.jobId, new Error("GPT_SEND_FAILED"));
+}
+
+async function findReusableGptTab(gptUrl) {
+  const target = normalizeUrl(gptUrl);
+  const tabs = await chrome.tabs.query({ url: "https://chatgpt.com/*" });
+  for (const tab of tabs) {
+    const current = normalizeUrl(tab.url || "");
+    if (target && current.startsWith(target)) return tab;
+  }
+  return null;
+}
+
+async function dispatchToGpt(job, sourceTabId) {
+  const config = await getConfig();
+  const target = specialistConfig(job);
+  const gptUrl = config[target.field];
+  if (!gptUrl || !gptUrl.startsWith("https://chatgpt.com/")) {
+    await setStatus("CONFIG_REQUIRED", job.jobId, `Configure o ${target.label} nas opções da extensão.`, { specialist: target.key });
+    throw new Error(`GPT_URL_NOT_CONFIGURED_${target.key}`);
+  }
+
+  const payload = {
+    jobId: String(job.jobId || `corvo_${Date.now()}`),
+    prompt: String(job.prompt || "").trim(),
+    specialist: target.key,
+    meta: job.meta || {},
+    createdAt: Date.now()
+  };
+  if (!payload.prompt) throw new Error("EMPTY_PROMPT");
+  await setStatus("OPENING_GPT", payload.jobId, `Abrindo ${target.label} no ChatGPT...`, { specialist: target.key });
+  let tab = null;
+  if (config.openMode === "reuse") tab = await findReusableGptTab(gptUrl);
+
+  if (tab?.id) {
+    const ownership = await rememberJobTab(payload.jobId, tab.id, false, payload.meta);
+    if (ownership.bridgeOwned) {
+      await upsertCleanerRecord(payload.jobId, { eligible: true, tabId: tab.id, specialist: target.key, createdAt: payload.createdAt, day: localDay(payload.createdAt), done: false, deleted: false });
+    }
+    pendingByTab.set(tab.id, payload);
+    const delivery = waitForDelivery(payload, tab.id, true, sourceTabId);
+    pingTabUntilReady(tab.id).catch(() => {});
+    return await delivery;
+  }
+
+  tab = await chrome.tabs.create({ url: gptUrl, active: false });
+  if (!tab.id) throw new Error("TAB_CREATE_FAILED");
+  await rememberJobTab(payload.jobId, tab.id, true, payload.meta);
+  await upsertCleanerRecord(payload.jobId, { eligible: true, tabId: tab.id, specialist: target.key, createdAt: payload.createdAt, day: localDay(payload.createdAt), done: false, deleted: false });
+  pendingByTab.set(tab.id, payload);
+  const delivery = waitForDelivery(payload, tab.id, false, sourceTabId);
+  pingTabUntilReady(tab.id).catch(() => {});
+  return await delivery;
+}
+
+async function sendWithFocusedRetry(tabId, pending) {
+  const firstResult = await chrome.tabs.sendMessage(tabId, { type: "CORVO_SEND_PROMPT", payload: pending });
+  if (firstResult?.ok) return firstResult;
+
+  const firstError = firstResult?.error || "GPT_SEND_FAILED";
+  if (firstError !== "GPT_SEND_FAILED") throw new Error(firstError);
+
+  const delivery = deliveryByJob.get(pending.jobId);
+  const sourceTabId = delivery?.sourceTabId;
+  const gptTab = await chrome.tabs.get(tabId);
+  let activatedForRetry = false;
+
+  await setStatus("SENDING_TO_GPT", pending.jobId, "Sincronizando o editor do GPT para concluir o envio...");
+  try {
+    if (!gptTab.active) {
+      await chrome.tabs.update(tabId, { active: true });
+      activatedForRetry = true;
+      await new Promise((resolve) => setTimeout(resolve, 900));
+    }
+
+    const retryResult = await chrome.tabs.sendMessage(tabId, {
+      type: "CORVO_SEND_PROMPT",
+      payload: { ...pending, bridgeAttempt: "focused-retry" }
+    });
+    if (!retryResult?.ok) throw new Error(retryResult?.error || "GPT_SEND_FAILED");
+    return retryResult;
+  } finally {
+    if (activatedForRetry && sourceTabId && sourceTabId !== tabId) {
+      await chrome.tabs.update(sourceTabId, { active: true }).catch(() => {});
+    }
+  }
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || typeof message !== "object") return;
+
+  if (message.type === "CORVO_DISPATCH_FROM_APP") {
+    const job = message.payload || {};
+    dispatchToGpt(job, sender.tab?.id)
+      .then(sendResponse)
+      .catch(async (error) => {
+        await setStatus("ERROR", job.jobId, `Falha ao despachar: ${error.message}`);
+        sendResponse({ ok: false, error: error.message });
+      });
+    return true;
+  }
+
+  if (message.type === "CORVO_GPT_READY") {
+    const tabId = sender.tab?.id;
+    if (!tabId) return;
+    const pending = pendingByTab.get(tabId);
+    if (!pending) { sendResponse({ ok: true, pending: false }); return; }
+    if (sendingTabs.has(tabId)) { sendResponse({ ok: true, pending: true, sending: true }); return; }
+
+    sendingTabs.add(tabId);
+    setStatus("SENDING_TO_GPT", pending.jobId, "GPT carregado. Enviando solicitação...").catch(() => {});
+    sendWithFocusedRetry(tabId, pending)
+      .then((result) => {
+        sendResponse({ ok: true, pending: true, confirmed: result.confirmed === true });
+      })
+      .catch((error) => {
+        sendingTabs.delete(tabId);
+        rejectDelivery(pending.jobId, new Error(error.message || "GPT_SEND_FAILED"));
+        setStatus("ERROR", pending.jobId, error.message || "GPT_SEND_FAILED").catch(() => {});
+        sendResponse({ ok: false, error: error.message || "GPT_SEND_FAILED" });
+      });
+    return true;
+  }
+
+  if (message.type === "CORVO_GPT_SENT") {
+    const tabId = sender.tab?.id;
+    const jobId = message.payload?.jobId || null;
+    const conversationUrl = message.payload?.conversationUrl || sender.tab?.url || "";
+    if (jobId) patchEligibleCleanerRecord(jobId, { conversationUrl, sentAt: Date.now() }).catch(() => {});
+    if (tabId) { pendingByTab.delete(tabId); sendingTabs.delete(tabId); }
+    setStatus("WAITING_ACTION", jobId, "Solicitação enviada. Aguardando o GPT concluir e devolver pela Action.").catch(() => {});
+    resolveDelivery(jobId, { ok: true, tabId, jobId, confirmed: true });
+    sendResponse({ ok: true });
+    return;
+  }
+
+  if (message.type === "CORVO_GPT_ERROR") {
+    const tabId = sender.tab?.id;
+    const jobId = message.payload?.jobId || null;
+    const errorMessage = message.payload?.message || "GPT_SEND_FAILED";
+    if (tabId) { pendingByTab.delete(tabId); sendingTabs.delete(tabId); }
+    rejectDelivery(jobId, new Error(errorMessage));
+    setStatus("ERROR", jobId, errorMessage).catch(() => {});
+    sendResponse({ ok: true });
+    return;
+  }
+
+  if (message.type === "CORVO_GET_STATUS") {
+    chrome.storage.local.get("corvoBridgeStatus").then((data) => sendResponse(data.corvoBridgeStatus || lastStatus));
+    return true;
+  }
+
+  if (message.type === "CORVO_CLEANER_GET_STATE") {
+    Promise.all([getCleanerRecords(), chrome.storage.local.get([CLEANER_LOG_KEY, "corvoBridgeCleanerStatus"]), getConfig()])
+      .then(([records, data, config]) => sendResponse({ ok: true, records, log: data[CLEANER_LOG_KEY] || [], status: data.corvoBridgeCleanerStatus || null, config }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message.type === "CORVO_FETCH_ATTACHMENT") {
+    fetchAttachmentForChat(message.payload || {})
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, error: error.message || "ATTACHMENT_FETCH_FAILED" }));
+    return true;
+  }
+
+  if (message.type === "CORVO_CAPTURE_AND_UPLOAD") {
+    const jobId = String(message.payload?.jobId || "").trim();
+    if (!jobId) { sendResponse({ ok: false, error: "JOB_ID_REQUIRED" }); return; }
+    captureAndUploadFile(jobId, message.payload)
+      .then(sendResponse)
+      .catch(async (error) => {
+        await setStatus("ERROR", jobId, `Falha ao capturar arquivo: ${error.message}`);
+        sendResponse({ ok: false, error: error.message || "FILE_CAPTURE_FAILED" });
+      });
+    return true;
+  }
+
+  if (message.type === "CORVO_CLEANER_RUN_NOW") {
+    runCleaner({ manual: true }).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message.type === "CORVO_CLEANER_RESCHEDULE") {
+    scheduleCleaner().then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message.type === "CORVO_JOB_COMPLETE") {
+    const jobId = String(message.payload?.jobId || "").trim();
+    if (!jobId) { sendResponse({ ok: false, error: "JOB_ID_REQUIRED" }); return; }
+    patchEligibleCleanerRecord(jobId, { done: true, completedAt: Date.now() })
+      .then(() => completeJobTab(jobId))
+      .then(async (result) => {
+        await setStatus("COMPLETED", jobId, result.closed ? "Resultado recebido. Aba do GPT fechada." : "Resultado recebido.");
+        sendResponse(result);
+      })
+      .catch((error) => sendResponse({ ok: false, error: error.message || "TAB_CLOSE_FAILED" }));
+    return true;
+  }
+});
+
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === CLEANER_ALARM) runCleaner().catch(() => {});
+});
+
+chrome.runtime.onInstalled.addListener(() => { scheduleCleaner().catch(() => {}); });
+chrome.runtime.onStartup.addListener(() => {
+  scheduleCleaner().catch(() => {});
+  getConfig().then(async (config) => {
+    if (!config.cleanerEnabled) return;
+    const [h, m] = String(config.cleanerHour || "22:00").split(":").map(Number);
+    const now = new Date();
+    const todayRun = new Date();
+    todayRun.setHours(h || 0, m || 0, 0, 0);
+    const status = (await chrome.storage.local.get("corvoBridgeCleanerStatus")).corvoBridgeCleanerStatus;
+    if (now >= todayRun && (!status?.at || localDay(status.at) !== localDay(now.getTime()))) runCleaner().catch(() => {});
+  }).catch(() => {});
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  const pending = pendingByTab.get(tabId);
+  if (pending) rejectDelivery(pending.jobId, new Error("GPT_SEND_FAILED"));
+  pendingByTab.delete(tabId);
+  sendingTabs.delete(tabId);
+  forgetTab(tabId).catch(() => {});
+});

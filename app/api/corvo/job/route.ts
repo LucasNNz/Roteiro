@@ -73,9 +73,64 @@ function buildPromptImagesRequest(request: CorvoJobRequest) {
   ].join("\n");
 }
 
+function buildPipelinePrompt(request: CorvoJobRequest) {
+  const contracts: Partial<Record<CorvoSpecialist, string[]>> = {
+    ANALISTA: [
+      "Analise o pacote de imagens do Collector e preserve todos os IDs.",
+      "Classifique cada ID como PASSOU, PASSOU_COM_RESSALVAS ou NAO_PASSOU.",
+      "Em PASSOU use REFINAMENTO=LEVE; em PASSOU_COM_RESSALVAS use REFINAMENTO=FORTE; em NAO_PASSOU forneça PROMPT_GERACAO.",
+      "Entregue o manifesto [CORVO_IMAGE_ANALYSIS] VERSION=1.0.",
+    ],
+    REFINADOR: [
+      "Refine somente as imagens aprovadas recebidas, preservando identidade, personagem, jogo, objeto e conceito.",
+      "REFINAMENTO=LEVE pede melhoria técnica; REFINAMENTO=FORTE também pode reenquadrar para 16:9.",
+      "Cada imagem refinada é FINAL. Em falha, informe ERROR_CODE e MOTIVO.",
+      "Entregue o manifesto [CORVO_IMAGE_REFINEMENT] VERSION=1.1.",
+    ],
+    GERADOR: [
+      "Gere somente os IDs reprovados recebidos, respeitando PROMPT_GERACAO, identidade esperada e nome final.",
+      "Cada imagem gerada com sucesso é FINAL e não deve voltar ao Refinador.",
+      "Processe este job como um único worker. Em falha, informe ERROR_CODE e MOTIVO.",
+      "Entregue o manifesto [CORVO_IMAGE_GENERATION] VERSION=1.1.",
+    ],
+    FALLBACK: [
+      "Analise as falhas recebidas sem gerar ou editar imagens e sem tentar burlar políticas.",
+      "Para cada ID decida RETRY ou NAO_RECUPERAVEL. Em RETRY, informe DESTINO e PROMPT_RETRY completo.",
+      "Entregue o manifesto [CORVO_IMAGE_FALLBACK] VERSION=1.0.",
+    ],
+    THUMB: [
+      "Crie efetivamente UMA thumbnail horizontal 16:9, de leitura rápida, forte em tamanho pequeno e coerente com o CorvoQuiz.",
+      "A imagem deve permanecer disponível na conversa para captura pelo Corvo Bridge.",
+      "Em sucesso, informe STATUS=GERADA, ARQUIVO, TIPO_ARQUIVO=THUMBNAIL, CONCEITO e TEXTO_THUMB.",
+      "Entregue o manifesto [CORVO_THUMBNAIL] VERSION=1.1.",
+    ],
+    YOUTUBE: [
+      "Prepare o pacote editorial do vídeo sem publicar nada.",
+      "Entregue o manifesto [CORVO_YOUTUBE_METADATA] VERSION=1.0.",
+      "Inclua TITULO_FINAL, TITULO_ALTERNATIVO_1, TITULO_ALTERNATIVO_2, DESCRICAO, TAGS, HASHTAGS, CATEGORIA, PUBLICO, DATA_RECOMENDADA, HORARIO_RECOMENDADO e ESTRATEGIA_DE_PUBLICACAO.",
+      "Não invente métricas do canal. Quando um dado não estiver disponível, deixe o valor vazio ou explique em ESTRATEGIA_DE_PUBLICACAO.",
+    ],
+  };
+  return [
+    ...(contracts[request.specialist] || []),
+    "",
+    `PROJETO: ${request.projetoId || "NÃO INFORMADO"}`,
+    `TÍTULO: ${request.titulo || "NÃO INFORMADO"}`,
+    `TEMA: ${request.tema || "NÃO INFORMADO"}`,
+    `FORMATO: ${request.formato}`,
+    `TENTATIVA_ATUAL: ${request.tentativaAtual || 1}`,
+    request.origem ? `ORIGEM: ${request.origem}` : "",
+    request.ids?.length ? `IDS: ${request.ids.join(",")}` : "",
+    "",
+    "ENTRADA COMPLETA:",
+    request.entrada || request.roteiro || "",
+  ].filter((line) => line !== "").join("\n");
+}
+
 function buildPrompt(request: CorvoJobRequest) {
   if (request.specialist === "ROTEIRO") return buildScriptPrompt(request);
   if (request.specialist === "PROMPTS") return buildPromptImagesRequest(request);
+  if (!["IDEIAS", "ROTEIRO", "PROMPTS"].includes(request.specialist)) return buildPipelinePrompt(request);
   return buildIdeasPrompt(request);
 }
 
@@ -85,7 +140,8 @@ export async function POST(request: NextRequest) {
   try { body = await request.json(); } catch { return NextResponse.json({ ok: false, message: "Solicitação inválida." }, { status: 400 }); }
 
   const requestedSpecialist = text(body.specialist, 30).toUpperCase();
-  const specialist: CorvoSpecialist = requestedSpecialist === "ROTEIRO" || requestedSpecialist === "PROMPTS" ? requestedSpecialist : "IDEIAS";
+  const specialists: CorvoSpecialist[] = ["IDEIAS", "ROTEIRO", "PROMPTS", "ANALISTA", "REFINADOR", "GERADOR", "FALLBACK", "THUMB", "YOUTUBE"];
+  const specialist: CorvoSpecialist = specialists.includes(requestedSpecialist as CorvoSpecialist) ? requestedSpecialist as CorvoSpecialist : "IDEIAS";
   const formato = body.format === "VÍDEO COMPLETO" ? "VÍDEO COMPLETO" : "REELS";
   const quantidade = body.quantity === "LOTE" ? "LOTE" : "1 VÍDEO";
   const modo = body.mode === "PESQUISAR ANTES" ? "PESQUISAR ANTES" : "RÁPIDO";
@@ -93,6 +149,10 @@ export async function POST(request: NextRequest) {
   const titulo = text(body.titulo, 300);
   const projetoId = text(body.projetoId, 180);
   const roteiro = text(body.roteiro, 120_000);
+  const entrada = text(body.entrada, 300_000);
+  const ids = Array.isArray(body.ids) ? body.ids.map((value) => text(value, 32)).filter(Boolean).slice(0, 500) : [];
+  const tentativaAtual = Math.max(1, Math.min(3, Number(body.tentativaAtual) || 1));
+  const origem = body.origem === "REFINADOR" ? "REFINADOR" : body.origem === "GERADOR" ? "GERADOR" : undefined;
   const recentes = Array.isArray(body.recentes) ? body.recentes.flatMap((item) => {
     if (!item || typeof item !== "object") return [];
     const record = item as Record<string, unknown>;
@@ -107,11 +167,14 @@ export async function POST(request: NextRequest) {
   if (specialist === "PROMPTS" && !roteiro) {
     return NextResponse.json({ ok: false, message: "O roteiro completo é obrigatório para gerar os prompts." }, { status: 400 });
   }
+  if (!["IDEIAS", "ROTEIRO", "PROMPTS"].includes(specialist) && !entrada && !roteiro) {
+    return NextResponse.json({ ok: false, message: `A entrada completa é obrigatória para o especialista ${specialist}.` }, { status: 400 });
+  }
 
-  const jobRequest: CorvoJobRequest = { specialist, tema, formato, quantidade, modo, recentes, projetoId, titulo, roteiro };
+  const jobRequest: CorvoJobRequest = { specialist, tema, formato, quantidade, modo, recentes, projetoId, titulo, roteiro, entrada, ids, tentativaAtual, origem };
   try {
     const job = await createCorvoJob(jobRequest);
-    return NextResponse.json({ ok: true, jobId: job.id, status: job.status, specialist, prompt: buildPrompt(jobRequest) }, { status: 202 });
+    return NextResponse.json({ ok: true, jobId: job.id, status: job.status, specialist, prompt: buildPrompt(jobRequest), uploadToken: job.uploadToken }, { status: 202 });
   } catch (error) {
     const message = error instanceof CorvoStorageError ? `${error.message} Conecte um Upstash Redis ao projeto na Vercel.` : "Não foi possível criar o trabalho.";
     return NextResponse.json({ ok: false, message }, { status: 503 });

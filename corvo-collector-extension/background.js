@@ -139,7 +139,8 @@ async function startPackageBuild(payload = {}) {
       fileName,
       selections,
       jpegQuality: Math.max(0.65, Math.min(1, Number(payload.jpegQuality || 0.92))),
-      includeManifest: payload.includeManifest !== false
+      includeManifest: payload.includeManifest !== false,
+      pipelineUpload: payload.pipelineUpload && typeof payload.pipelineUpload === 'object' ? payload.pipelineUpload : null
     }
   }).catch(async error => {
     await savePackageStatus({ ...status, status:'ERROR', error:String(error?.message || error), finishedAt:nowIso() });
@@ -784,6 +785,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         total:Number(message.total||current.total||0),
         success:Number(message.success||0),
         failed:Number(message.failed||0),
+        pipelineUploaded:Number(message.pipelineUploaded||0),
+        pipelineUploadFailed:Number(message.pipelineUploadFailed||0),
         currentName:'',
         blobUrl:String(message.blobUrl||''),
         packageCode:String(message.packageCode||current.packageCode||''),

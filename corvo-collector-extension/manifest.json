@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Corvo Collector Bridge",
-  "version": "0.7.4",
-  "description": "Corvo Collector com procurar mais na triagem manual, por grupo.",
+  "version": "0.7.5",
+  "description": "Corvo Collector com entrega das imagens selecionadas ao pipeline do CorvoQuiz para análise automática.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApcbnwzTJMr8WI3a4ObVvHZpVZZ6+bw60/Y4Ku/jjv4b1gGyrTrRfprIRoWTznklXfj7GxCstEL9e16ls24x3VgiYiokp5gNRDCnQ42PnURRsOBlB7/OvUfTfca/BZxerMwX/+Y2qXkASfm3MITjm4zFcy/yCA/h3uDT6nEyisppg2lxLIPkzBB8gZuClnaZnt88Qzo1NW2/JYJrz5j7R2LRgy9HQe1fJFDdDAi0yVCODlbFmZhmvUZxjl6ymDU/9fG+JMJ3uOkYcf2NXqrnsQbdyx4wmHR0bulMx9/haWIw/JiIi0f3rJhJHrGkJj3etTPp/xJu8BQ2CLsTeeymuVQIDAQAB",
   "permissions": [
     "activeTab",

@@ -14,8 +14,15 @@ export async function GET(request: NextRequest) {
       jobId: job.id,
       status: job.status,
       specialist: job.request.specialist || "IDEIAS",
-      resultado: job.status === "DONE" ? resultado : undefined,
+      resultado: ["DONE", "WAITING_FILE", "ERROR"].includes(job.status) ? resultado : undefined,
       ideias: job.status === "DONE" && (!job.request.specialist || job.request.specialist === "IDEIAS") ? ideasFromResult(resultado) : undefined,
+      resultadoRecebido: job.resultadoRecebido === true,
+      arquivoRecebido: job.arquivoRecebido === true,
+      expectedFile: job.expectedFile,
+      expectedFiles: job.expectedFiles || [],
+      manifest: job.manifest,
+      files: job.files || [],
+      error: job.error,
     });
   } catch (error) { return storageFailure(error); }
 }
@@ -31,6 +38,15 @@ export async function POST(request: NextRequest) {
   try {
     const job = await completeCorvoJob(jobId, resultado);
     if (!job) return NextResponse.json({ ok: false, message: "Trabalho não encontrado ou expirado." }, { status: 404 });
-    return NextResponse.json({ ok: true, jobId, status: job.status, message: "Resultado entregue ao CorvoQuiz." });
+    return NextResponse.json({
+      ok: true,
+      jobId,
+      status: job.status,
+      message: job.status === "WAITING_FILE"
+        ? "Manifesto recebido. Aguardando o arquivo real capturado pelo Corvo Bridge."
+        : job.status === "ERROR"
+          ? "Falha estruturada recebida pelo CorvoQuiz."
+          : "Resultado entregue ao CorvoQuiz.",
+    });
   } catch (error) { return storageFailure(error); }
 }

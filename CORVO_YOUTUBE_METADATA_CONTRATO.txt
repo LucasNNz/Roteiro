@@ -1,0 +1,23 @@
+[CORVO_YOUTUBE_METADATA]
+VERSION=1.0
+
+TITULO_FINAL=<titulo principal>
+TITULO_ALTERNATIVO_1=<alternativa>
+TITULO_ALTERNATIVO_2=<alternativa>
+DESCRICAO=<descricao completa>
+TAGS=<tags separadas por virgula>
+HASHTAGS=<hashtags>
+CATEGORIA=<categoria sugerida>
+PUBLICO=<publico>
+DATA_RECOMENDADA=<data ou vazio>
+HORARIO_RECOMENDADO=<horario ou vazio>
+ESTRATEGIA_DE_PUBLICACAO=<observacoes editoriais>
+
+[END]
+
+REGRAS:
+- este GPT prepara dados; nao publica o video;
+- nao inventar metricas/historico do canal;
+- pode ser iniciado em paralelo ao Collector;
+- usa a mesma Action entregarResultadoCorvo com jobId + resultado;
+- publicacao automatica via YouTube API fica fora do escopo atual.

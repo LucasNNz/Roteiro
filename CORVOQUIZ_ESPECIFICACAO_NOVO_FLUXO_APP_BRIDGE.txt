@@ -1,0 +1,1622 @@
+CORVOQUIZ — ESPECIFICAÇÃO DE ATUALIZAÇÃO DO APP / BRIDGE
+VERSION=1.0
+DATA=2026-08-15
+
+OBJETIVO DESTE DOCUMENTO
+========================
+
+Este TXT reúne as decisões tomadas para a próxima evolução do fluxo do CorvoQuiz.
+
+Ele deve servir como documento de contexto para o modificador/programador do app, explicando:
+
+- o fluxo atualizado de imagens;
+- a divisão entre Analista, Refinador, Gerador e Fallback;
+- a criação paralela da thumbnail;
+- o futuro GPT de dados/metadados para YouTube;
+- o comportamento esperado do CORVO BRIDGE;
+- a captura da thumbnail gerada na conversa;
+- a necessidade de novos endereços de GPTs personalizados no app;
+- a consolidação final de imagens via merge de ZIP;
+- os contratos/manifestos usados pelos GPTs;
+- os schemas atuais das Actions;
+- as regras de espera e conclusão de jobs longos;
+- a arquitetura preparada para futura publicação automática no YouTube.
+
+==================================================
+1. VISÃO GERAL DO NOVO FLUXO
+==================================================
+
+O pipeline principal passa a ser:
+
+IDEIA / TÍTULO
+↓
+ROTEIRO
+↓
+CORVO COLLECTOR
+↓
+CORVO ANALISTA DE IMAGENS
+↓
+RAMIFICAÇÃO PRINCIPAL DE IMAGENS
+
+PASSOU / PASSOU_COM_RESSALVAS
+→ CORVO REFINADOR
+→ IMAGENS FINAIS DO RAMO COLLECTOR
+
+NAO_PASSOU
+→ CORVO GERADOR DE IMAGENS
+→ IMAGENS FINAIS GERADAS
+
+SE GERADOR OU REFINADOR FALHAR
+→ ERROR_CODE + MOTIVO
+→ APP
+→ CORVO FALLBACK
+→ RETRY OU NAO_RECUPERAVEL
+
+DEPOIS:
+IMAGENS FINAIS DO REFINADOR
++
+IMAGENS FINAIS DO GERADOR
+→ APP
+→ MERGE DOS ARQUIVOS
+→ ZIP FINAL
+→ FORMA
+
+IMPORTANTE:
+A imagem produzida pelo GERADOR já é FINAL.
+Ela NÃO precisa passar novamente pelo REFINADOR.
+
+A imagem produzida pelo REFINADOR também é FINAL.
+
+O app apenas une os dois ramos ao final.
+
+==================================================
+2. RAMIFICAÇÕES PARALELAS AO INICIAR O COLLECTOR
+==================================================
+
+Quando o app iniciar o CORVO COLLECTOR, ele já pode abrir ramificações paralelas para outras tarefas que não precisam esperar o fluxo completo das imagens.
+
+Fluxo sugerido:
+
+INICIAR PRODUÇÃO
+↓
+CORVO COLLECTOR
+│
+├── RAMO A → PIPELINE DE IMAGENS
+│             COLLECTOR
+│             → ANALISTA
+│             → REFINADOR / GERADOR
+│             → FALLBACK quando necessário
+│             → MERGE ZIP
+│
+├── RAMO B → CORVO THUMB
+│             recebe título/ideia/contexto
+│             → cria thumbnail
+│             → Bridge captura imagem
+│             → app salva thumb
+│
+└── RAMO C → FUTURO CORVO YOUTUBE / METADADOS
+              recebe título/ideia/roteiro/contexto
+              → cria dados de publicação
+
+Esses ramos não precisam bloquear uns aos outros.
+
+A ideia é aproveitar o tempo em que Collector, Analista, Refinador e Gerador estão trabalhando para adiantar:
+
+- thumbnail;
+- título refinado;
+- descrição;
+- tags;
+- hashtags;
+- categoria;
+- horário sugerido;
+- data sugerida;
+- demais dados de publicação.
+
+==================================================
+3. NOVOS GPTs PERSONALIZADOS / ENDEREÇOS NO BRIDGE
+==================================================
+
+O app/Bridge precisa ter, no mínimo, mais 4 campos/endpoints/configurações para endereços de GPTs personalizados:
+
+1. CORVO GERADOR DE IMAGENS
+2. CORVO THUMB
+3. CORVO FALLBACK
+4. CORVO YOUTUBE / DADOS PARA YOUTUBE
+
+Esses quatro devem ser configuráveis no app.
+
+Sugestão de configuração:
+
+GPT_URL_GERADOR=
+GPT_URL_THUMB=
+GPT_URL_FALLBACK=
+GPT_URL_YOUTUBE=
+
+Não hardcodar URLs de GPT diretamente no código sempre que possível.
+
+Ideal:
+Configurações > GPTs / Especialistas
+
+Campos:
+
+- Collector
+- Analista
+- Refinador
+- Gerador
+- Fallback
+- Thumb
+- YouTube / Metadados
+
+Assim cada especialista pode ser trocado sem modificar o código do app.
+
+==================================================
+4. CORVO ANALISTA DE IMAGENS
+==================================================
+
+O Analista continua sendo o roteador principal das imagens coletadas.
+
+Classificações:
+
+PASSOU
+→ REFINAMENTO=LEVE
+
+PASSOU_COM_RESSALVAS
+→ REFINAMENTO=FORTE
+
+NAO_PASSOU
+→ PROMPT_GERACAO
+→ GERADOR DE IMAGENS
+
+Manifesto base:
+
+[CORVO_IMAGE_ANALYSIS]
+VERSION=1.0
+
+[TOTAL]
+IDS=<total>
+PASSOU=<quantidade>
+PASSOU_COM_RESSALVAS=<quantidade>
+NAO_PASSOU=<quantidade>
+
+[ID:<id>]
+STATUS=PASSOU
+ARQUIVO=<arquivo real>
+MOTIVO=<motivo>
+REFINAMENTO=LEVE
+
+[ID:<id>]
+STATUS=PASSOU_COM_RESSALVAS
+ARQUIVO=<arquivo real>
+MOTIVO=<motivo>
+REFINAMENTO=FORTE
+
+[ID:<id>]
+STATUS=NAO_PASSOU
+ARQUIVO=
+MOTIVO=<motivo>
+PROMPT_GERACAO=<prompt completo>
+
+[END]
+
+O app deve interpretar este manifesto e dividir automaticamente os IDs.
+
+==================================================
+5. CORVO REFINADOR DE IMAGENS
+==================================================
+
+O Refinador recebe apenas imagens aprovadas pelo Analista.
+
+PASSOU
+→ refinamento leve
+
+PASSOU_COM_RESSALVAS
+→ refinamento forte
+
+Ele deve:
+
+- preservar identidade;
+- melhorar nitidez;
+- melhorar resolução;
+- melhorar contraste;
+- melhorar iluminação;
+- melhorar cor;
+- melhorar enquadramento;
+- adaptar para 16:9 quando necessário;
+- reduzir ruído e artefatos;
+- ampliar o elemento principal quando necessário;
+- entregar imagem FINAL.
+
+O Refinador não deve:
+
+- trocar personagem;
+- trocar jogo;
+- trocar objeto;
+- mudar conceito visual;
+- criar livremente outra cena.
+
+Status possíveis:
+
+REFINADA
+FALHOU
+
+Manifesto atual:
+
+[CORVO_IMAGE_REFINEMENT]
+VERSION=1.1
+
+[TOTAL]
+IDS=<total>
+REFINADAS=<quantidade>
+FALHOU=<quantidade>
+
+[ID:<id>]
+STATUS=REFINADA
+ARQUIVO=<arquivo final>
+
+[ID:<id>]
+STATUS=FALHOU
+ARQUIVO=
+ERROR_CODE=<codigo>
+MOTIVO=<motivo curto>
+
+[END]
+
+ERROR_CODE possíveis:
+
+POLICY_BLOCK
+EDIT_BLOCK
+TOOL_ERROR
+INVALID_OUTPUT
+IDENTITY_LOST
+FILE_ERROR
+UNKNOWN_ERROR
+
+Se FALHOU:
+o app pode encaminhar esse ID para o CORVO FALLBACK.
+
+==================================================
+6. SCHEMA ATUAL DO REFINADOR
+==================================================
+
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "CorvoQuiz Refinador de Imagens Bridge API",
+    "version": "1.1.0",
+    "description": "Entrega ao CorvoQuiz as imagens finais refinadas e as falhas estruturadas do ramo Collector."
+  },
+  "servers": [
+    {
+      "url": "https://roteiro-mu.vercel.app"
+    }
+  ],
+  "paths": {
+    "/api/corvo/resultado": {
+      "post": {
+        "operationId": "entregarResultadoCorvo",
+        "x-openai-isConsequential": false,
+        "summary": "Entrega o resultado final do refinamento de imagens",
+        "description": "Use ao concluir um CORVO_BRIDGE_JOB do REFINADOR. Envie exatamente o JOB_ID recebido e o manifesto final. Preserve todos os IDs. Em falhas, informe ERROR_CODE e MOTIVO.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResultadoRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Resultado do refinamento recebido e associado ao trabalho.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultadoResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "jobId ou resultado ausente ou inválido."
+          },
+          "401": {
+            "description": "Chave da API inválida."
+          },
+          "404": {
+            "description": "JOB_ID não encontrado ou expirado."
+          },
+          "503": {
+            "description": "Serviço temporariamente indisponível."
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-api-key"
+      }
+    },
+    "schemas": {
+      "ResultadoRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "JOB_ID recebido no CORVO_BRIDGE_JOB. Deve ser enviado exatamente como recebido."
+          },
+          "resultado": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Manifesto final CORVO_IMAGE_REFINEMENT. Para cada ID, informe STATUS e ARQUIVO. Se STATUS=FALHOU, inclua obrigatoriamente ERROR_CODE e MOTIVO."
+          }
+        },
+        "required": [
+          "jobId",
+          "resultado"
+        ]
+      },
+      "ResultadoResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "jobId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "Estado final do trabalho de refinamento."
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "jobId",
+          "status",
+          "message"
+        ]
+      }
+    }
+  }
+}
+
+==================================================
+7. CORVO GERADOR DE IMAGENS
+==================================================
+
+O Gerador recebe apenas IDs classificados como NAO_PASSOU.
+
+Entrada principal:
+
+ID
+PROMPT_GERACAO
+CONTEXTO
+IDENTIDADE_ESPERADA
+PADRAO_ARQUIVO_FINAL
+
+Ele gera efetivamente uma imagem para cada ID.
+
+IMPORTANTE:
+Imagem GERADA com sucesso já é FINAL.
+Não enviar para Refinador depois.
+
+Status:
+
+GERADA
+FALHOU
+
+Manifesto:
+
+[CORVO_IMAGE_GENERATION]
+VERSION=1.1
+
+[TOTAL]
+IDS=<total>
+GERADAS=<quantidade>
+FALHOU=<quantidade>
+
+[ID:<id>]
+STATUS=GERADA
+ARQUIVO=<arquivo final>
+
+[ID:<id>]
+STATUS=FALHOU
+ARQUIVO=
+ERROR_CODE=<codigo>
+MOTIVO=<motivo curto>
+
+[END]
+
+ERROR_CODE:
+
+POLICY_BLOCK
+GENERATION_BLOCK
+TOOL_ERROR
+INVALID_OUTPUT
+IDENTITY_LOST
+FILE_ERROR
+UNKNOWN_ERROR
+
+Se FALHOU:
+app → CORVO FALLBACK.
+
+O Gerador deve funcionar como um único worker por vez.
+
+MAX_PARALLEL_GENERATOR=1
+
+==================================================
+8. SCHEMA ATUAL DO GERADOR
+==================================================
+
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "CorvoQuiz Gerador de Imagens Bridge API",
+    "version": "1.1.0",
+    "description": "Entrega ao CorvoQuiz imagens finais geradas e falhas estruturadas do ramo de geração."
+  },
+  "servers": [
+    {
+      "url": "https://roteiro-mu.vercel.app"
+    }
+  ],
+  "paths": {
+    "/api/corvo/resultado": {
+      "post": {
+        "operationId": "entregarResultadoCorvo",
+        "x-openai-isConsequential": false,
+        "summary": "Entrega o resultado final da geração de imagens",
+        "description": "Use ao concluir um CORVO_BRIDGE_JOB do GERADOR. Envie exatamente o JOB_ID recebido e o manifesto final. Preserve todos os IDs. Em falhas, informe ERROR_CODE e MOTIVO.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResultadoRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Resultado da geração recebido e associado ao trabalho.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultadoResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "jobId ou resultado ausente ou inválido."
+          },
+          "401": {
+            "description": "Chave da API inválida."
+          },
+          "404": {
+            "description": "JOB_ID não encontrado ou expirado."
+          },
+          "503": {
+            "description": "Serviço temporariamente indisponível."
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-api-key"
+      }
+    },
+    "schemas": {
+      "ResultadoRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "JOB_ID recebido no CORVO_BRIDGE_JOB. Deve ser enviado exatamente como recebido."
+          },
+          "resultado": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Manifesto final CORVO_IMAGE_GENERATION. Para cada ID, informe STATUS e ARQUIVO. Se STATUS=FALHOU, inclua obrigatoriamente ERROR_CODE e MOTIVO."
+          }
+        },
+        "required": [
+          "jobId",
+          "resultado"
+        ]
+      },
+      "ResultadoResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "jobId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "Estado final do trabalho de geração."
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "jobId",
+          "status",
+          "message"
+        ]
+      }
+    }
+  }
+}
+
+==================================================
+9. CORVO FALLBACK
+==================================================
+
+O Fallback é o especialista de recuperação de falhas.
+
+Ele NÃO:
+
+- gera imagem;
+- edita imagem;
+- procura arquivo;
+- executa retry diretamente.
+
+Ele recebe:
+
+ID
+ORIGEM
+ERROR_CODE
+MOTIVO
+PROMPT_ORIGINAL / INSTRUCAO_ORIGINAL
+CONTEXTO
+IDENTIDADE
+TENTATIVA_ATUAL
+
+ORIGEM:
+
+GERADOR
+ou
+REFINADOR
+
+Ele decide:
+
+RETRY
+ou
+NAO_RECUPERAVEL
+
+Se RETRY:
+
+STATUS=RETRY
+DESTINO=<GERADOR ou REFINADOR>
+PROMPT_RETRY=<nova solicitação>
+
+Se NAO_RECUPERAVEL:
+
+STATUS=NAO_RECUPERAVEL
+DESTINO=
+MOTIVO=<motivo>
+
+Fluxo:
+
+GERADOR / REFINADOR
+→ FALHOU + ERROR_CODE
+→ APP
+→ FALLBACK
+
+Se RETRY:
+→ app cria nova tentativa para DESTINO
+
+Se NAO_RECUPERAVEL:
+→ app marca para tratamento manual/técnico
+
+IMPORTANTE:
+Fallback não existe para burlar política.
+POLICY_BLOCK deve ser tratado criando apenas alternativa legítima quando houver.
+Se não houver alternativa válida:
+NAO_RECUPERAVEL.
+
+FILE_ERROR normalmente deve virar NAO_RECUPERAVEL quando o problema é arquivo ausente/inacessível.
+
+==================================================
+10. MANIFESTO DO FALLBACK
+==================================================
+
+[CORVO_IMAGE_FALLBACK]
+VERSION=1.0
+
+[TOTAL]
+IDS=<total>
+RETRY=<quantidade>
+NAO_RECUPERAVEL=<quantidade>
+
+[ID:<id>]
+STATUS=RETRY
+ORIGEM=<GERADOR ou REFINADOR>
+ERROR_CODE=<erro recebido>
+DESTINO=<GERADOR ou REFINADOR>
+PROMPT_RETRY=<nova solicitacao completa>
+
+[ID:<id>]
+STATUS=NAO_RECUPERAVEL
+ORIGEM=<GERADOR ou REFINADOR>
+ERROR_CODE=<erro recebido>
+DESTINO=
+MOTIVO=<motivo curto>
+
+[END]
+
+==================================================
+11. SCHEMA ATUAL DO FALLBACK
+==================================================
+
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "CorvoQuiz Fallback de Imagens Bridge API",
+    "version": "1.0.0",
+    "description": "Entrega ao CorvoQuiz o resultado da análise e recuperação de falhas do pipeline de imagens."
+  },
+  "servers": [
+    {
+      "url": "https://roteiro-mu.vercel.app"
+    }
+  ],
+  "paths": {
+    "/api/corvo/resultado": {
+      "post": {
+        "operationId": "entregarResultadoCorvo",
+        "x-openai-isConsequential": false,
+        "summary": "Entrega o resultado do fallback de imagens",
+        "description": "Use ao concluir um CORVO_BRIDGE_JOB do FALLBACK. Envie exatamente o JOB_ID recebido e o manifesto final. Preserve todos os IDs e informe RETRY ou NAO_RECUPERAVEL.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResultadoRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Resultado do fallback recebido e associado ao trabalho.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultadoResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "jobId ou resultado ausente ou inválido."
+          },
+          "401": {
+            "description": "Chave da API inválida."
+          },
+          "404": {
+            "description": "JOB_ID não encontrado ou expirado."
+          },
+          "503": {
+            "description": "Serviço temporariamente indisponível."
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-api-key"
+      }
+    },
+    "schemas": {
+      "ResultadoRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "JOB_ID recebido no CORVO_BRIDGE_JOB. Deve ser enviado exatamente como recebido."
+          },
+          "resultado": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Manifesto CORVO_IMAGE_FALLBACK. Para cada ID, informe STATUS. Em RETRY, inclua DESTINO e PROMPT_RETRY. Em NAO_RECUPERAVEL, inclua MOTIVO."
+          }
+        },
+        "required": [
+          "jobId",
+          "resultado"
+        ]
+      },
+      "ResultadoResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "jobId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "Estado final do trabalho de fallback."
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "jobId",
+          "status",
+          "message"
+        ]
+      }
+    }
+  }
+}
+
+==================================================
+12. CORVO THUMB
+==================================================
+
+CORVO THUMB recebe:
+
+IDEIA
+TITULO / TITULO_BASE
+TEMA
+ROTEIRO ou RESUMO
+TIPO_DE_QUIZ
+PUBLICO
+IDENTIDADE_VISUAL
+MASCOTE
+IMAGENS DE REFERENCIA quando houver
+PADRAO_ARQUIVO_FINAL
+
+Ele:
+
+1. entende a promessa do vídeo;
+2. define conceito visual;
+3. decide se texto ajuda;
+4. gera efetivamente UMA thumbnail;
+5. deixa a imagem disponível na conversa;
+6. entrega manifesto ao Bridge.
+
+A thumbnail deve:
+
+- ser 16:9;
+- ter leitura rápida;
+- ter poucos elementos;
+- complementar o título;
+- não repetir o título inteiro;
+- não enganar;
+- manter identidade CorvoQuiz;
+- poder usar texto curto, mas texto é opcional.
+
+Status:
+
+GERADA
+FALHOU
+
+Manifesto atual:
+
+[CORVO_THUMBNAIL]
+VERSION=1.1
+
+STATUS=GERADA
+ARQUIVO=<arquivo final>
+TIPO_ARQUIVO=THUMBNAIL
+CONCEITO=<resumo curto>
+TEXTO_THUMB=<texto ou vazio>
+
+[END]
+
+Falha:
+
+[CORVO_THUMBNAIL]
+VERSION=1.1
+
+STATUS=FALHOU
+ARQUIVO=
+ERROR_CODE=<codigo>
+MOTIVO=<motivo curto>
+
+[END]
+
+==================================================
+13. CAPTURA DA THUMB PELO CORVO BRIDGE
+==================================================
+
+PONTO MUITO IMPORTANTE:
+
+A Action entregarResultadoCorvo envia somente o manifesto.
+Ela NÃO envia os bytes da imagem.
+
+Por isso o CORVO BRIDGE deve ser atualizado para capturar a imagem gerada pelo GPT.
+
+Fluxo desejado:
+
+CORVO THUMB
+→ gera imagem
+→ imagem aparece na conversa
+→ manifesto informa:
+   ARQUIVO=thumb_xxx.png
+   TIPO_ARQUIVO=THUMBNAIL
+→ Bridge detecta a imagem gerada
+→ Bridge captura/download/blob da imagem
+→ Bridge renomeia de acordo com ARQUIVO
+→ Bridge envia arquivo ao app
+→ app associa o arquivo ao JOB_ID
+
+Sugestão de endpoint no app:
+
+POST /api/corvo/arquivo
+
+Dados esperados conceitualmente:
+
+jobId
+tipo
+nomeArquivo
+arquivo
+
+Para thumbnail:
+
+tipo=THUMBNAIL
+
+Sugestão de estado do job:
+
+resultadoRecebido=true/false
+arquivoRecebido=true/false
+
+Para STATUS=GERADA, considerar job realmente concluído somente quando:
+
+resultadoRecebido=true
+E
+arquivoRecebido=true
+
+Isso evita:
+
+STATUS=GERADA
+ARQUIVO=thumb.png
+
+sem a existência real de thumb.png no app.
+
+IMPORTANTE:
+O GPT não faz upload manual.
+O Bridge é quem captura a imagem da conversa.
+
+==================================================
+14. SCHEMA ATUAL DO CORVO THUMB
+==================================================
+
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "CorvoQuiz Criador de Thumbnail Bridge API",
+    "version": "1.1.0",
+    "description": "Entrega ao CorvoQuiz o resultado da criação da thumbnail e os dados necessários para associar o arquivo capturado pelo Bridge."
+  },
+  "servers": [
+    {
+      "url": "https://roteiro-mu.vercel.app"
+    }
+  ],
+  "paths": {
+    "/api/corvo/resultado": {
+      "post": {
+        "operationId": "entregarResultadoCorvo",
+        "x-openai-isConsequential": false,
+        "summary": "Entrega o resultado da criação da thumbnail",
+        "description": "Use ao concluir um CORVO_BRIDGE_JOB do CORVO THUMB. Envie exatamente o JOB_ID recebido e o manifesto final. Em GERADA, informe o nome do arquivo que o Bridge deve associar ao trabalho.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResultadoRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Resultado da thumbnail recebido e associado ao trabalho.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultadoResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "jobId ou resultado ausente ou inválido."
+          },
+          "401": {
+            "description": "Chave da API inválida."
+          },
+          "404": {
+            "description": "JOB_ID não encontrado ou expirado."
+          },
+          "503": {
+            "description": "Serviço temporariamente indisponível."
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-api-key"
+      }
+    },
+    "schemas": {
+      "ResultadoRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "JOB_ID recebido no CORVO_BRIDGE_JOB. Deve ser enviado exatamente como recebido."
+          },
+          "resultado": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Manifesto CORVO_THUMBNAIL. Em GERADA, informe ARQUIVO, CONCEITO e TEXTO_THUMB. Em FALHOU, informe ERROR_CODE e MOTIVO."
+          }
+        },
+        "required": [
+          "jobId",
+          "resultado"
+        ]
+      },
+      "ResultadoResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "jobId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "Estado final do trabalho de criação da thumbnail."
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "jobId",
+          "status",
+          "message"
+        ]
+      }
+    }
+  }
+}
+
+==================================================
+15. MERGE DE ZIP / CONSOLIDAÇÃO NO APP
+==================================================
+
+Criar uma área/aba específica para consolidação de imagens.
+
+Sugestão de nome:
+
+MERGE DE IMAGENS
+ou
+CONSOLIDAÇÃO
+ou
+ZIP FINAL
+
+Objetivo:
+
+Receber:
+
+ZIP / arquivos finais do REFINADOR
++
+ZIP / arquivos finais do GERADOR
+
+Validar IDs.
+
+Exemplo:
+
+IDS ESPERADOS=60
+
+REFINADOR:
+44 arquivos
+
+GERADOR:
+16 arquivos
+
+TOTAL:
+60
+
+Validação antes do merge:
+
+- nenhum ID ausente;
+- nenhum ID duplicado;
+- todos os nomes esperados presentes;
+- nenhum arquivo final inválido;
+- formato coerente;
+- associação ID → arquivo correta.
+
+Se válido:
+
+→ ordenar por ID
+→ consolidar arquivos
+→ criar ZIP final
+→ disponibilizar para Forma
+
+Se faltar ID:
+
+NÃO marcar produção como concluída.
+
+Mostrar algo como:
+
+001 OK
+002 OK
+003 OK
+...
+017 AUSENTE
+...
+060 OK
+
+==================================================
+16. ESPERA LONGA / JOBS ASSÍNCRONOS
+==================================================
+
+A aba de Merge e o pipeline de imagens precisam aceitar espera prolongada.
+
+Gerador, Refinador e Fallback podem levar bastante tempo.
+
+Não usar uma lógica que considere falha apenas porque demorou alguns segundos/minutos.
+
+Sugestão:
+
+estado por job:
+
+PENDENTE
+ENVIADO
+PROCESSANDO
+AGUARDANDO_RESULTADO
+RESULTADO_RECEBIDO
+AGUARDANDO_ARQUIVO
+CONCLUIDO
+FALHOU
+EXPIRADO
+
+A UI deve poder ficar aberta acompanhando jobs longos.
+
+Importante:
+
+- não destruir job ao recarregar página;
+- persistir jobId;
+- persistir especialista;
+- persistir IDs;
+- persistir tentativa atual;
+- persistir status;
+- persistir horário de início;
+- permitir retomar monitoramento;
+- distinguir timeout local da expiração real do servidor.
+
+A aba de Merge deve poder ficar "AGUARDANDO" por tempo extenso até os dois ramos terminarem.
+
+Exemplo:
+
+REFINADOR: 44/44 CONCLUÍDAS
+GERADOR: 13/16 CONCLUÍDAS
+FALLBACK: 2 EM RECUPERAÇÃO
+MERGE: AGUARDANDO
+
+==================================================
+17. FALLBACK E CONTROLE DE TENTATIVAS NO APP
+==================================================
+
+O app deve controlar retries.
+
+Sugestão inicial:
+
+MAX_RETRIES=2
+
+Fluxo:
+
+TENTATIVA 1
+→ falhou
+→ FALLBACK
+→ RETRY
+→ TENTATIVA 2
+
+Se falhar novamente:
+→ FALLBACK
+→ se ainda RETRY e limite permitir
+→ nova tentativa
+
+Se atingir limite:
+→ marcar FALHA_FINAL / TRATAMENTO_MANUAL
+
+O GPT FALLBACK não controla o limite.
+
+O app deve salvar:
+
+id
+origem
+errorCode
+motivo
+promptOriginal
+promptRetry
+tentativaAtual
+destino
+historicoTentativas
+
+Isso cria trilha de auditoria.
+
+==================================================
+18. FUTURO CORVO YOUTUBE / DADOS PARA YOUTUBE
+==================================================
+
+Ainda será criado um GPT especializado em preparar o pacote editorial/de publicação do vídeo.
+
+Nome provisório:
+
+CORVO YOUTUBE
+ou
+CORVO METADADOS
+
+Entrada planejada:
+
+IDEIA
+TITULO_BASE
+ROTEIRO
+RESUMO
+TEMA
+TIPO_DE_VIDEO
+PUBLICO
+DURACAO
+THUMB / CONCEITO DA THUMB
+HISTORICO DO CANAL quando disponível
+
+Saída planejada:
+
+TITULO_FINAL
+TITULO_ALTERNATIVO_1
+TITULO_ALTERNATIVO_2
+DESCRICAO
+TAGS
+HASHTAGS
+CATEGORIA
+PUBLICO
+DATA_RECOMENDADA
+HORARIO_RECOMENDADO
+ESTRATEGIA_DE_PUBLICACAO
+
+Objetivo:
+
+refinar a embalagem editorial do vídeo e preparar dados para publicação futura.
+
+Esse GPT poderá ser iniciado em paralelo ao Collector, assim que o app já possuir:
+
+- ideia;
+- título base;
+- roteiro/contexto suficiente.
+
+Depois poderá receber atualização da thumb, se o app desejar fazer uma segunda passagem.
+
+==================================================
+19. FUTURA PUBLICAÇÃO AUTOMÁTICA NO YOUTUBE
+==================================================
+
+Próxima evolução prevista:
+
+O app passa de orquestrador de produção para orquestrador de publicação.
+
+Fluxo futuro:
+
+IDEIA
+→ PRODUÇÃO
+→ THUMB
+→ METADADOS
+→ FORMA
+→ VIDEO FINAL
+→ PUBLICADOR
+→ YOUTUBE
+
+O módulo de publicação poderá futuramente usar API do YouTube para:
+
+- upload do vídeo;
+- upload da thumbnail;
+- título;
+- descrição;
+- tags;
+- categoria;
+- público;
+- playlist;
+- visibilidade;
+- data/hora;
+- agendamento.
+
+O CORVO YOUTUBE prepara os dados.
+O módulo Publicador apenas executa.
+
+Depois poderá existir também:
+
+PUBLICAÇÃO
+→ COLETA DE MÉTRICAS
+→ CTR
+→ VIEWS
+→ RETENÇÃO
+→ IMPRESSÕES
+→ INSCRITOS
+→ ANALISTA DE PERFORMANCE
+→ aprendizado para próximos vídeos
+
+==================================================
+20. PARALELISMO
+==================================================
+
+Ideia atual:
+
+Collector:
+pode usar múltiplas conversas/workers conforme necessidade.
+
+Analista:
+pode usar múltiplas conversas/workers.
+
+Refinador:
+pode usar múltiplas conversas/workers.
+Limite geral pensado anteriormente: até 6 conversas simultâneas.
+
+Gerador:
+UM ÚNICO worker/conversa.
+
+MAX_PARALLEL_GENERATOR=1
+
+Fallback:
+pode ser chamado conforme falhas.
+O app controla fila/retries.
+
+Thumb:
+1 job por vídeo.
+Pode rodar em paralelo com Collector.
+
+YouTube/Metadados:
+1 job por vídeo.
+Pode rodar em paralelo com Collector e pipeline de imagens.
+
+==================================================
+21. BRIDGE — RESPONSABILIDADES ATUALIZADAS
+==================================================
+
+O CORVO BRIDGE passa a ter responsabilidades mais claras:
+
+1. abrir/iniciar a conversa correta do especialista;
+2. enviar CORVO_BRIDGE_JOB;
+3. preservar JOB_ID;
+4. aguardar a Action entregarResultadoCorvo;
+5. receber status/manifesto pelo app;
+6. controlar ramificações paralelas;
+7. acionar Fallback quando necessário;
+8. capturar imagem visual gerada pelo CORVO THUMB;
+9. enviar a thumb real ao app;
+10. associar arquivo ao JOB_ID;
+11. manter estados dos jobs;
+12. permitir espera longa;
+13. não misturar arquivos entre jobs;
+14. não considerar STATUS=GERADA como suficiente se o arquivo real ainda não chegou.
+
+==================================================
+22. ENDPOINTS / API SUGERIDOS
+==================================================
+
+Já existente:
+
+POST /api/corvo/resultado
+
+Responsabilidade:
+receber jobId + manifesto textual.
+
+Novo sugerido:
+
+POST /api/corvo/arquivo
+
+Responsabilidade:
+receber arquivo capturado pelo Bridge.
+
+Campos conceituais:
+
+jobId
+tipo
+nomeArquivo
+arquivo
+
+Tipos futuros possíveis:
+
+THUMBNAIL
+IMAGEM_GERADA
+IMAGEM_REFINADA
+OUTRO
+
+Mesmo que inicialmente seja usado apenas para THUMBNAIL, vale desenhar de forma genérica para poder reaproveitar depois.
+
+==================================================
+23. ESTADOS DE JOB RECOMENDADOS
+==================================================
+
+Modelo conceitual:
+
+jobId
+especialista
+status
+createdAt
+updatedAt
+tentativaAtual
+resultadoRecebido
+arquivoRecebido
+erro
+manifesto
+arquivos[]
+
+status possíveis:
+
+PENDENTE
+ABRINDO_GPT
+ENVIADO
+PROCESSANDO
+AGUARDANDO_ACTION
+RESULTADO_RECEBIDO
+AGUARDANDO_ARQUIVO
+AGUARDANDO_FALLBACK
+RETRY_PENDENTE
+CONCLUIDO
+FALHOU
+EXPIRADO
+
+Para Thumb GERADA:
+
+CONCLUIDO somente se:
+
+resultadoRecebido=true
+arquivoRecebido=true
+
+Para especialistas sem arquivo capturado pelo Bridge:
+CONCLUIDO conforme regra específica atual.
+
+==================================================
+24. PRINCÍPIO DE ARQUITETURA
+==================================================
+
+O app deve ser o ORQUESTRADOR.
+
+Os GPTs devem ser especialistas.
+
+ANALISTA:
+decide o destino das imagens.
+
+REFINADOR:
+melhora imagens aprovadas.
+
+GERADOR:
+gera imagens que o Collector não conseguiu fornecer.
+
+FALLBACK:
+recupera falhas por reformulação ou declara não recuperável.
+
+THUMB:
+cria embalagem visual do vídeo.
+
+YOUTUBE:
+prepara embalagem editorial e dados de publicação.
+
+APP:
+controla jobs, filas, paralelismo, retries, arquivos, merge e estado geral.
+
+Evitar colocar lógica de orquestração complexa dentro dos GPTs.
+
+==================================================
+25. RESUMO EXECUTIVO PARA IMPLEMENTAÇÃO
+==================================================
+
+PRIORIDADE 1
+Adicionar novos slots/endereço de GPT:
+
+- Gerador
+- Fallback
+- Thumb
+- YouTube/Metadados
+
+PRIORIDADE 2
+Atualizar fluxo do Analista:
+
+PASSOU / COM RESSALVAS
+→ Refinador
+
+NAO_PASSOU
+→ Gerador
+
+PRIORIDADE 3
+Implementar falhas estruturadas:
+
+FALHOU
+ERROR_CODE
+MOTIVO
+
+PRIORIDADE 4
+Implementar CORVO FALLBACK:
+
+erro
+→ fallback
+→ RETRY ou NAO_RECUPERAVEL
+
+PRIORIDADE 5
+Corrigir fluxo final:
+
+Gerador → FINAL
+Refinador → FINAL
+sem Gerador → Refinador.
+
+PRIORIDADE 6
+Criar Merge:
+
+resultados do Refinador
++
+resultados do Gerador
+→ validar IDs
+→ ZIP final
+
+PRIORIDADE 7
+Criar ramo paralelo CORVO THUMB ao iniciar Collector.
+
+PRIORIDADE 8
+Bridge deve capturar imagem da thumb e enviar ao app.
+
+PRIORIDADE 9
+Criar endpoint/rotina de arquivo:
+
+POST /api/corvo/arquivo
+
+PRIORIDADE 10
+Preparar slot e arquitetura para futuro CORVO YOUTUBE.
+
+PRIORIDADE 11
+Preparar jobs assíncronos de longa duração e persistência de status.
+
+==================================================
+26. FLUXO FINAL RESUMIDO
+==================================================
+
+                         IDEIA / TITULO
+                               |
+                               v
+                            ROTEIRO
+                               |
+                               v
+                         INICIAR PRODUCAO
+                               |
+          +--------------------+----------------------+
+          |                    |                      |
+          v                    v                      v
+      COLLECTOR             CORVO THUMB          CORVO YOUTUBE
+          |                    |                 (FUTURO)
+          v                    v
+       ANALISTA           GERA THUMB
+          |                    |
+     +----+----+               v
+     |         |           BRIDGE CAPTURA
+     v         v               |
+ REFINADOR   GERADOR           v
+     |         |             APP SALVA
+     |         |
+     |      FALHOU? ----+
+     |                  |
+ FALHOU?                |
+     |                  |
+     +------> FALLBACK <-+
+                |
+          RETRY / NAO_RECUPERAVEL
+                |
+          ETAPA DE ORIGEM
+                |
+     +----------+----------+
+     |                     |
+     v                     v
+IMAGENS FINAIS        IMAGENS FINAIS
+REFINADOR             GERADOR
+     |                     |
+     +----------+----------+
+                |
+                v
+             APP MERGE
+                |
+                v
+             ZIP FINAL
+                |
+                v
+               FORMA
+                |
+                v
+            VIDEO FINAL
+                |
+                v
+        PACOTE DE PUBLICACAO
+                |
+                v
+        FUTURO: YOUTUBE API
+
+==================================================
+27. OBSERVAÇÃO FINAL
+==================================================
+
+Esta atualização deve ser implementada preservando compatibilidade com o fluxo já existente sempre que possível.
+
+A prioridade é tornar o app um orquestrador resiliente, capaz de:
+
+- trabalhar em paralelo;
+- aguardar jobs longos;
+- recuperar falhas;
+- consolidar resultados;
+- capturar arquivos reais;
+- separar responsabilidades entre especialistas;
+- preparar o caminho para publicação automática.
+
+FIM DO DOCUMENTO
