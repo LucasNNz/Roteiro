@@ -1,4 +1,4 @@
-# Corvo Collector Bridge V0.7.8
+# Corvo Collector Bridge V0.7.9
 
 Mantém o modo manual e, no automático, envia até 10 candidatas técnicas por ID (configurável no app) ao Corvo Analista sem escolher uma vencedora no app.
 
@@ -70,6 +70,12 @@ A extensão usa um documento offscreen para:
 Corrige `provider is not defined` durante a varredura Google Imagens/Pinterest.
 O seletor Vercel V0.7.3 continua compatível; basta atualizar a extensão.
 
+
+## V0.7.9 — retomada segura de pacote
+
+- `BUILD_FORMA_PACKAGE` agora é idempotente para a mesma produção: se o mesmo pacote já estiver `QUEUED/RUNNING`, o Collector retorna sucesso com `resumed=true` e o app continua acompanhando.
+- Locks órfãos/stale são recuperados automaticamente quando o offscreen worker sumiu ou não houve progresso por 3 minutos.
+- Evita o erro recorrente `PACKAGE_ALREADY_RUNNING` ao retomar o Automático Total.
 
 ## V0.7.8 — shortlist técnica + envio em lotes no automático
 

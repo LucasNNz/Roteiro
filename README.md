@@ -1,33 +1,48 @@
-# CorvoQuiz Produção — V0.6.14
+# CorvoQuiz Produção — V0.6.16
 
 Painel de produção do CorvoQuiz com orquestração multiespecialista via **Corvo Bridge**, coleta pelo **Corvo Collector**, seleção visual delegada ao **Corvo Analista**, roteamento por ID, Fallback e ZIP final.
 
+## V0.6.16 — hotfix de retomada do pacote do Collector
+
+- Corrige `PACKAGE_ALREADY_RUNNING` durante o Automático Total.
+- Se o mesmo pacote já estiver em andamento, o app e o Collector retomam o acompanhamento em vez de falhar.
+- Pacotes órfãos ou sem progresso por 3 minutos são liberados automaticamente pelo Collector.
+- Mantém o automático real da Ideia ao ZIP, shortlist 10/ID e batch upload.
+
+## V0.6.15 — Automático real: da ideia ao ZIP final
+
+O **INICIAR AUTOMÁTICO** agora fica no topo, ao lado de **NOVA PRODUÇÃO**, e sempre cria uma produção nova do zero. Ele não é mais um atalho para continuar o projeto atual.
+
+Um único clique executa:
+
+1. valida Redis, Vercel Blob, Bridge e Collector;
+2. cria um projeto automático novo;
+3. chama o Corvo Scout sem tema obrigatório;
+4. o Scout ordena quatro ideias e coloca em **IDEIA 1** sua recomendação principal;
+5. o app escolhe automaticamente a IDEIA 1;
+6. envia a ideia completa ao Corvo Roteiro;
+7. cria os prompts;
+8. inicia o Collector;
+9. envia a shortlist técnica de candidatas ao Analista;
+10. executa Refinador/Gerador/Fallback sem cliques;
+11. executa Thumb e Metadados em paralelo quando habilitados;
+12. aguarda todos os arquivos finais;
+13. valida a Consolidação;
+14. gera e baixa automaticamente o ZIP final.
+
+O botão **NOVA PRODUÇÃO** permanece como modo assistido/manual. O cartão de uma produção automática não possui mais botão para iniciar automático; só mostra **RETOMAR ESTA PRODUÇÃO** se aquela execução tiver sido interrompida ou falhado.
+
+O Roteirista agora recebe também o texto completo da ideia escolhida, preservando CONCEITO e justificativa do Scout em vez de trabalhar apenas com título e tema.
+
 ## V0.6.14 — Hotfix de build TypeScript
 
-- Corrige a inferência `string | undefined` do `autoWorkflowJobId` no Modo Automático Total.
-- O polling agora usa um `activeJobId` validado como `string` antes de chamar `encodeURIComponent`.
-- Mantém integralmente a shortlist de 10 candidatas/ID, batch upload, Collector V0.7.8 e Bridge V0.6.5.
+- Corrige a inferência `string | undefined` do `autoWorkflowJobId`.
+- O polling usa `activeJobId:string` antes de `encodeURIComponent`.
+- Mantém shortlist 10/ID, batch upload, Collector V0.7.9 e Bridge V0.6.5.
 
+## V0.6.12 — Automático do projeto atual (substituído na V0.6.15)
 
-## V0.6.13 — Automático Total: um clique até o ZIP
-
-A tela de produção ganhou um botão separado **INICIAR AUTOMÁTICO**. Ele não substitui o modo manual/assistido: é uma segunda forma de operar o mesmo projeto.
-
-Ao clicar, o app:
-
-1. valida Redis, Vercel Blob e conexão do Collector;
-2. cria o roteiro se ainda não existir;
-3. cria os prompts se ainda não existirem;
-4. inicia o Collector;
-5. força a seleção visual para `AUTO`, enviando todas as candidatas ao Analista;
-6. aguarda o manifesto do Analista;
-7. executa Refinador e Gerador automaticamente, com Fallback/retries;
-8. inicia Thumbnail e, quando ativado, YouTube/Metadados em paralelo;
-9. aguarda os arquivos reais de todos os ramos;
-10. valida a Consolidação;
-11. gera e baixa automaticamente `${PROJECT_ID}_CORVO_FINAL.zip`.
-
-Etapas que já estiverem prontas são reaproveitadas. O automático só interrompe quando existe uma exceção real, como armazenamento indisponível, falha final não recuperável, thumbnail obrigatória ausente ou inconsistência no merge. A UI mostra um painel com o progresso das etapas e permite interromper manualmente. Se a página for recarregada durante a execução, o projeto fica marcado para **RETOMAR AUTOMÁTICO** em vez de permanecer falsamente travado como RUNNING.
+A primeira implementação encadeava automaticamente etapas de um projeto já existente. Esse comportamento foi substituído na V0.6.15 pelo automático real, iniciado no topo e começando pela descoberta da ideia.
 
 ## V0.6.11 — modo automático delegado ao Analista
 
@@ -35,7 +50,7 @@ No modo automático, o app **não escolhe mais uma candidata por ID**. O fluxo a
 
 `COLLECTOR → TODAS AS CANDIDATAS → ZIP BRUTO → ANALISTA → ARQUIVO ESCOLHIDO POR ID → REFINADOR / GERADOR`
 
-O Collector V0.7.8 envia todas as candidatas disponíveis de cada ID ao armazenamento do trabalho do Analista. Cada candidata recebe nome único, por exemplo:
+O Collector V0.7.9 envia todas as candidatas disponíveis de cada ID ao armazenamento do trabalho do Analista. Cada candidata recebe nome único, por exemplo:
 
 - `video1_001_c001.jpg`
 - `video1_001_c002.jpg`
@@ -124,15 +139,15 @@ Configure no projeto:
 
 Use `public/downloads/CORVO_BRIDGE_V065_EXTENSION.zip` ou carregue a pasta `corvo-bridge-extension` em `chrome://extensions`.
 
-### Corvo Collector V0.7.8
+### Corvo Collector V0.7.9
 
 Use `public/downloads/CORVO_COLLECTOR_V077_EXTENSION.zip` ou carregue a pasta `corvo-collector-extension`. Autorize a origem exata do deploy no popup.
 
 ## Downloads dentro do app
 
-- Corvo Collector V0.7.8;
+- Corvo Collector V0.7.9;
 - Corvo Bridge V0.6.5;
-- Kit completo CorvoQuiz V0.6.13.
+- Kit completo CorvoQuiz V0.6.16.
 
 ## Fora do escopo atual
 
@@ -142,7 +157,7 @@ Publicação automática no YouTube continua futura: upload do vídeo final, apl
 
 - O modo automático envia por padrão até 10 candidatas técnicas por ID ao Analista; esse limite é configurável de 1 a 30.
 - O app não escolhe a imagem vencedora. O corte é apenas uma shortlist técnica para reduzir transporte; a decisão visual final continua sendo do Corvo Analista.
-- Collector V0.7.8 prepara as cópias de análise com 8 workers e envia lotes ZIP de até 36 candidatas.
+- Collector V0.7.9 prepara as cópias de análise com 8 workers e envia lotes ZIP de até 36 candidatas.
 - Novo endpoint `POST /api/corvo/candidatos-lote` grava um ZIP por lote no Blob e registra todas as entradas em uma única operação no Redis.
 - A consolidação do pacote do Analista baixa cada lote uma única vez, mantendo compatibilidade com candidatas antigas armazenadas individualmente.
 - Lotes usam retry automático em falhas temporárias de rede, 429 e 5xx.

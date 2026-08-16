@@ -67,6 +67,16 @@ async function getPackageStatus() {
   return data[PACKAGE_KEY] || null;
 }
 
+async function hasOffscreenDocument() {
+  if (!chrome.runtime.getContexts) return true;
+  const offscreenUrl = chrome.runtime.getURL(OFFSCREEN_URL);
+  const contexts = await chrome.runtime.getContexts({
+    contextTypes: ['OFFSCREEN_DOCUMENT'],
+    documentUrls: [offscreenUrl]
+  }).catch(() => []);
+  return Boolean(contexts && contexts.length);
+}
+
 async function ensureOffscreenDocument() {
   const offscreenUrl = chrome.runtime.getURL(OFFSCREEN_URL);
   if (chrome.runtime.getContexts) {
@@ -104,20 +114,81 @@ function normalizePackageSelections(payload = {}) {
   }).filter(x => x.urls.length);
 }
 
+function simplePackageRequestKey(productionId, fileName, packageMode, selections) {
+  const seed = [
+    String(productionId || ''),
+    String(fileName || ''),
+    String(packageMode || ''),
+    String(selections.length),
+    ...selections.map((item) => `${item.id}:${item.outputName}:${item.urls.length}`)
+  ].join('|');
+  let hash = 2166136261;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash ^= seed.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `pkgreq_${(hash >>> 0).toString(16)}`;
+}
+
+function packageStatusAgeMs(status) {
+  const stamp = Date.parse(String(status?.updatedAt || status?.createdAt || ''));
+  return Number.isFinite(stamp) ? Math.max(0, Date.now() - stamp) : Number.POSITIVE_INFINITY;
+}
+
 async function startPackageBuild(payload = {}) {
   const selections = normalizePackageSelections(payload);
   if (!selections.length) return { ok:false, error:'EMPTY_SELECTIONS' };
+
+  const productionId = String(payload.productionId || '').trim();
+  const packageMode = String(payload.packageMode || 'FORMA');
+  const packageCode = sanitizePackageCode(payload.packageCode || productionId) || makePackageCode();
+  const fileName = String(payload.fileName || `corvo_forma_${packageCode}.zip`).replace(/[^a-zA-Z0-9._-]/g, '_');
+  const requestKey = simplePackageRequestKey(productionId, fileName, packageMode, selections);
   const existing = await getPackageStatus();
+
   if (existing && ['QUEUED','RUNNING'].includes(existing.status)) {
-    return { ok:false, error:'PACKAGE_ALREADY_RUNNING', package: existing };
+    const sameRequest = existing.requestKey === requestKey
+      || (!existing.requestKey
+        && String(existing.fileName || '') === fileName
+        && Number(existing.total || 0) === selections.length);
+    const fresh = packageStatusAgeMs(existing) <= 180000;
+    const workerAlive = await hasOffscreenDocument();
+
+    // BUILD_FORMA_PACKAGE is idempotent for the same production/package request.
+    // Resume only while there is recent progress AND the offscreen worker still exists.
+    if (sameRequest && fresh && workerAlive) {
+      return {
+        ok:true,
+        accepted:false,
+        resumed:true,
+        packageId:existing.id,
+        packageCode:existing.packageCode || packageCode,
+        total:Number(existing.total || selections.length),
+        fileName:existing.fileName || fileName,
+        status:existing.status
+      };
+    }
+
+    // A service-worker/offscreen interruption can leave RUNNING persisted forever.
+    // Release stale/orphaned locks automatically; only a real different active package blocks.
+    if (!sameRequest && fresh && workerAlive) {
+      return { ok:false, error:'PACKAGE_ALREADY_RUNNING', package: existing };
+    }
+    await savePackageStatus({
+      ...existing,
+      status:'ERROR',
+      error:workerAlive ? 'STALE_PACKAGE_RECOVERED' : 'ORPHAN_PACKAGE_RECOVERED',
+      finishedAt:nowIso()
+    });
   }
 
   const packageId = `pkg_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
-  const packageCode = sanitizePackageCode(payload.packageCode || payload.productionId) || makePackageCode();
-  const fileName = String(payload.fileName || `corvo_forma_${packageCode}.zip`).replace(/[^a-zA-Z0-9._-]/g, '_');
   const status = {
     id: packageId,
     packageCode,
+    productionId,
+    requestKey,
+    packageMode,
     status: 'QUEUED',
     createdAt: nowIso(),
     total: selections.length,

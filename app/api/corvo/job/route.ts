@@ -23,6 +23,7 @@ function buildIdeasPrompt(request: CorvoJobRequest) {
   return [
     "Crie exatamente quatro ideias de quiz diferentes entre si, em português do Brasil.",
     "Cada ideia deve apresentar claramente TÍTULO, TEMA, CONCEITO e POR QUE PODE FUNCIONAR.",
+    "Ordene as quatro ideias da mais promissora para a menos promissora. A IDEIA 1 deve ser sua recomendação principal e poderá ser escolhida automaticamente pelo CorvoQuiz.",
     "Evite repetir as produções recentes, títulos genéricos e promessas enganosas.",
     request.modo === "PESQUISAR ANTES" ? "Pesquise sinais recentes antes de escolher as ideias." : "Priorize ideias rápidas, claras e visualmente fortes.",
     "",
@@ -51,6 +52,9 @@ function buildScriptPrompt(request: CorvoJobRequest) {
     `FORMATO: ${request.formato}`,
     `QUANTIDADE DA PRODUÇÃO: ${request.quantidade}`,
     `MODO: ${request.modo}`,
+    "",
+    "IDEIA APROVADA COMPLETA:",
+    request.entrada || `TÍTULO: ${request.titulo || "NÃO INFORMADO"}\nTEMA: ${request.tema || "NÃO INFORMADO"}`,
   ].join("\n");
 }
 

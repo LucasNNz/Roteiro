@@ -1,6 +1,10 @@
-# Integração com CorvoQuiz Produção — Collector V0.7.8
+# Integração com CorvoQuiz Produção — Collector V0.7.9
 
 O app usa o protocolo `corvo-collector/1` e os comandos existentes do Collector.
+
+## V0.7.9 — package resume idempotente
+
+Quando `BUILD_FORMA_PACKAGE` recebe novamente a mesma produção/arquivo/seleções enquanto o pacote ainda está ativo, retorna `ok=true` e `resumed=true` em vez de `PACKAGE_ALREADY_RUNNING`. Pacotes órfãos ou sem progresso são liberados automaticamente.
 
 ## V0.7.8 — shortlist técnica + batch upload
 

@@ -27,7 +27,7 @@ type CorvoIdea = { tema:string; titulo:string };
 type WorkflowKind = "ROTEIRO" | "PROMPTS";
 type ProjectArtifact = "IDEIA" | "ROTEIRO" | "PROMPTS";
 type AutoRunStatus = "RUNNING" | "DONE" | "ERROR" | "CANCELLED";
-type AutoRunStep = "VALIDANDO" | "ROTEIRO" | "PROMPTS" | "COLLECTOR" | "ANALISTA" | "IMAGENS" | "THUMB" | "METADADOS" | "CONSOLIDANDO" | "CONCLUIDO" | "ERRO";
+type AutoRunStep = "VALIDANDO" | "IDEIA" | "ROTEIRO" | "PROMPTS" | "COLLECTOR" | "ANALISTA" | "IMAGENS" | "THUMB" | "METADADOS" | "CONSOLIDANDO" | "CONCLUIDO" | "ERRO";
 type IdeaRequestOptions = { format:Format; quantity:Quantity; mode:Mode; topic?:string; revisionProjectId?:string };
 type PipelineHistoryEvent = {
   at:string; attempt:number; specialist:"REFINADOR"|"GERADOR"|"FALLBACK"; status:string; jobId?:string;
@@ -112,6 +112,7 @@ function defaultQueries(project:Project) {
 
 function autoRunChecklist(project:Project, youtubeEnabled:boolean) {
   return [
+    { key:"IDEIA", label:"IDEIA", done:Boolean(project.ideaText) },
     { key:"ROTEIRO", label:"ROTEIRO", done:Boolean(project.scriptText) },
     { key:"PROMPTS", label:"PROMPTS", done:Boolean(project.promptText) },
     { key:"COLLECTOR", label:"COLLECTOR", done:Boolean(project.packageCode || project.analysisJobId) },
@@ -212,7 +213,7 @@ export default function Home() {
   useEffect(() => { localStorage.setItem("corvo-collector-settings-v02", JSON.stringify(settings)); }, [settings]);
   useEffect(() => {
     const interrupted = projectsRef.current.filter((project) => project.autoRunStatus === "RUNNING");
-    for (const project of interrupted) patchProject(project.id, { autoRunStatus:"ERROR", autoRunStep:"ERRO", autoRunMessage:"A página foi recarregada durante o automático.", autoRunError:"Clique em RETOMAR AUTOMÁTICO para continuar aproveitando as etapas já concluídas." });
+    for (const project of interrupted) patchProject(project.id, { autoRunStatus:"ERROR", autoRunStep:"ERRO", autoRunMessage:"A página foi recarregada durante o automático.", autoRunError:"A execução automática foi interrompida pela recarga. Use RETOMAR dentro deste projeto ou inicie uma nova produção automática pelo botão superior." });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const active = useMemo(() => projects.find((project) => project.id === activeId) || projects[0], [projects, activeId]);
@@ -248,6 +249,44 @@ export default function Home() {
     setIdeaRevisionProjectId(null);
     resetCreationFields();
     setCreateOpen(true);
+  }
+
+  function createAutomaticProjectShell() {
+    const stamp = Date.now();
+    const id = `AUTO_${stamp}`;
+    const project:Project = {
+      id,
+      title:"PRODUÇÃO AUTOMÁTICA",
+      topic:"DESCOBERTA AUTOMÁTICA",
+      format,
+      quantity,
+      mode,
+      stage:1,
+      createdAt:"AGORA",
+      autoRunStatus:"RUNNING",
+      autoRunStep:"VALIDANDO",
+      autoRunMessage:"Preparando uma produção nova do zero...",
+      autoRunStartedAt:new Date().toISOString(),
+    };
+    setProjects((current) => {
+      const next = [project, ...current];
+      projectsRef.current = next;
+      return next;
+    });
+    setActiveId(id);
+    return project;
+  }
+
+  function startFullAutomaticProduction() {
+    const running = projectsRef.current.find((project) => project.autoRunStatus === "RUNNING");
+    if (running) {
+      setActiveId(running.id);
+      setNotice("JÁ EXISTE UMA PRODUÇÃO AUTOMÁTICA EM ANDAMENTO.");
+      setTimeout(() => setNotice(""), 4200);
+      return;
+    }
+    const project = createAutomaticProjectShell();
+    void runAutomaticProduction(project.id);
   }
 
   function closeCreationModal() {
@@ -380,6 +419,7 @@ export default function Home() {
           quantity:workingProject.quantity,
           mode:workingProject.mode,
           roteiro:kind === "PROMPTS" ? workingProject.scriptText : undefined,
+          entrada:kind === "ROTEIRO" ? workingProject.ideaText : undefined,
         }),
       });
       const result = await response.json().catch(() => ({}));
@@ -451,6 +491,59 @@ export default function Home() {
     }
   }
 
+  async function runAutomaticIdeaDiscovery(project:Project) {
+    updateAutoRun(project.id, "IDEIA", "O Corvo Scout está descobrindo e escolhendo a melhor ideia para esta produção...");
+    const response = await fetch("/api/corvo/job", {
+      method:"POST",
+      headers:{ "content-type":"application/json" },
+      body:JSON.stringify({
+        specialist:"IDEIAS",
+        tema:null,
+        format:project.format,
+        quantity:project.quantity,
+        mode:project.mode,
+        automaticTotal:true,
+        recentes:projectsRef.current
+          .filter((item) => item.id !== project.id && item.ideaText)
+          .slice(0, 12)
+          .map((item) => ({ titulo:item.title, tema:item.topic })),
+      }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result?.jobId || !result?.prompt) throw new Error(result?.message || "Não foi possível iniciar a descoberta automática de ideias.");
+    const scoutJobId = String(result.jobId);
+    await dispatchCorvoBridge({
+      jobId:scoutJobId,
+      prompt:result.prompt,
+      specialist:"SCOUT",
+      meta:{ projectId:project.id, automaticTotal:true, fromScratch:true },
+    });
+
+    while (autoRunLocks.current.has(project.id)) {
+      await wait(2200);
+      const statusResponse = await fetch(`/api/corvo/resultado?jobId=${encodeURIComponent(scoutJobId)}`, { cache:"no-store" });
+      const status = await statusResponse.json().catch(() => ({}));
+      if (!statusResponse.ok) throw new Error(status?.message || "Não foi possível acompanhar o Corvo Scout.");
+      if (status.status === "DONE") {
+        await completeCorvoBridgeJob(scoutJobId).catch(() => {});
+        if (!Array.isArray(status.ideias) || !status.ideias.length) throw new Error("O Corvo Scout concluiu sem devolver uma ideia válida.");
+        const chosen = status.ideias[0] as CorvoIdea;
+        const rawResult = typeof status.resultado === "string" ? status.resultado : "";
+        const updated:Project = {
+          ...(latestProject(project.id) || project),
+          title:String(chosen.titulo || "QUIZ AUTOMÁTICO").toUpperCase(),
+          topic:String(chosen.tema || "QUIZ"),
+          ideaText:ideaSection(rawResult, chosen),
+          stage:2,
+        };
+        patchProject(project.id, updated);
+        return updated;
+      }
+      if (status.status === "ERROR") throw new Error(status?.message || "O Corvo Scout não conseguiu concluir a descoberta automática.");
+    }
+    throw new Error("AUTOMATIC_CANCELLED");
+  }
+
   async function runAutomaticSpecialist(kind:WorkflowKind, project:Project) {
     if (kind === "PROMPTS" && !project.scriptText?.trim()) throw new Error("O roteiro precisa estar pronto antes dos prompts.");
     let jobId = project.autoWorkflowKind === kind ? project.autoWorkflowJobId : undefined;
@@ -462,6 +555,7 @@ export default function Home() {
           specialist:kind, projetoId:project.id, titulo:project.title, tema:project.topic,
           format:project.format, quantity:project.quantity, mode:project.mode,
           roteiro:kind === "PROMPTS" ? project.scriptText : undefined,
+          entrada:kind === "ROTEIRO" ? project.ideaText : undefined,
         }),
       });
       const result = await response.json().catch(() => ({}));
@@ -530,6 +624,9 @@ export default function Home() {
       if (ping.authorized === false) throw new Error("ORIGIN_NOT_AUTHORIZED");
 
       let project = latestProject(projectId) || initial;
+      if (!project.ideaText?.trim()) {
+        project = await runAutomaticIdeaDiscovery(project);
+      }
       if (!project.scriptText?.trim()) {
         updateAutoRun(projectId, "ROTEIRO", "Criando o roteiro automaticamente...");
         project = await runAutomaticSpecialist("ROTEIRO", project);
@@ -643,6 +740,7 @@ export default function Home() {
     if (message.includes("COLLECTOR_NOT_AVAILABLE") || message.includes("Receiving end does not exist")) return "O Corvo Collector não foi encontrado. Instale ou atualize a extensão incluída no pacote.";
     if (message.includes("JOB_ALREADY_RUNNING_DIFFERENT")) return "O Collector está trabalhando em outra produção. Aguarde essa busca terminar ou cancele-a antes de iniciar esta.";
     if (message.includes("JOB_ALREADY_RUNNING")) return "Já existe uma busca em andamento. Abra novamente esta etapa para acompanhar o trabalho atual.";
+    if (message.includes("PACKAGE_ALREADY_RUNNING")) return "O Collector já está montando o pacote de outra produção. O pacote da produção atual será retomado automaticamente quando for o mesmo trabalho; se for outro projeto, aguarde a montagem atual terminar.";
     if (message.includes("VERCEL_BLOB_NOT_CONFIGURED") || message.toLowerCase().includes("vercel blob não configurado")) return "O Vercel Blob ainda não está conectado ao projeto. As imagens foram salvas pelo Collector, mas o app não tem onde armazená-las. Conecte um Blob Store ao projeto roteiro na Vercel e tente novamente.";
     if (message.includes("TRATAMENTO_MANUAL_NECESSARIO")) return "Uma ou mais imagens chegaram ao limite de tentativas ou foram marcadas como não recuperáveis. O automático parou para tratamento manual.";
     return message || "Não foi possível concluir esta etapa.";
@@ -1300,12 +1398,29 @@ export default function Home() {
         expectedIds,
       );
       patchProject(project.id, { analysisJobId:analysisJob.jobId, analysisStatus:automatic?"RECEBENDO CANDIDATAS":"RECEBENDO IMAGENS", pipelineStatus:"PREPARANDO ANÁLISE" });
-      const response = await sendCollectorMessage<any>("BUILD_FORMA_PACKAGE", {
+      const expectedPackageFile = automatic ? `${project.id}_CANDIDATAS_BRUTAS.zip` : `${project.id}_COLLECTOR.zip`;
+      let response = await sendCollectorMessage<any>("BUILD_FORMA_PACKAGE", {
         selections, productionId:project.id, prefix:settings.prefix, jpegQuality:settings.jpegQuality,
-        fileName:automatic ? `${project.id}_CANDIDATAS_BRUTAS.zip` : `${project.id}_COLLECTOR.zip`,
+        fileName:expectedPackageFile,
         includeManifest:true, autoDownload:false, pipelineOnly:automatic, packageMode:automatic?"ANALYST_RAW":"FORMA",
         pipelineUpload:{ jobId:analysisJob.jobId, uploadToken:analysisJob.uploadToken, appOrigin:window.location.origin },
       }, settings.extensionId);
+      if (!response?.ok && response?.error === "PACKAGE_ALREADY_RUNNING") {
+        const running = response?.package;
+        const samePackage = String(running?.fileName || "") === expectedPackageFile
+          && Number(running?.total || 0) === selections.length;
+        if (samePackage) {
+          response = {
+            ok:true,
+            resumed:true,
+            packageId:running?.id,
+            packageCode:running?.packageCode,
+            fileName:running?.fileName,
+            total:running?.total,
+          };
+          setImageMessage("O pacote desta produção já estava sendo montado. Retomando o acompanhamento...");
+        }
+      }
       if (!response?.ok) throw new Error(response?.error || "Falha ao montar o pacote.");
       const code = response.packageCode || "";
       while (token === runToken.current) {
@@ -1478,7 +1593,7 @@ export default function Home() {
       <div className="header-actions"><button className="corvo-link" onClick={openNewProduction}><span className="online-dot" /> PEDIR IDEIAS AO CORVO</button><button className="icon-button" onClick={() => setSettingsOpen(true)} aria-label="Configurações">•••</button></div>
     </header>
 
-    <section className="hero" id="top"><div><span className="eyebrow"><i /> CENTRAL DE PRODUÇÃO</span><h1>DA IDEIA AO <em>PACOTE FINAL.</em></h1><p>O Corvo cuida da pesquisa, das imagens e da organização.<br />Você só acompanha, escolhe e aprova.</p></div><button className="new-project" onClick={openNewProduction}><span>＋</span><b>NOVA PRODUÇÃO</b><small>COMEÇAR DO ZERO</small></button></section>
+    <section className="hero" id="top"><div><span className="eyebrow"><i /> CENTRAL DE PRODUÇÃO</span><h1>DA IDEIA AO <em>PACOTE FINAL.</em></h1><p>No automático, um clique inicia uma produção nova e o Corvo conduz tudo até o ZIP final.<br />No modo assistido, você continua controlando cada etapa.</p></div><div className="hero-actions"><button className="auto-project" onClick={startFullAutomaticProduction}><span>⚡</span><b>INICIAR AUTOMÁTICO</b><small>1 CLIQUE · IDEIA → ZIP FINAL</small></button><button className="new-project" onClick={openNewProduction}><span>＋</span><b>NOVA PRODUÇÃO</b><small>MODO ASSISTIDO</small></button></div></section>
 
     <section className="workspace" id="producao">
       <div className="section-heading"><div><span className="section-number">01</span><h2>EM PRODUÇÃO</h2></div><button className="text-button" onClick={openNewProduction}>CRIAR OUTRA <span>↗</span></button></div>
@@ -1488,7 +1603,7 @@ export default function Home() {
           <h3>{active.title}</h3><p>{active.id}</p>
           <div className="stepper">{steps.map((step,index) => { const complete=index+1<active.stage; const current=index+1===active.stage; return <div className={`step ${complete?"complete":""} ${current?"current":""}`} key={step}><span>{complete?"✓":String(index+1).padStart(2,"0")}</span><small>{step}</small></div>; })}</div>
           <div className="card-actions">
-            <button className="auto-action" disabled={active.autoRunStatus==="RUNNING"} onClick={()=>active.autoRunStatus==="DONE"?void buildFinalZip(active,{automaticRun:true}):void runAutomaticProduction(active.id)}><span>⚡</span><div><b>{active.autoRunStatus==="RUNNING"?"AUTOMÁTICO EM ANDAMENTO":active.autoRunStatus==="ERROR"||active.autoRunStatus==="CANCELLED"?"RETOMAR AUTOMÁTICO":active.autoRunStatus==="DONE"?"BAIXAR ZIP FINAL":"INICIAR AUTOMÁTICO"}</b><small>{active.autoRunStatus==="DONE"?"PACOTE FINAL JÁ CONCLUÍDO":"1 CLIQUE · SEGUE SOZINHO ATÉ O ZIP"}</small></div><i>{active.autoRunStatus==="RUNNING"?"…":"→"}</i></button>
+            {active.autoRunStatus==="ERROR"||active.autoRunStatus==="CANCELLED"?<button className="resume-auto-action" onClick={()=>void runAutomaticProduction(active.id)}><span>⚡</span><b>RETOMAR ESTA PRODUÇÃO</b><i>→</i></button>:null}
             <button className="primary-action" onClick={continueProduction}>{active.stage<=2?(active.scriptText?"REVISAR ROTEIRO":"CRIAR ROTEIRO"):active.stage===3?(active.promptText?"REVISAR PROMPTS":"CRIAR PROMPTS"):active.stage===4?"BUSCAR IMAGENS":"BAIXAR PRODUÇÃO"} <span>→</span></button>
             <button className="secondary-action" onClick={() => downloadProject(active)}>↓ BAIXAR PROJETO</button>
           </div>
@@ -1509,7 +1624,7 @@ export default function Home() {
     </section>
 
     <section className="projects" id="projetos"><div className="section-heading"><div><span className="section-number">02</span><h2>PROJETOS RECENTES</h2></div><span className="project-count">{String(projects.length).padStart(2,"0")} PRODUÇÕES</span></div><div className="project-list">{projects.map((project) => <button className={`project-row ${project.id===activeId?"selected":""}`} key={project.id} onClick={() => setActiveId(project.id)}><span className="project-icon">{project.format==="REELS"?"▯":"▭"}</span><span className="project-name"><b>{project.title}</b><small>{project.id}</small></span><span className="project-format">{project.format}</span><span className="progress"><i style={{width:`${project.stage*20}%`}} /></span><span className="stage-label">ETAPA {project.stage}/5</span><span className="row-arrow">→</span></button>)}</div></section>
-    <footer><span>CORVOQUIZ PRODUÇÃO <i>V0.6.14</i></span><span>AUTOMÁTICO TOTAL · SHORTLIST 10/ID · BATCH UPLOAD · V0.6.14</span></footer>
+    <footer><span>CORVOQUIZ PRODUÇÃO <i>V0.6.16</i></span><span>AUTOMÁTICO REAL · RETOMADA DE PACOTE · SHORTLIST 10/ID · V0.6.16</span></footer>
     {notice && <div className="toast">{notice}</div>}
 
     {createOpen && <div className="modal-backdrop" onMouseDown={(event) => event.target===event.currentTarget&&closeCreationModal()}><section className="creation-modal idea-modal" role="dialog" aria-modal="true" aria-labelledby="new-production-title"><button className="modal-close" disabled={ideaLoading} onClick={closeCreationModal} aria-label="Fechar">×</button><div className="modal-symbol">✦</div><span className="modal-kicker">{ideaRevisionProjectId?"REFAZER IDEIA":"NOVA PRODUÇÃO"}</span><h2 id="new-production-title">{ideaRevisionProjectId?"ESCOLHA UMA NOVA DIREÇÃO":"O QUE VAMOS CRIAR?"}</h2><p>{ideaRevisionProjectId?"Ao confirmar, roteiro, prompts e imagens serão refeitos automaticamente.":"Comece sem tema e peça ideias ao Corvo, ou informe uma direção opcional."}</p>
@@ -1550,9 +1665,9 @@ export default function Home() {
       <section className="downloads-section" aria-labelledby="downloads-title">
         <div className="downloads-head"><div><span>INSTALAÇÃO E SUPORTE</span><h3 id="downloads-title">ARQUIVOS PARA BAIXAR</h3></div><small>SE PRECISAR REINSTALAR</small></div>
         <div className="download-grid">
-          <a className="download-card" href="/downloads/CORVO_COLLECTOR_V078_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.7.8</small></div><i>↓</i></a>
+          <a className="download-card" href="/downloads/CORVO_COLLECTOR_V079_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.7.9</small></div><i>↓</i></a>
           <a className="download-card" href="/downloads/CORVO_BRIDGE_V065_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.5 · ZIP GRANDE + CAPTURA + LIMPEZA</small></div><i>↓</i></a>
-          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0614.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
+          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0616.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
         </div>
       </section>
       <details className="advanced-settings"><summary>CONFIGURAÇÕES AVANÇADAS</summary><div className="settings-grid"><label>CANDIDATAS COLETADAS<input type="number" min="10" max="250" value={settings.maxCandidates} onChange={(event)=>setSettings({...settings,maxCandidates:Number(event.target.value)})}/></label><label>CANDIDATAS/ID → ANALISTA<input type="number" min="1" max="30" value={settings.analystCandidatesPerId} onChange={(event)=>setSettings({...settings,analystCandidatesPerId:Math.max(1,Math.min(30,Number(event.target.value)||10))})}/></label><label>VARREDURA<input type="number" value={settings.scrollSteps} onChange={(event)=>setSettings({...settings,scrollSteps:Number(event.target.value)})}/></label><label>QUALIDADE JPEG<input type="number" step=".01" value={settings.jpegQuality} onChange={(event)=>setSettings({...settings,jpegQuality:Number(event.target.value)})}/></label><label>PREFIXO<input value={settings.prefix} onChange={(event)=>setSettings({...settings,prefix:event.target.value})}/></label></div><p>O limite do Analista reduz apenas o transporte. O app não escolhe a vencedora; o GPT Analista continua comparando as candidatas enviadas e decide qual arquivo usar.</p><label className="batch-label">COMANDOS EM LOTE — OPCIONAL<textarea value={settings.batchText} onChange={(event)=>setSettings({...settings,batchText:event.target.value})} placeholder={"01|primeira busca\n02|segunda busca"} /></label></details>

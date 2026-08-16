@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Corvo Collector Bridge",
-  "version": "0.7.8",
-  "description": "Corvo Collector com shortlist técnica e envio em lotes para o Corvo Analista, sem escolher a imagem vencedora.",
+  "version": "0.7.9",
+  "description": "Corvo Collector com shortlist técnica, envio em lotes e retomada idempotente de pacote para o Corvo Analista.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApcbnwzTJMr8WI3a4ObVvHZpVZZ6+bw60/Y4Ku/jjv4b1gGyrTrRfprIRoWTznklXfj7GxCstEL9e16ls24x3VgiYiokp5gNRDCnQ42PnURRsOBlB7/OvUfTfca/BZxerMwX/+Y2qXkASfm3MITjm4zFcy/yCA/h3uDT6nEyisppg2lxLIPkzBB8gZuClnaZnt88Qzo1NW2/JYJrz5j7R2LRgy9HQe1fJFDdDAi0yVCODlbFmZhmvUZxjl6ymDU/9fG+JMJ3uOkYcf2NXqrnsQbdyx4wmHR0bulMx9/haWIw/JiIi0f3rJhJHrGkJj3etTPp/xJu8BQ2CLsTeeymuVQIDAQAB",
   "permissions": [
     "activeTab",

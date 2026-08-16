@@ -28,19 +28,27 @@ Bases: `CORVOQUIZ_ESPECIFICACAO_NOVO_FLUXO_APP_BRIDGE` e `CORVOQUIZ_MUDANCA_MODO
 - [x] Gerador com um worker global.
 
 
-## Alteração V0.6.12 — Automático Total
+## Alteração V0.6.16 — retomada idempotente do pacote do Collector
 
-- [x] Botão separado `INICIAR AUTOMÁTICO` na produção.
-- [x] Validação de Redis + Blob + Collector antes do início.
-- [x] Encadeamento Roteiro → Prompts sem aprovação intermediária.
-- [x] Collector forçado para fluxo automático bruto do Analista.
-- [x] Analista → Refinador/Gerador → Fallback sem cliques intermediários.
-- [x] Thumbnail iniciada em paralelo e obrigatoriamente aguardada antes do ZIP automático.
-- [x] Metadados aguardados quando o ramo YouTube estiver ativado.
-- [x] Consolidação e download do ZIP final disparados automaticamente.
-- [x] Reaproveitamento de roteiro, prompts e imagens finais já concluídos.
-- [x] Estado visual persistido por projeto; reload muda RUNNING para RETOMAR em vez de travar.
-- [x] Botão PARAR para interrupção explícita.
+- Corrige o erro recorrente `PACKAGE_ALREADY_RUNNING` após a coleta.
+- O mesmo pacote da mesma produção pode ser solicitado novamente sem duplicar trabalho: o Collector retorna `resumed=true` e o app continua o polling.
+- Se o estado `RUNNING/QUEUED` ficou órfão porque o offscreen worker desapareceu, o lock é liberado automaticamente.
+- Se não houver progresso por 3 minutos, o pacote é considerado stale e pode ser reconstruído.
+- O app também reconhece pacote legado ativo pelo mesmo `fileName + total` e retoma o acompanhamento.
+
+## Alteração V0.6.15 — Automático Total real
+
+- [x] Botão `INICIAR AUTOMÁTICO` movido para o topo, ao lado de `NOVA PRODUÇÃO`.
+- [x] Clique no automático cria uma produção nova com `stage=IDEIA`.
+- [x] Scout executa descoberta automática sem exigir escolha humana.
+- [x] Scout é instruído a colocar sua recomendação principal como IDEIA 1.
+- [x] App seleciona automaticamente a IDEIA 1 e preserva seu texto completo.
+- [x] Roteirista recebe a ideia completa, não só título/tema.
+- [x] Roteiro → Prompts → Collector → Analista → Refinador/Gerador → Fallback → Merge sem cliques intermediários.
+- [x] Thumb e Metadados continuam paralelos.
+- [x] ZIP final é gerado/baixado automaticamente.
+- [x] Modo assistido continua em `NOVA PRODUÇÃO`.
+- [x] Projeto interrompido oferece `RETOMAR ESTA PRODUÇÃO` apenas no próprio cartão.
 
 ## Alteração V0.6.11 — automático delegado ao Analista
 
