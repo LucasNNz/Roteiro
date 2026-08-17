@@ -1,4 +1,11 @@
-# CORVO BRIDGE V0.6.33 — RECUPERAÇÃO DE CAPTURA POR JOB
+# CORVO BRIDGE V0.6.34 — RECUPERAÇÃO DE CAPTURA + RECONEXÃO MV3
+
+## RECONEXÃO MV3 AUTOMÁTICA
+- Detecta `Extension context invalidated` quando a extensão foi recarregada com o CorvoQuiz ainda aberto.
+- Responde a `CORVO_BRIDGE_PING_APP` com `CORVO_BRIDGE_PONG_APP`.
+- Se o contexto antigo estiver morto, publica `CORVO_BRIDGE_CONTEXT_INVALIDATED` para o app salvar checkpoint e recarregar a página.
+- A recarga reinjeta o content-script atual sem perder a produção automática.
+
 
 - Corrige `CAPTURE_FILE_NAME_UNKNOWN`.
 - Persiste `capturePlan` por JOB e reconstrói o arquivo pendente pelo servidor.

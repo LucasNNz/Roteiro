@@ -99,7 +99,7 @@ async function getDiagnostic(jobId) {
   const start = events[0]?.at || job.createdAt || Date.now();
   const lines = [
     "CORVO BRIDGE DIAGNÓSTICO V1",
-    `Bridge: V0.6.33`,
+    `Bridge: V0.6.34`,
     `JOB_ID: ${id}`,
     `Eventos: ${events.length}`,
     `Status atual: ${data.corvoBridgeStatus?.state || ""} | ${data.corvoBridgeStatus?.message || ""}`,
@@ -1092,19 +1092,19 @@ async function fetchCapturedBlob(captured) {
 async function ensureCaptureBridgeVersion(tabId, jobId) {
   let pong = null;
   try { pong = await chrome.tabs.sendMessage(tabId, { type:"CORVO_BRIDGE_PING" }); } catch {}
-  if (String(pong?.version || "") === "0.6.33") return pong;
+  if (String(pong?.version || "") === "0.6.34") return pong;
 
-  await appendDiagnostic(jobId, "CAPTURE_BRIDGE_VERSION_REFRESH", { tabId, foundVersion:String(pong?.version || "missing"), expectedVersion:"0.6.33" }, "background").catch(() => {});
+  await appendDiagnostic(jobId, "CAPTURE_BRIDGE_VERSION_REFRESH", { tabId, foundVersion:String(pong?.version || "missing"), expectedVersion:"0.6.34" }, "background").catch(() => {});
   // Uma extensão MV3 atualizada não substitui o content script já injetado numa
   // aba antiga. Recarregar a conversa preserva o conteúdo e garante que a lógica
-  // V0.6.33 de gallery/variantes esteja ativa antes da recuperação do arquivo.
+  // V0.6.34 de gallery/variantes esteja ativa antes da recuperação do arquivo.
   await reloadTabForBridge(tabId, { jobId });
   pong = await chrome.tabs.sendMessage(tabId, { type:"CORVO_BRIDGE_PING" }).catch(() => null);
-  if (String(pong?.version || "") !== "0.6.33") {
+  if (String(pong?.version || "") !== "0.6.34") {
     const injected = await injectChatGptBridge(tabId, { jobId });
     if (injected) pong = await chrome.tabs.sendMessage(tabId, { type:"CORVO_BRIDGE_PING" }).catch(() => null);
   }
-  if (String(pong?.version || "") !== "0.6.33") throw new Error("CAPTURE_BRIDGE_VERSION_NOT_READY");
+  if (String(pong?.version || "") !== "0.6.34") throw new Error("CAPTURE_BRIDGE_VERSION_NOT_READY");
   return pong;
 }
 
@@ -1159,11 +1159,11 @@ async function captureFromConversationResilient(record, jobId, payload = {}) {
         // A aba pode ter navegado/recarregado no meio da captura. Não mantemos um
         // Port aberto por 30s: cada fatia é curta e o content script é revalidado.
         let pong = await chrome.tabs.sendMessage(record.tabId, { type:"CORVO_BRIDGE_PING" }).catch(() => null);
-        if (String(pong?.version || "") !== "0.6.33") {
+        if (String(pong?.version || "") !== "0.6.34") {
           const injected = await injectChatGptBridge(record.tabId, { jobId }).catch(() => false);
           if (injected) pong = await chrome.tabs.sendMessage(record.tabId, { type:"CORVO_BRIDGE_PING" }).catch(() => null);
         }
-        if (String(pong?.version || "") !== "0.6.33") {
+        if (String(pong?.version || "") !== "0.6.34") {
           await reloadTabForBridge(record.tabId, { jobId }).catch(() => {});
         }
       }

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Corvo Bridge",
-  "version": "0.6.33",
-  "description": "Encaminha especialistas do CorvoQuiz com checkpoint persistente, recuperação de captura por JOB/expectedFiles, Cleaner resiliente e fechamento confirmado das abas automáticas.",
+  "version": "0.6.34",
+  "description": "Encaminha especialistas do CorvoQuiz com checkpoint persistente, captura recuperável por JOB e reconexão automática após reload/atualização MV3.",
   "permissions": [
     "storage",
     "tabs",

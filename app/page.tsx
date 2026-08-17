@@ -17,7 +17,7 @@ import {
   type SelectionMode,
   type SourceMode,
 } from "../lib/corvo-collector";
-import { captureCorvoBridgeFile, completeCorvoBridgeJob, dispatchCorvoBridge, focusCorvoBridgeJob, getCorvoBridgeJobActivity, type CorvoBridgeJobActivity } from "../lib/corvo-bridge";
+import { captureCorvoBridgeFile, completeCorvoBridgeJob, dispatchCorvoBridge, focusCorvoBridgeJob, getCorvoBridgeJobActivity, probeCorvoBridge, type CorvoBridgeJobActivity } from "../lib/corvo-bridge";
 
 type Format = "REELS" | "VÍDEO COMPLETO";
 type Quantity = "1 VÍDEO" | "LOTE";
@@ -642,6 +642,38 @@ export default function Home() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
   useEffect(() => {
+    function onBridgeLifecycle(event:MessageEvent) {
+      if (event.source !== window || event.data?.source !== "CORVO_BRIDGE" || event.data?.type !== "CORVO_BRIDGE_CONTEXT_INVALIDATED") return;
+      const running = projectsRef.current.find((project) => project.autoRunStatus === "RUNNING");
+      scheduleBridgeContextReload(running?.id);
+    }
+    window.addEventListener("message", onBridgeLifecycle);
+    // Ping explícito: CORVO_BRIDGE_READY pode ter sido emitido antes do React montar.
+    probeCorvoBridge(1200).catch((error) => {
+      if (isBridgeContextInvalidated(error)) {
+        const running = projectsRef.current.find((project) => project.autoRunStatus === "RUNNING");
+        scheduleBridgeContextReload(running?.id);
+      }
+    });
+    return () => window.removeEventListener("message", onBridgeLifecycle);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    // Migração V0.6.50: se a versão anterior marcou Extension context invalidated
+    // como ERRO terminal, reabra automaticamente o mesmo projeto no checkpoint.
+    for (const project of projectsRef.current) {
+      if (project.autoRunStatus !== "ERROR" || !isBridgeContextInvalidated(project.autoRunError)) continue;
+      const inferredStep:AutoRunStep = project.pipelineItems?.length ? "IMAGENS" : project.promptText ? "COLLECTOR" : project.scriptText ? "PROMPTS" : project.ideaText ? "ROTEIRO" : "IDEIA";
+      patchProject(project.id, {
+        autoRunStatus:"RUNNING",
+        autoRunStep:inferredStep,
+        autoRunMessage:"Contexto antigo da extensão descartado. Retomando automaticamente com o Bridge atual...",
+        autoRunError:undefined,
+        autoRunRetryAt:undefined,
+        autoRunRetryCount:0,
+      });
+      setTimeout(() => void runAutomaticProduction(project.id), 700);
+    }
     const interrupted = projectsRef.current.filter((project) => project.autoRunStatus === "RUNNING");
     for (const project of interrupted) {
       if (hasLegacyAnalysisStorage(project)) {
@@ -1287,6 +1319,9 @@ export default function Home() {
         });
         setNotice("PREPARAÇÃO DO ANALISTA PRESERVADA · RETOMADA AUTOMÁTICA PROGRAMADA.");
         setTimeout(() => setNotice(""), 5200);
+      } else if (isBridgeContextInvalidated(error) && scheduleBridgeContextReload(projectId)) {
+        // A extensão MV3 foi recarregada enquanto esta página ainda mantinha o content-script antigo.
+        // O checkpoint já foi persistido; o reload reinjeta o Bridge novo e o useEffect de retomada continua o automático.
       } else if (isAutomaticTransientError(error)) {
         const current = latestProject(projectId);
         const retryCount = Math.min(6, Number(current?.autoRunRetryCount || 0) + 1);
@@ -1382,15 +1417,43 @@ export default function Home() {
     setTimeout(() => setNotice(""), 3000);
   }
 
+  function isBridgeContextInvalidated(error:unknown) {
+    const message = String(error instanceof Error ? error.message : error || "").toUpperCase();
+    return /EXTENSION[_ ]CONTEXT[_ ]INVALIDATED|EXTENSION CONTEXT INVALIDATED/.test(message);
+  }
+
+  function scheduleBridgeContextReload(projectId?:string) {
+    const key = `corvoBridgeContextReload:${projectId || "GLOBAL"}`;
+    const now = Date.now();
+    const last = Number(window.sessionStorage.getItem(key) || 0);
+    if (last && now - last < 15000) return false;
+    window.sessionStorage.setItem(key, String(now));
+    if (projectId) {
+      const current = latestProject(projectId);
+      const inferredStep:AutoRunStep = current?.pipelineItems?.length ? "IMAGENS" : current?.promptText ? "COLLECTOR" : current?.scriptText ? "PROMPTS" : current?.ideaText ? "ROTEIRO" : "IDEIA";
+      patchProject(projectId, {
+        autoRunStatus:"RUNNING",
+        autoRunStep:current?.autoRunStep && current.autoRunStep !== "ERRO" ? current.autoRunStep : inferredStep,
+        autoRunMessage:"Bridge foi atualizado/recarregado. Reconectando a extensão e retomando do checkpoint...",
+        autoRunError:undefined,
+        autoRunRetryAt:undefined,
+      });
+    }
+    setNotice("BRIDGE ATUALIZADO · RECONECTANDO AUTOMATICAMENTE...");
+    window.setTimeout(() => window.location.reload(), 220);
+    return true;
+  }
+
   function isAutomaticTransientError(error:unknown) {
     const message = String(error instanceof Error ? error.message : error || "").toUpperCase();
     if (/R2_(NOT_CONFIGURED|ENDPOINT_INVALID|BUCKET_NOT_FOUND|ACCESS_KEY_INVALID|SIGNATURE_FAILED|ACCESS_DENIED)|ORIGIN_NOT_AUTHORIZED|GPT_URL_NOT_CONFIGURED|TRATAMENTO_MANUAL_NECESSARIO/.test(message)) return false;
-    return /CORVO_BRIDGE|GPT_SEND|GPT_CONTENT|PROGRESS_TIMEOUT|HARD_TIMEOUT|FETCH FAILED|NETWORK|TIMEOUT|COLLECTOR_CONNECTION_ERROR|JOB_ALREADY_RUNNING|PACKAGE_ALREADY_RUNNING|TEMPORAR|HTTP 5\d\d/.test(message);
+    return /CORVO_BRIDGE|GPT_SEND|GPT_CONTENT|PROGRESS_TIMEOUT|HARD_TIMEOUT|FETCH FAILED|NETWORK|TIMEOUT|COLLECTOR_CONNECTION_ERROR|JOB_ALREADY_RUNNING|PACKAGE_ALREADY_RUNNING|TEMPORAR|HTTP 5\d\d|EXTENSION[_ ]CONTEXT[_ ]INVALIDATED|RECEIVING END DOES NOT EXIST/.test(message);
   }
 
   function friendlyError(error:unknown) {
     const message = String(error instanceof Error ? error.message : error);
     const r2Trail = message.includes("|") ? ` [${message.split("|").at(-1)?.trim() || ""}]` : "";
+    if (message.includes("EXTENSION_CONTEXT_INVALIDATED") || message.toLowerCase().includes("extension context invalidated")) return "O Bridge foi atualizado enquanto esta página estava aberta. O app vai recarregar a página e retomar automaticamente do checkpoint.";
     if (message.includes("ORIGIN_NOT_AUTHORIZED")) return "Autorize este endereço uma única vez no Corvo Collector e tente novamente.";
     if (message.includes("COLLECTOR_NOT_AVAILABLE") || message.includes("Receiving end does not exist")) return "O Corvo Collector não foi encontrado. Instale ou atualize a extensão incluída no pacote.";
     if (message.includes("JOB_ALREADY_RUNNING_DIFFERENT")) return "O Collector está trabalhando em outra produção. Aguarde essa busca terminar ou cancele-a antes de iniciar esta.";
@@ -3495,8 +3558,8 @@ export default function Home() {
         <div className="downloads-head"><div><span>INSTALAÇÃO E SUPORTE</span><h3 id="downloads-title">ARQUIVOS PARA BAIXAR</h3></div><small>SE PRECISAR REINSTALAR</small></div>
         <div className="download-grid">
           <a className="download-card" href="/downloads/CORVO_COLLECTOR_V080_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.8.0</small></div><i>↓</i></a>
-          <a className="download-card" href="/downloads/CORVO_BRIDGE_V0633_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.33 · CAPTURA RECUPERÁVEL POR JOB</small></div><i>↓</i></a>
-          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0649.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
+          <a className="download-card" href="/downloads/CORVO_BRIDGE_V0634_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.34 · AUTO-RECONECTA APÓS RELOAD</small></div><i>↓</i></a>
+          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0650.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
         </div>
       </section>
       <details className="advanced-settings"><summary>CONFIGURAÇÕES AVANÇADAS</summary><div className="settings-grid"><label>CANDIDATAS COLETADAS/ID<input type="number" min="1" max="20" value={settings.maxCandidates} onChange={(event)=>setSettings({...settings,maxCandidates:Math.max(1,Math.min(20,Number(event.target.value)||20))})}/></label><label>CANDIDATAS/ID → ANALISTA<input type="number" min="1" max="30" value={settings.analystCandidatesPerId} onChange={(event)=>setSettings({...settings,analystCandidatesPerId:Math.max(1,Math.min(30,Number(event.target.value)||10))})}/></label><label>VARREDURA<input type="number" value={settings.scrollSteps} onChange={(event)=>setSettings({...settings,scrollSteps:Number(event.target.value)})}/></label><label>QUALIDADE JPEG<input type="number" step=".01" value={settings.jpegQuality} onChange={(event)=>setSettings({...settings,jpegQuality:Number(event.target.value)})}/></label><label>PREFIXO<input value={settings.prefix} onChange={(event)=>setSettings({...settings,prefix:event.target.value})}/></label></div><p>A busca coleta no máximo 20 candidatas únicas por ID. No modo Mesclado, a meta é dividida entre Google e Pinterest. Depois, o limite do Analista reduz apenas o transporte; o app não escolhe a vencedora.</p><label className="batch-label">COMANDOS EM LOTE — OPCIONAL<textarea value={settings.batchText} onChange={(event)=>setSettings({...settings,batchText:event.target.value})} placeholder={"01|primeira busca\n02|segunda busca"} /></label></details>

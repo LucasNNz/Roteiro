@@ -34,6 +34,7 @@ export function dispatchCorvoBridge(payload: CorvoBridgePayload, timeoutMs?: num
 
     function onMessage(event: MessageEvent) {
       if (event.source !== window || event.data?.source !== "CORVO_BRIDGE") return;
+      if (event.data?.type === "CORVO_BRIDGE_CONTEXT_INVALIDATED") return finishError("EXTENSION_CONTEXT_INVALIDATED");
 
       if (event.data?.type === "CORVO_BRIDGE_STATUS") {
         const status = event.data?.payload || {};
@@ -63,7 +64,11 @@ export function completeCorvoBridgeJob(jobId: string, timeoutMs = 10000) {
     }, timeoutMs);
 
     function onMessage(event: MessageEvent) {
-      if (event.source !== window || event.data?.source !== "CORVO_BRIDGE" || event.data?.type !== "CORVO_BRIDGE_COMPLETE_ACK") return;
+      if (event.source !== window || event.data?.source !== "CORVO_BRIDGE") return;
+      if (event.data?.type === "CORVO_BRIDGE_CONTEXT_INVALIDATED") {
+        window.clearTimeout(timer); window.removeEventListener("message", onMessage); reject(new Error("EXTENSION_CONTEXT_INVALIDATED")); return;
+      }
+      if (event.data?.type !== "CORVO_BRIDGE_COMPLETE_ACK") return;
       const ack = (event.data.payload || {}) as BridgeAck;
       if (ack.jobId && ack.jobId !== jobId) return;
       window.clearTimeout(timer);
@@ -114,6 +119,7 @@ export function captureCorvoBridgeFile(
 
     function onMessage(event: MessageEvent) {
       if (event.source !== window || event.data?.source !== "CORVO_BRIDGE") return;
+      if (event.data?.type === "CORVO_BRIDGE_CONTEXT_INVALIDATED") return finishError("EXTENSION_CONTEXT_INVALIDATED");
 
       if (event.data?.type === "CORVO_BRIDGE_CAPTURE_ACK") {
         const ack = (event.data.payload || {}) as BridgeAck;
@@ -210,5 +216,30 @@ export function focusCorvoBridgeJob(jobId:string, timeoutMs = 3500) {
     }
     window.addEventListener("message", onMessage);
     window.postMessage({ source:"CORVOQUIZ", type:"CORVO_BRIDGE_FOCUS_JOB", payload:{ jobId } }, "*");
+  });
+}
+
+
+export function probeCorvoBridge(timeoutMs = 1800) {
+  return new Promise<{ok?:boolean;version?:string;error?:string}>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      window.removeEventListener("message", onMessage);
+      reject(new Error("CORVO_BRIDGE_APP_PING_TIMEOUT"));
+    }, timeoutMs);
+    function onMessage(event:MessageEvent) {
+      if (event.source !== window || event.data?.source !== "CORVO_BRIDGE") return;
+      if (event.data?.type === "CORVO_BRIDGE_CONTEXT_INVALIDATED") {
+        window.clearTimeout(timer);
+        window.removeEventListener("message", onMessage);
+        reject(new Error("EXTENSION_CONTEXT_INVALIDATED"));
+        return;
+      }
+      if (event.data?.type !== "CORVO_BRIDGE_PONG_APP") return;
+      window.clearTimeout(timer);
+      window.removeEventListener("message", onMessage);
+      resolve(event.data.payload || { ok:true });
+    }
+    window.addEventListener("message", onMessage);
+    window.postMessage({ source:"CORVOQUIZ", type:"CORVO_BRIDGE_PING_APP" }, "*");
   });
 }

@@ -1,0 +1,6 @@
+CORVO BRIDGE V0.6.34 — AUTO-RECONEXÃO APÓS EXTENSION RELOAD
+
+- Novo handshake CORVO_BRIDGE_PING_APP / CORVO_BRIDGE_PONG_APP.
+- Novo evento CORVO_BRIDGE_CONTEXT_INVALIDATED.
+- app-bridge centraliza runtime.sendMessage em runtimeSend(), detectando contexto MV3 inválido.
+- O CorvoQuiz pode recarregar a página e reinjetar o content-script atual sem perder o checkpoint.

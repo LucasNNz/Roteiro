@@ -1,6 +1,13 @@
-# CORVOQUIZ V0.6.49 + BRIDGE V0.6.33 — RECUPERAÇÃO REAL DA CAPTURA
+# CORVOQUIZ V0.6.50 + BRIDGE V0.6.34 — RECONEXÃO AUTOMÁTICA DO CONTEXTO MV3
 
-## V0.6.49 / Bridge V0.6.33
+## V0.6.50 / Bridge V0.6.34
+
+- `Extension context invalidated` não é mais erro terminal do Automático.
+- O content-script do app sinaliza explicitamente quando seu contexto MV3 ficou inválido.
+- O CorvoQuiz persiste o checkpoint, recarrega a página uma única vez e retoma o automático.
+- Ping explícito `CORVO_BRIDGE_PING_APP/PONG_APP` evita depender do evento READY emitido antes do React montar.
+- Projetos que a V0.6.49 deixou em ERROR por `Extension context invalidated` são migrados para RUNNING ao abrir esta versão.
+- Mantidas todas as correções de captura por JOB, slots A/B do preset OU, retry manual e Cleaner.
 
 - Corrige `CAPTURE_FILE_NAME_UNKNOWN` no Bridge.
 - O plano de captura (`name`, `expectedFiles`, `expectedIndex`, grid/rows) passa a ser persistido por JOB.

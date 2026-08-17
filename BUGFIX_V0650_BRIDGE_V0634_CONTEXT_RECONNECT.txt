@@ -1,0 +1,13 @@
+CORVOQUIZ V0.6.50 + CORVO BRIDGE V0.6.34
+
+PROBLEMA
+- Recarregar/atualizar uma extensão Manifest V3 invalida os content scripts já injetados em páginas abertas.
+- A página antiga recebia `Extension context invalidated` e o supervisor do automático convertia isso em ERROR terminal.
+
+CORREÇÃO
+1. app-bridge.js publica CORVO_BRIDGE_CONTEXT_INVALIDATED quando detecta contexto morto.
+2. Ping explícito CORVO_BRIDGE_PING_APP/PONG_APP confirma que o content script atual está vivo.
+3. O CorvoQuiz persiste checkpoint e recarrega a página uma única vez (guard de 15s).
+4. Após reload, o content script novo é injetado e o automático RUNNING é retomado pelo supervisor.
+5. Projetos antigos parados em ERROR por Extension context invalidated são migrados automaticamente para RUNNING.
+6. Extension context invalidated e Receiving end does not exist entram como falhas transitórias, nunca como falha semântica/final.
