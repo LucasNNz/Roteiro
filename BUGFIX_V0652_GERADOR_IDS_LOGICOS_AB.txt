@@ -1,0 +1,10 @@
+CORVOQUIZ V0.6.52 + BRIDGE V0.6.35
+
+Mudança principal:
+- o pipeline interno mantém slots físicos 01_A/01_B etc.;
+- o GERADOR recebe IDs lógicos 01,02,03,04 quando ambos os slots da cena precisam ser gerados;
+- cada ID lógico descreve opção 1 + opção 2 e exige dois assets físicos _A/_B;
+- 4 IDs lógicos => 8 assets físicos esperados;
+- o manifesto deve retornar um bloco por asset físico;
+- PADRAO_ARQUIVO_FINAL_A/B fixa os nomes exatos exigidos pelo Forma;
+- Checkpoint V5 reabre somente jobs de Gerador A/B pendentes criados pelo contrato anterior.

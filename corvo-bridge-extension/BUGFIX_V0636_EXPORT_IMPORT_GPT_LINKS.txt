@@ -1,0 +1,11 @@
+CORVO BRIDGE V0.6.36
+
+NOVO: BACKUP DOS LINKS DOS GPTs
+
+- Configurações > Backup dos GPTs.
+- Exportar links dos GPTs gera um JSON local contendo somente os campos dos especialistas.
+- Importar links dos GPTs aceita o JSON exportado e restaura/salva os links no chrome.storage.sync.
+- A importação NÃO altera appOrigin, openMode, Cleaner, horário ou modo teste.
+- Campos ausentes no JSON são preservados; campos presentes e vazios são restaurados como vazios.
+- URLs são validadas para https://chatgpt.com/.
+- Compatibilidade de importação com backup antigo contendo gptUrl para o Corvo Scout.

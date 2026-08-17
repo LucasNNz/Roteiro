@@ -1,0 +1,7 @@
+CORVOQUIZ V0.6.53 + CORVO BRIDGE V0.6.36
+
+NOVO
+- Configurações do Bridge agora possuem Exportar links dos GPTs e Importar links dos GPTs.
+- Exporta JSON versionado com os 9 especialistas configuráveis.
+- Importação faz merge somente dos campos de GPT e salva no chrome.storage.sync.
+- Não altera Cleaner, appOrigin, openMode nem outras preferências.

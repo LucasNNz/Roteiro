@@ -1,0 +1,7 @@
+CORVO BRIDGE V0.6.35
+
+- Remove a suposição fixa de 2 colunas para contact sheets.
+- Infere a grade pelo tamanho real do asset e pela quantidade esperada de slots.
+- 1536x1024 / 8 slots => 4x2.
+- 1024x1536 / 8 slots => 2x4.
+- Mantém expectedFiles/expectedIndex e recuperação persistente da V0.6.34.

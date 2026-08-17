@@ -1,4 +1,4 @@
-# CORVO BRIDGE V0.6.34 — RECUPERAÇÃO DE CAPTURA + RECONEXÃO MV3
+# CORVO BRIDGE V0.6.36 — RECUPERAÇÃO DE CAPTURA + RECONEXÃO MV3
 
 ## RECONEXÃO MV3 AUTOMÁTICA
 - Detecta `Extension context invalidated` quando a extensão foi recarregada com o CorvoQuiz ainda aberto.
@@ -221,3 +221,8 @@ O comando **Parar limpeza** agora é persistido no `chrome.storage.local`, fecha
 - quando o ChatGPT devolve 2 variantes por ID, agrupa as imagens por linha/posição visual e escolhe uma representante por arquivo;
 - Thumb com duas opções escolhe a variante principal/maior (ou a primeira equivalente) em vez de travar;
 - elimina miniaturas duplicadas pelo mesmo `src` e registra diagnóstico `CAPTURE_IMAGE_SLOT_SELECTED`.
+
+
+## V0.6.36 — BACKUP DOS LINKS DOS GPTs
+
+Em Configurações, use **Exportar links dos GPTs** para baixar um JSON somente com os URLs dos especialistas e **Importar links dos GPTs** para restaurá-los. A importação preserva Cleaner, origem do app e demais preferências.

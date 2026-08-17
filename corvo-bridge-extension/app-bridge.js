@@ -1,5 +1,5 @@
 (() => {
-  const BRIDGE_VERSION = "0.6.34";
+  const BRIDGE_VERSION = "0.6.36";
 
   function errorMessage(error) {
     return String(error?.message || error || "BRIDGE_ERROR");

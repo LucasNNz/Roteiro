@@ -248,3 +248,12 @@ Bases: `CORVOQUIZ_ESPECIFICACAO_NOVO_FLUXO_APP_BRIDGE` e `CORVOQUIZ_MUDANCA_MODO
 - Modal mostra status persistido da etapa + jobs ativos do Bridge.
 - Botão ABRIR CONVERSA foca a aba do GPT correspondente sem reenviar prompt.
 - Bridge V0.6.22 mantém estado por job (specialist/state/message/conversationUrl).
+
+
+## Alteração V0.6.36 — exportar/importar links dos GPTs
+
+- [x] Configurações do Bridge possuem **Exportar links dos GPTs**.
+- [x] Exportação gera JSON versionado contendo apenas os URLs dos especialistas.
+- [x] Configurações do Bridge possuem **Importar links dos GPTs**.
+- [x] Importação restaura e salva apenas os campos de GPT, preservando Cleaner, appOrigin e openMode.
+- [x] URLs importadas são validadas para `https://chatgpt.com/`.

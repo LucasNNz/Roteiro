@@ -1263,6 +1263,23 @@
     return { dataUrl: await blobToDataUrl(blob), contentType: blob.type || "image/png", size: blob.size };
   }
 
+  function inferCompositeGridColumns(width, height, count, preferred) {
+    const explicit = Number(preferred || 0);
+    if (Number.isInteger(explicit) && explicit > 0) return Math.max(1, Math.min(count, explicit));
+    const safeWidth = Math.max(1, Number(width || 1));
+    const safeHeight = Math.max(1, Number(height || 1));
+    let bestColumns = 1;
+    let bestScore = Number.POSITIVE_INFINITY;
+    for (let columns = 1; columns <= count; columns += 1) {
+      if (count % columns !== 0) continue;
+      const rows = count / columns;
+      const cellAspect = (safeWidth / columns) / (safeHeight / rows);
+      const score = Math.abs(Math.log(Math.max(0.0001, cellAspect)));
+      if (score < bestScore) { bestScore = score; bestColumns = columns; }
+    }
+    return Math.max(1, Math.min(count, bestColumns));
+  }
+
   async function cropCompositeCandidate(candidate, payload = {}, expectedNames = []) {
     const count = Math.max(1, expectedNames.length || Number(payload?.expectedCount || 0) || 1);
     if (count <= 1) return null;
@@ -1306,13 +1323,13 @@
 
       // Modo ROWS: uma faixa horizontal por asset.
       // Modo GRID: usado pelo preset Forma QUAL_VOCE_PREFERE. A ordem oficial é
-      // 01_A,01_B,02_A,02_B...; portanto 8 slots viram grade 4x2 e cada célula
+      // 01_A,01_B,02_A,02_B...; a geometria é inferida pela proporção real do contact sheet; cada célula
       // é um arquivo físico independente para IMAGEM_A/IMAGEM_B.
       const mode = String(payload?.compositeSplitMode || 'AUTO').toUpperCase();
       let sx = 0, sy = 0, sw = width, sh = height;
       let gridRow = null, gridColumn = null, gridRows = null, gridColumns = null;
       if (mode === 'GRID') {
-        const columns = Math.max(1, Math.min(count, Number(payload?.compositeColumns || 2)));
+        const columns = inferCompositeGridColumns(width, height, count, payload?.compositeColumns);
         const rows = Math.max(1, Math.ceil(count / columns));
         const row = Math.floor(index / columns);
         const column = index % columns;
@@ -1371,7 +1388,7 @@
       const candidates = generatedImageCandidates(payload);
       const layout = logicalGeneratedImageSlots(candidates, payload);
 
-      // Novo fallback V0.6.34: se o lote declara N arquivos mas a UI contém
+      // Novo fallback V0.6.36: se o lote declara N arquivos mas a UI contém
       // um único contact sheet, usamos a lista OFICIAL recebida do CorvoQuiz e
       // recortamos uma faixa por ID. Assim uma resposta 4-em-1 continua utilizável.
       const maxRenderedArea = candidates.reduce((max, item) => Math.max(max, Number(item?.renderedArea || 0)), 0);
@@ -1643,7 +1660,7 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "CORVO_BRIDGE_PING") {
       chrome.runtime.sendMessage({ type: "CORVO_GPT_READY" }).catch(() => {});
-      sendResponse({ ok: true, version:"0.6.34", page:pageDiagnostic() });
+      sendResponse({ ok: true, version:"0.6.36", page:pageDiagnostic() });
       return;
     }
     if (message?.type === "CORVO_SEND_PROMPT") {

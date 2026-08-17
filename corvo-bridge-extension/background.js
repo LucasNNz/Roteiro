@@ -99,7 +99,7 @@ async function getDiagnostic(jobId) {
   const start = events[0]?.at || job.createdAt || Date.now();
   const lines = [
     "CORVO BRIDGE DIAGNÓSTICO V1",
-    `Bridge: V0.6.34`,
+    `Bridge: V0.6.36`,
     `JOB_ID: ${id}`,
     `Eventos: ${events.length}`,
     `Status atual: ${data.corvoBridgeStatus?.state || ""} | ${data.corvoBridgeStatus?.message || ""}`,
@@ -819,6 +819,23 @@ async function clearCaptureRecovery(jobId) {
   await chrome.storage.local.set({ [CAPTURE_RECOVERY_KEY]: current });
 }
 
+function inferCompositeGridColumns(width, height, count, preferred) {
+  const explicit = Number(preferred || 0);
+  if (Number.isInteger(explicit) && explicit > 0) return Math.max(1, Math.min(count, explicit));
+  const safeWidth = Math.max(1, Number(width || 1));
+  const safeHeight = Math.max(1, Number(height || 1));
+  let bestColumns = 1;
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (let columns = 1; columns <= count; columns += 1) {
+    if (count % columns !== 0) continue;
+    const rows = count / columns;
+    const cellAspect = (safeWidth / columns) / (safeHeight / rows);
+    const score = Math.abs(Math.log(Math.max(0.0001, cellAspect)));
+    if (score < bestScore) { bestScore = score; bestColumns = columns; }
+  }
+  return Math.max(1, Math.min(count, bestColumns));
+}
+
 async function cropCapturedBlob(blob, crop = {}) {
   const mode = String(crop?.mode || 'ROWS').toUpperCase();
   const count = Math.max(1, Number(crop?.count || 1));
@@ -834,7 +851,7 @@ async function cropCapturedBlob(blob, crop = {}) {
     if (!width || !height) throw new Error('COMPOSITE_DIMENSIONS_MISSING');
     let sx = 0, sy = 0, sw = width, sh = height;
     if (mode === 'GRID') {
-      const columns = Math.max(1, Math.min(count, Number(crop?.columns || 2)));
+      const columns = inferCompositeGridColumns(width, height, count, crop?.columns);
       const rows = Math.max(1, Math.ceil(count / columns));
       const row = Math.floor(index / columns);
       const column = index % columns;
@@ -1092,19 +1109,19 @@ async function fetchCapturedBlob(captured) {
 async function ensureCaptureBridgeVersion(tabId, jobId) {
   let pong = null;
   try { pong = await chrome.tabs.sendMessage(tabId, { type:"CORVO_BRIDGE_PING" }); } catch {}
-  if (String(pong?.version || "") === "0.6.34") return pong;
+  if (String(pong?.version || "") === "0.6.36") return pong;
 
-  await appendDiagnostic(jobId, "CAPTURE_BRIDGE_VERSION_REFRESH", { tabId, foundVersion:String(pong?.version || "missing"), expectedVersion:"0.6.34" }, "background").catch(() => {});
+  await appendDiagnostic(jobId, "CAPTURE_BRIDGE_VERSION_REFRESH", { tabId, foundVersion:String(pong?.version || "missing"), expectedVersion:"0.6.36" }, "background").catch(() => {});
   // Uma extensão MV3 atualizada não substitui o content script já injetado numa
   // aba antiga. Recarregar a conversa preserva o conteúdo e garante que a lógica
-  // V0.6.34 de gallery/variantes esteja ativa antes da recuperação do arquivo.
+  // V0.6.36 de gallery/variantes esteja ativa antes da recuperação do arquivo.
   await reloadTabForBridge(tabId, { jobId });
   pong = await chrome.tabs.sendMessage(tabId, { type:"CORVO_BRIDGE_PING" }).catch(() => null);
-  if (String(pong?.version || "") !== "0.6.34") {
+  if (String(pong?.version || "") !== "0.6.36") {
     const injected = await injectChatGptBridge(tabId, { jobId });
     if (injected) pong = await chrome.tabs.sendMessage(tabId, { type:"CORVO_BRIDGE_PING" }).catch(() => null);
   }
-  if (String(pong?.version || "") !== "0.6.34") throw new Error("CAPTURE_BRIDGE_VERSION_NOT_READY");
+  if (String(pong?.version || "") !== "0.6.36") throw new Error("CAPTURE_BRIDGE_VERSION_NOT_READY");
   return pong;
 }
 
@@ -1159,11 +1176,11 @@ async function captureFromConversationResilient(record, jobId, payload = {}) {
         // A aba pode ter navegado/recarregado no meio da captura. Não mantemos um
         // Port aberto por 30s: cada fatia é curta e o content script é revalidado.
         let pong = await chrome.tabs.sendMessage(record.tabId, { type:"CORVO_BRIDGE_PING" }).catch(() => null);
-        if (String(pong?.version || "") !== "0.6.34") {
+        if (String(pong?.version || "") !== "0.6.36") {
           const injected = await injectChatGptBridge(record.tabId, { jobId }).catch(() => false);
           if (injected) pong = await chrome.tabs.sendMessage(record.tabId, { type:"CORVO_BRIDGE_PING" }).catch(() => null);
         }
-        if (String(pong?.version || "") !== "0.6.34") {
+        if (String(pong?.version || "") !== "0.6.36") {
           await reloadTabForBridge(record.tabId, { jobId }).catch(() => {});
         }
       }

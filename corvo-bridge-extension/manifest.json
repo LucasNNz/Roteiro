@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Corvo Bridge",
-  "version": "0.6.34",
-  "description": "Encaminha especialistas do CorvoQuiz com checkpoint persistente, captura recuperável por JOB e reconexão automática após reload/atualização MV3.",
+  "version": "0.6.36",
+  "description": "Encaminha especialistas do CorvoQuiz com checkpoint persistente, captura recuperável por JOB, reconexão MV3 e backup/importação dos links dos GPTs.",
   "permissions": [
     "storage",
     "tabs",

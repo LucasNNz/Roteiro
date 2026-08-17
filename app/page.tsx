@@ -228,6 +228,36 @@ function scriptField(block:string, field:string) {
   return String(match?.[1] || "").trim();
 }
 
+function upgradeLegacyComparisonScript(scriptText?:string) {
+  const source = String(scriptText || "");
+  let converted = 0;
+  const blockRegex = /(^|\n)(\s*\[([^\]\r\n]+)\]\s*\r?\n)([\s\S]*?)(?=\n\s*\[[^\]\r\n]+\]\s*(?:\r?\n|$)|$)/g;
+  const text = source.replace(blockRegex, (whole, prefix:string, _header:string, rawSceneId:string, block:string) => {
+    const tipo = scriptField(block, "TIPO").toUpperCase();
+    const image1 = scriptField(block, "IMAGEM1");
+    const image2 = scriptField(block, "IMAGEM2");
+    const question = scriptField(block, "PERGUNTA");
+    const looksLikeTwoChoiceComparison = /(?:\b1\s*OU\s*2\b|\bA\s*OU\s*B\b)/i.test(question) || /\b(?:REAL|IA|VERDADEIR[OA]|FALS[OA])\b/i.test(question);
+    if (tipo !== "EMOJI_QUIZ" || !image1 || !image2 || !looksLikeTwoChoiceComparison) return whole;
+    converted += 1;
+    const optionA = scriptField(block, "A") || "1";
+    const optionB = scriptField(block, "B") || "2";
+    const sceneLabel = String(rawSceneId || "").trim();
+    return `${prefix}[${sceneLabel}]\nTIPO: QUAL_VOCE_PREFERE\nPERGUNTA: ${question || "QUAL VOCÊ ESCOLHE?"}\nA: ${optionA}\nB: ${optionB}\nIMAGEM_A: ${image1}\nIMAGEM_B: ${image2}`;
+  });
+  return { text, converted };
+}
+
+function scriptImageReferences(scriptText?:string) {
+  const refs:Array<{field:string;file:string}> = [];
+  const regex = /^\s*(IMAGEM(?:_A|_B|_RESULTADO|1|2)?)\s*:\s*(.+?)\s*$/gmi;
+  for (const match of String(scriptText || "").matchAll(regex)) {
+    const file = String(match[2] || "").trim();
+    if (file) refs.push({ field:String(match[1] || "").toUpperCase(), file });
+  }
+  return refs;
+}
+
 function formaComparisonSlots(scriptText?:string):FormaComparisonSlot[] {
   const text = String(scriptText || "");
   const blockRegex = /(?:^|\n)\s*\[([^\]\r\n]+)\]\s*\r?\n([\s\S]*?)(?=\n\s*\[[^\]\r\n]+\]\s*(?:\r?\n|$)|$)/g;
@@ -320,8 +350,12 @@ function consolidationState(project:Project) {
   const invalidFiles = items.filter((item) => !/\.(png|jpe?g|webp|gif|avif)$/i.test(item.finalFile || item.outputFile || "")).map((item) => item.id);
   const itemIds = new Set(items.map((item) => String(item.id || "").toUpperCase()));
   const missingFormaSlots = formaComparisonSlots(project.scriptText).filter((slot) => !itemIds.has(slot.key.toUpperCase())).map((slot) => slot.key);
-  const ready = items.length > 0 && !duplicateIds.length && !duplicateFiles.length && !missingIds.length && !invalidFiles.length && !missingFormaSlots.length;
-  return { items, duplicateIds, duplicateFiles, missingIds, invalidFiles, missingFormaSlots, ready, completed:items.filter((item) => Boolean(item.outputUrl) && !item.finalFailure).length };
+  const finalFileNames = new Set(items.map((item) => String(item.finalFile || item.outputFile || "").replace(/^.*[\\/]/, "").toLocaleLowerCase("pt-BR")).filter(Boolean));
+  const missingScriptFiles = scriptImageReferences(project.scriptText)
+    .filter((ref) => !finalFileNames.has(ref.file.replace(/^.*[\\/]/, "").toLocaleLowerCase("pt-BR")))
+    .map((ref) => ref.file);
+  const ready = items.length > 0 && !duplicateIds.length && !duplicateFiles.length && !missingIds.length && !invalidFiles.length && !missingFormaSlots.length && !missingScriptFiles.length;
+  return { items, duplicateIds, duplicateFiles, missingIds, invalidFiles, missingFormaSlots, missingScriptFiles, ready, completed:items.filter((item) => Boolean(item.outputUrl) && !item.finalFailure).length };
 }
 
 function ideaSection(resultText:string, idea:CorvoIdea) {
@@ -433,6 +467,56 @@ function migrateComparisonPipelineCheckpoint(project:Project):Project {
   return { ...project, pipelineCheckpointVersion:3 };
 }
 
+function migrateComparisonContractV4(project:Project):Project {
+  const upgraded = upgradeLegacyComparisonScript(project.scriptText);
+  if (!upgraded.converted) {
+    return Number(project.pipelineCheckpointVersion || 0) >= 4 ? project : { ...project, pipelineCheckpointVersion:4 };
+  }
+  const automaticWasActive = project.autoRunStatus === "RUNNING" || project.autoRunStatus === "ERROR" || project.autoRunStatus === "DONE";
+  return {
+    ...project,
+    ...EMPTY_IMAGE_PIPELINE,
+    pipelineCheckpointVersion:4,
+    scriptText:upgraded.text,
+    promptText:undefined,
+    stage:3,
+    pipelineStatus:`CHECKPOINT V4 · ${upgraded.converted} COMPARAÇÃO(ÕES) CONVERTIDA(S) PARA QUAL_VOCE_PREFERE · 2 SLOTS A/B`,
+    autoWorkflowJobId:undefined, autoWorkflowKind:undefined, autoWorkflowPrompt:undefined, autoWorkflowDispatchedAt:undefined,
+    autoRunStatus:automaticWasActive ? "RUNNING" : project.autoRunStatus,
+    autoRunStep:automaticWasActive ? "PROMPTS" : project.autoRunStep,
+    autoRunMessage:automaticWasActive ? `Contrato de comparação corrigido. Recriando prompts para ${upgraded.converted * 2} slots físicos A/B.` : project.autoRunMessage,
+    autoRunError:undefined, autoRunCompletedAt:undefined, autoRunRetryAt:undefined, autoRunRetryCount:0,
+  };
+}
+
+function migrateLogicalGeneratorContractV5(project:Project):Project {
+  if (Number(project.pipelineCheckpointVersion || 0) >= 5) return project;
+  let reopened = 0;
+  const items = (project.pipelineItems || []).map((item) => {
+    const comparisonGenerator = item.route === "GERADOR" && item.preset === "QUAL_VOCE_PREFERE" && (item.slot === "A" || item.slot === "B");
+    const alreadyDone = Boolean(item.outputUrl && item.status === "CONCLUIDO");
+    const hasOldActiveJob = Boolean(item.jobId) && !String(item.jobPrompt || "").includes("cada imagem/opção descrita deve resultar em UM arquivo físico individual");
+    if (!comparisonGenerator || alreadyDone || !hasOldActiveJob) return item;
+    reopened += 1;
+    return {
+      ...item, status:"PENDENTE", tentativaAtual:Math.max(1, Number(item.tentativaAtual || 1)), finalFailure:false,
+      error:undefined, errorCode:undefined, retryPrompt:item.retryPrompt,
+      jobId:undefined, jobPrompt:undefined, jobUploadToken:undefined, batchId:undefined, batchIndex:undefined, batchSize:undefined, routeConversationUrl:undefined,
+    };
+  });
+  return {
+    ...project, pipelineCheckpointVersion:5, pipelineItems:items,
+    ...(reopened ? {
+      pipelineStatus:`CHECKPOINT V5 · ${reopened} SLOT(S) DO GERADOR REABERTO(S) NO CONTRATO DE IDS LÓGICOS A/B`,
+      finalZipStatus:undefined, finalZipError:undefined, finalZipGeneratedAt:undefined,
+      autoRunStatus:project.autoRunStatus === "ERROR" ? "RUNNING" : project.autoRunStatus,
+      autoRunStep:["RUNNING","ERROR"].includes(String(project.autoRunStatus || "")) ? "IMAGENS" : project.autoRunStep,
+      autoRunMessage:["RUNNING","ERROR"].includes(String(project.autoRunStatus || "")) ? "Reabrindo somente o Gerador com 4 IDs lógicos e assets físicos A/B separados." : project.autoRunMessage,
+      autoRunError:undefined,
+    } : {}),
+  };
+}
+
 function migrateThumbnailCheckpoint(project:Project):Project {
   const expectedAspect = thumbAspectRatioForFormat(project.format);
   const expectedFormat = project.format;
@@ -467,7 +551,7 @@ function migrateThumbnailCheckpoint(project:Project):Project {
 
 function loadProjects() {
   return safeLoad<Project[]>(PROJECTS_STORAGE_KEY, initialProjects).map((rawProject) => {
-    const project = migrateThumbnailCheckpoint(migrateComparisonPipelineCheckpoint(migratePipelineCheckpoint(rawProject)));
+    const project = migrateThumbnailCheckpoint(migrateLogicalGeneratorContractV5(migrateComparisonContractV4(migrateComparisonPipelineCheckpoint(migratePipelineCheckpoint(rawProject)))));
     const withIdea = project.ideaText ? project : { ...project, ideaText:`TÍTULO: ${project.title}\nTEMA: ${project.topic}` };
     if (withIdea.stage >= 3 && !withIdea.scriptText) return { ...withIdea, stage:2 };
     if (withIdea.stage >= 4 && !withIdea.promptText) return { ...withIdea, stage:3 };
@@ -1014,10 +1098,11 @@ export default function Home() {
           await completeCorvoBridgeJob(result.jobId).catch(() => {});
           const output = typeof status.resultado === "string" ? status.resultado.trim() : "";
           if (!output) throw new Error("O especialista concluiu sem devolver conteúdo.");
+          const normalizedOutput = kind === "ROTEIRO" ? upgradeLegacyComparisonScript(output).text : output;
           setProjects((current) => current.map((item) => item.id === workingProject.id
             ? kind === "ROTEIRO"
-              ? { ...item, stage:2, scriptText:output, promptText:undefined, ...EMPTY_IMAGE_PIPELINE }
-              : { ...item, stage:3, promptText:output, ...EMPTY_IMAGE_PIPELINE }
+              ? { ...item, stage:2, scriptText:normalizedOutput, promptText:undefined, ...EMPTY_IMAGE_PIPELINE, pipelineCheckpointVersion:4 }
+              : { ...item, stage:3, promptText:normalizedOutput, ...EMPTY_IMAGE_PIPELINE }
             : item));
           setWorkflowMessage("");
           return;
@@ -1200,11 +1285,12 @@ export default function Home() {
         await completeCorvoBridgeJob(activeJobId).catch(() => {});
         const output = String(status.resultado || "").trim();
         if (!output) throw new Error(`${kind} concluiu sem devolver conteúdo.`);
+        const normalizedOutput = kind === "ROTEIRO" ? upgradeLegacyComparisonScript(output).text : output;
         const current = latestProject(project.id) || project;
         const clearWorkflow = { autoWorkflowJobId:undefined, autoWorkflowKind:undefined, autoWorkflowPrompt:undefined, autoWorkflowDispatchedAt:undefined, autoRunRetryAt:undefined, autoRunRetryCount:0 };
         const updated:Project = kind === "ROTEIRO"
-          ? { ...current, stage:3, scriptText:output, promptText:undefined, ...EMPTY_IMAGE_PIPELINE, ...clearWorkflow }
-          : { ...current, stage:4, promptText:output, ...EMPTY_IMAGE_PIPELINE, ...clearWorkflow };
+          ? { ...current, stage:3, scriptText:normalizedOutput, promptText:undefined, ...EMPTY_IMAGE_PIPELINE, pipelineCheckpointVersion:4, ...clearWorkflow }
+          : { ...current, stage:4, promptText:normalizedOutput, ...EMPTY_IMAGE_PIPELINE, ...clearWorkflow };
         patchProject(project.id, updated);
         updateAutoRun(project.id, kind === "ROTEIRO" ? "PROMPTS" : "COLLECTOR", kind === "ROTEIRO" ? "Roteiro recebido. Iniciando prompts automaticamente..." : "Prompts recebidos. Preparando o Collector automaticamente...");
         return updated;
@@ -1882,7 +1968,7 @@ export default function Home() {
               expectedFiles:officialFiles,
               expectedIndex,
               compositeSplitMode:comparisonGrid ? "GRID" : "ROWS",
-              compositeColumns:comparisonGrid ? 2 : undefined,
+              compositeColumns:undefined,
               uploadToken:captureToken,
               conversationUrl:captureConversationUrl,
               specialist:captureSpecialist,
@@ -2130,22 +2216,91 @@ export default function Home() {
     }
   }
 
+
+  function comparisonGeneratorGroups(project:Project, batch:PipelineItem[]) {
+    const byScene = new Map<string,PipelineItem[]>();
+    for (const item of batch) {
+      if (item.preset !== "QUAL_VOCE_PREFERE" || !item.sceneId || !["A","B"].includes(String(item.slot || ""))) continue;
+      const key = String(item.sceneId);
+      byScene.set(key, [...(byScene.get(key) || []), item]);
+    }
+    const grouped = new Map<string,{sceneId:string;a:PipelineItem;b:PipelineItem}>();
+    for (const [sceneId,items] of byScene) {
+      const a = items.find((item) => item.slot === "A");
+      const b = items.find((item) => item.slot === "B");
+      if (a && b) grouped.set(sceneId, { sceneId, a, b });
+    }
+    return grouped;
+  }
+
+  function comparisonLogicalBaseFile(sceneId:string, a:PipelineItem, b:PipelineItem) {
+    const aName = String(a.finalFile || "").replace(/^.*[\\/]/, "");
+    const bName = String(b.finalFile || "").replace(/^.*[\\/]/, "");
+    const aMatch = aName.match(/^(.*?)(?:[_-]A)(\.[^.]+)$/i);
+    const bMatch = bName.match(/^(.*?)(?:[_-]B)(\.[^.]+)$/i);
+    if (aMatch && bMatch && aMatch[1].toLowerCase() === bMatch[1].toLowerCase() && aMatch[2].toLowerCase() === bMatch[2].toLowerCase()) return `${aMatch[1]}${aMatch[2]}`;
+    const ext = aName.match(/(\.[^.]+)$/)?.[1] || bName.match(/(\.[^.]+)$/)?.[1] || ".png";
+    return `video1_${sceneId}${ext}`;
+  }
+
+  function buildLogicalComparisonGeneratorEntry(project:Project, sceneId:string, a:PipelineItem, b:PipelineItem) {
+    const promptA = String(a.retryPrompt || a.generationPrompt || a.reason || `${project.topic} opção A`).trim();
+    const promptB = String(b.retryPrompt || b.generationPrompt || b.reason || `${project.topic} opção B`).trim();
+    const baseFile = comparisonLogicalBaseFile(sceneId, a, b);
+    return [
+      `[ID:${sceneId}]`,
+      `PROMPT_GERACAO=Produza para este ID os assets físicos individuais necessários, sem juntar duas imagens no mesmo arquivo. Crie a comparação do quiz com: opção 1, ${promptA}; opção 2, ${promptB}. Gere a opção 1 como arquivo individual _A e a opção 2 como arquivo individual _B. Mantenha as duas opções visualmente coerentes em escala e enquadramento quando isso fizer sentido, mas cada arquivo deve conter somente sua própria opção. Alta definição, composição limpa, sem marcas-d'água, logos, textos ou números. Não coloque as duas opções no mesmo asset.`,
+      `CONTEXTO=${project.topic}. Imagens finais para o preset QUAL_VOCE_PREFERE do CorvoQuiz.`,
+      `IDENTIDADE_ESPERADA_A=${a.reason || project.topic}`,
+      `IDENTIDADE_ESPERADA_B=${b.reason || project.topic}`,
+      `PADRAO_ARQUIVO_FINAL=${baseFile}`,
+      `PADRAO_ARQUIVO_FINAL_A=${a.finalFile}`,
+      `PADRAO_ARQUIVO_FINAL_B=${b.finalFile}`,
+    ].join("\n");
+  }
+
+  function generatorDispatchEntries(project:Project, batch:PipelineItem[]) {
+    const pairGroups = comparisonGeneratorGroups(project, batch);
+    const consumed = new Set<string>();
+    const entries:Array<{id:string;text:string;physicalIds:string[]}> = [];
+    for (const item of batch) {
+      if (consumed.has(item.id)) continue;
+      const sceneId = String(item.sceneId || "");
+      const pair = pairGroups.get(sceneId);
+      if (pair && (item.id === pair.a.id || item.id === pair.b.id)) {
+        consumed.add(pair.a.id); consumed.add(pair.b.id);
+        entries.push({ id:sceneId, text:buildLogicalComparisonGeneratorEntry(project, sceneId, pair.a, pair.b), physicalIds:[pair.a.id, pair.b.id] });
+        continue;
+      }
+      consumed.add(item.id);
+      entries.push({ id:item.id, text:buildRoutedBatchEntry(project, item), physicalIds:[item.id] });
+    }
+    return entries;
+  }
+
   async function runRoutedBatch(project:Project, batch:PipelineItem[], batchId:string, attempt:number) {
     if (!batch.length) return { successes:[] as PipelineItem[], failures:[] as Array<{item:PipelineItem;errorCode:string;reason:string;technical?:boolean}> };
     const route = batch[0].route;
     if (batch.some((item) => item.route !== route)) throw new Error("PIPELINE_BATCH_ROUTE_MISMATCH");
     if (batch.length > PIPELINE_BATCH_SIZE) throw new Error("PIPELINE_BATCH_TOO_LARGE");
     const ids = batch.map((item) => item.id);
+    const dispatchEntries = route === "GERADOR" ? generatorDispatchEntries(project, batch) : batch.map((item) => ({ id:item.id, text:buildRoutedBatchEntry(project, item), physicalIds:[item.id] }));
+    const requestIds = dispatchEntries.map((entry) => entry.id);
+    const logicalComparisonCount = route === "GERADOR" ? dispatchEntries.filter((entry) => entry.physicalIds.length === 2).length : 0;
+    const physicalAssetCount = batch.length;
     let job:any = null;
     try {
       const entrada = [
         `LOTE_ID=${batchId}`,
-        `QUANTIDADE_ITENS=${batch.length}`,
-        `REGRA=Processe todos os IDs deste lote em uma única conversa e devolva um bloco [ID:...] para cada item.`,
+        `QUANTIDADE_ITENS=${dispatchEntries.length}`,
+        route === "GERADOR" ? `ASSETS_FISICOS_ESPERADOS=${physicalAssetCount}` : `ASSETS_FISICOS_ESPERADOS=${batch.length}`,
+        route === "GERADOR" && logicalComparisonCount
+          ? `REGRA=Processe todos os IDs lógicos deste lote em uma única conversa. Quando um ID contiver duas opções, gere dois assets físicos separados (_A e _B), mantendo a primeira opção como _A e a segunda como _B. ${dispatchEntries.length} ID(s) lógico(s) deste lote correspondem a ${physicalAssetCount} asset(s) físico(s) esperados.`
+          : `REGRA=Processe todos os IDs deste lote em uma única conversa e devolva um bloco [ID:...] para cada item.`,
         "",
-        ...batch.flatMap((item,index) => [buildRoutedBatchEntry(project, item), index < batch.length - 1 ? "" : ""]),
+        ...dispatchEntries.flatMap((entry,index) => [entry.text, index < dispatchEntries.length - 1 ? "" : ""]),
       ].join("\n");
-      job = await createPipelineJob(route, project, entrada, ids, attempt);
+      job = await createPipelineJob(route, project, entrada, requestIds, attempt);
       const attachments = route === "REFINADOR"
         ? batch.map((item) => ({
             url:String(item.sourceUrl || ""),
@@ -2179,7 +2334,8 @@ export default function Home() {
           appOrigin:window.location.origin,
           attachments,
           batchId,
-          batchSize:batch.length,
+          batchSize:dispatchEntries.length,
+          physicalAssetCount,
           logicalBatch:true,
           preferredConversationUrl,
           forceNewConversation:!preferredConversationUrl,
@@ -3366,7 +3522,7 @@ export default function Home() {
     const liveProject = latestProject(project.id) || project;
     const summary = consolidationState(liveProject);
     if (!summary.ready || consolidationBusy) {
-      setConsolidationMessage(summary.missingIds.length ? `Ainda faltam os IDs: ${summary.missingIds.join(", ")}.` : summary.missingFormaSlots.length ? `O preset OU ainda está sem os slots: ${summary.missingFormaSlots.join(", ")}.` : "A consolidação ainda possui pendências de IDs ou nomes.");
+      setConsolidationMessage(summary.missingIds.length ? `Ainda faltam os IDs: ${summary.missingIds.join(", ")}.` : summary.missingFormaSlots.length ? `O preset OU ainda está sem os slots: ${summary.missingFormaSlots.join(", ")}.` : summary.missingScriptFiles.length ? `O ROTEIRO ainda referencia arquivos ausentes no ZIP: ${summary.missingScriptFiles.slice(0,8).join(", ")}${summary.missingScriptFiles.length>8?"…":""}.` : "A consolidação ainda possui pendências de IDs ou nomes.");
       return false;
     }
     setConsolidationBusy(true);
@@ -3558,8 +3714,8 @@ export default function Home() {
         <div className="downloads-head"><div><span>INSTALAÇÃO E SUPORTE</span><h3 id="downloads-title">ARQUIVOS PARA BAIXAR</h3></div><small>SE PRECISAR REINSTALAR</small></div>
         <div className="download-grid">
           <a className="download-card" href="/downloads/CORVO_COLLECTOR_V080_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.8.0</small></div><i>↓</i></a>
-          <a className="download-card" href="/downloads/CORVO_BRIDGE_V0634_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.34 · AUTO-RECONECTA APÓS RELOAD</small></div><i>↓</i></a>
-          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0650.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
+          <a className="download-card" href="/downloads/CORVO_BRIDGE_V0636_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.36 · BACKUP/IMPORTAÇÃO DE GPTs + CAPTURA A/B</small></div><i>↓</i></a>
+          <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0653.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
         </div>
       </section>
       <details className="advanced-settings"><summary>CONFIGURAÇÕES AVANÇADAS</summary><div className="settings-grid"><label>CANDIDATAS COLETADAS/ID<input type="number" min="1" max="20" value={settings.maxCandidates} onChange={(event)=>setSettings({...settings,maxCandidates:Math.max(1,Math.min(20,Number(event.target.value)||20))})}/></label><label>CANDIDATAS/ID → ANALISTA<input type="number" min="1" max="30" value={settings.analystCandidatesPerId} onChange={(event)=>setSettings({...settings,analystCandidatesPerId:Math.max(1,Math.min(30,Number(event.target.value)||10))})}/></label><label>VARREDURA<input type="number" value={settings.scrollSteps} onChange={(event)=>setSettings({...settings,scrollSteps:Number(event.target.value)})}/></label><label>QUALIDADE JPEG<input type="number" step=".01" value={settings.jpegQuality} onChange={(event)=>setSettings({...settings,jpegQuality:Number(event.target.value)})}/></label><label>PREFIXO<input value={settings.prefix} onChange={(event)=>setSettings({...settings,prefix:event.target.value})}/></label></div><p>A busca coleta no máximo 20 candidatas únicas por ID. No modo Mesclado, a meta é dividida entre Google e Pinterest. Depois, o limite do Analista reduz apenas o transporte; o app não escolhe a vencedora.</p><label className="batch-label">COMANDOS EM LOTE — OPCIONAL<textarea value={settings.batchText} onChange={(event)=>setSettings({...settings,batchText:event.target.value})} placeholder={"01|primeira busca\n02|segunda busca"} /></label></details>

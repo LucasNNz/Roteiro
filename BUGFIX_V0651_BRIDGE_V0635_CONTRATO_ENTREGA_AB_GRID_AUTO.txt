@@ -1,0 +1,12 @@
+CORVOQUIZ V0.6.51 + CORVO BRIDGE V0.6.35
+
+CORREÇÃO: CONTRATO DE ENTREGA A/B + GRID AUTOMÁTICA
+
+1. Roteiros legados EMOJI_QUIZ com comparação 1 OU 2 são migrados para QUAL_VOCE_PREFERE.
+2. IMAGEM1/IMAGEM2 viram IMAGEM_A/IMAGEM_B e cada cena passa a exigir dois assets físicos.
+3. CHECKPOINT V4 invalida prompts/imagens legados incompatíveis e reabre o automático na etapa PROMPTS.
+4. Novos roteiros são normalizados pelo app mesmo se o especialista devolver EMOJI_QUIZ por engano.
+5. Consolidação valida TODOS os arquivos citados no ROTEIRO.txt; ZIP incompleto não pode mais ser marcado como final.
+6. Bridge não recebe mais compositeColumns=2 fixo.
+7. GRID infere colunas/linhas pela proporção real da imagem. Ex.: 1536x1024 com 8 slots => 4 colunas x 2 linhas.
+8. Ordem dos slots continua 01_A,01_B,02_A,02_B... em leitura row-major.
