@@ -1,0 +1,72 @@
+#fbl-panel {
+  position: fixed;
+  top: 76px;
+  right: 18px;
+  width: 360px;
+  max-height: calc(100vh - 96px);
+  overflow: auto;
+  z-index: 2147483647;
+  background: rgba(20, 20, 22, 0.98);
+  color: #fff;
+  border: 1px solid #454545;
+  border-radius: 14px;
+  box-shadow: 0 16px 50px rgba(0,0,0,.45);
+  font: 13px/1.35 Arial, sans-serif;
+}
+#fbl-panel * { box-sizing: border-box; }
+#fbl-panel header { display:flex; align-items:center; justify-content:space-between; padding:12px 14px; border-bottom:1px solid #383838; position:sticky; top:0; background:#171719; z-index:2; }
+#fbl-panel h2 { font-size:15px; margin:0; }
+#fbl-panel .fbl-body { padding: 12px 14px 16px; }
+#fbl-panel label { display:block; margin:10px 0 5px; color:#ddd; }
+#fbl-panel input[type="file"], #fbl-panel input[type="number"], #fbl-panel input[type="text"], #fbl-panel select {
+  width:100%; padding:8px 9px; border:1px solid #4c4c4c; border-radius:8px; background:#242426; color:#fff;
+}
+#fbl-panel .fbl-row { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+#fbl-panel .fbl-modes, #fbl-panel .fbl-delay-modes { display:flex; gap:6px; }
+#fbl-panel .fbl-modes button, #fbl-panel .fbl-delay-modes button { flex:1; }
+#fbl-panel button { border:0; border-radius:8px; padding:8px 10px; cursor:pointer; font-weight:700; background:#333; color:#fff; }
+#fbl-panel button.primary { background:#f2c94c; color:#111; }
+#fbl-panel button.danger { background:#9c2b2b; }
+#fbl-panel button.active { outline:2px solid #f2c94c; }
+#fbl-panel button:disabled { opacity:.45; cursor:not-allowed; }
+#fbl-panel .fbl-actions { display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; margin-top:12px; }
+#fbl-panel .fbl-status { margin-top:10px; padding:9px; border-radius:8px; background:#252527; white-space:pre-wrap; }
+#fbl-panel .fbl-log { margin-top:8px; height:150px; overflow:auto; background:#101011; border:1px solid #343434; border-radius:8px; padding:8px; font-family:Consolas, monospace; font-size:11px; white-space:pre-wrap; }
+#fbl-panel .fbl-note { color:#aaa; font-size:11px; margin-top:6px; }
+#fbl-close { background:transparent !important; font-size:18px; padding:0 4px !important; }
+.fbl-picker-outline { outline: 3px solid #f2c94c !important; outline-offset: 2px !important; cursor: crosshair !important; }
+#fbl-panel { width: 430px; }
+#fbl-panel .fbl-queue-filters { display:grid; grid-template-columns:repeat(4,1fr); gap:5px; margin-bottom:7px; }
+#fbl-panel .fbl-queue { max-height:280px; overflow:auto; border:1px solid #343434; border-radius:8px; background:#111; padding:5px; }
+#fbl-panel .fbl-queue-item { border:1px solid #383838; border-left:5px solid #666; border-radius:8px; margin:5px 0; padding:7px; background:#222; }
+#fbl-panel .fbl-queue-main { display:grid; grid-template-columns:34px 1fr auto; gap:6px; align-items:center; }
+#fbl-panel .fbl-queue-index { color:#aaa; font-family:Consolas,monospace; }
+#fbl-panel .fbl-queue-text { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:11px; }
+#fbl-panel .fbl-queue-status { font-size:9px; font-weight:800; padding:3px 5px; border-radius:10px; background:#444; }
+#fbl-panel .fbl-queue-detail { display:flex; justify-content:space-between; gap:6px; align-items:center; margin-top:5px; color:#bbb; font-size:10px; }
+#fbl-panel .fbl-retry { padding:5px 7px; font-size:10px; background:#6b2d2d; }
+#fbl-panel .status-pendente { border-left-color:#777; }
+#fbl-panel .status-processando { border-left-color:#8e6cff; background:#29233b; }
+#fbl-panel .status-ok { border-left-color:#35b76f; background:#173126; }
+#fbl-panel .status-erro { border-left-color:#e15252; background:#3b1d1d; }
+#fbl-panel .status-limite { border-left-color:#e8b640; background:#3a3016; }
+#fbl-panel .status-ok .fbl-queue-status { background:#23784a; }
+#fbl-panel .status-erro .fbl-queue-status { background:#a93434; }
+#fbl-panel .status-processando .fbl-queue-status { background:#624cc7; }
+#fbl-panel .status-limite .fbl-queue-status { background:#9a7418; }
+
+/* Corvo Flow Worker v3 status lifecycle */
+#fbl-panel .status-pending { border-left-color:#777; }
+#fbl-panel .status-sending { border-left-color:#8e6cff; background:#29233b; }
+#fbl-panel .status-sent { border-left-color:#4c8ed9; background:#18293b; }
+#fbl-panel .status-generating { border-left-color:#8e6cff; background:#29233b; }
+#fbl-panel .status-result_ready { border-left-color:#4fb7a5; background:#17332f; }
+#fbl-panel .status-downloading { border-left-color:#4fb7a5; background:#17332f; }
+#fbl-panel .status-done { border-left-color:#35b76f; background:#173126; }
+#fbl-panel .status-failed, #fbl-panel .status-retry { border-left-color:#e15252; background:#3b1d1d; }
+#fbl-panel .status-limit_reached { border-left-color:#e8b640; background:#3a3016; }
+#fbl-panel .status-done .fbl-queue-status { background:#23784a; }
+#fbl-panel .status-failed .fbl-queue-status, #fbl-panel .status-retry .fbl-queue-status { background:#a93434; }
+#fbl-panel .status-sending .fbl-queue-status, #fbl-panel .status-generating .fbl-queue-status { background:#624cc7; }
+#fbl-panel .status-sent .fbl-queue-status { background:#2d6197; }
+#fbl-panel .status-limit_reached .fbl-queue-status { background:#9a7418; }

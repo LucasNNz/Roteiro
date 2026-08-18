@@ -1,0 +1,23 @@
+CORVO FLOW WORKER V3.1.0 — VALIDACAO LOCAL
+DATA=2026-08-17
+
+VALIDACOES EXECUTADAS ANTES DO PACOTE
+- node --check content.js: PASS
+- node --check background.js: PASS
+- node --check sidepanel.js: PASS
+- node --check popup.js: PASS
+- manifest.json parse JSON: PASS
+- manifest version = 3.1.0: PASS
+- protocolo content/sidepanel = 3.1.0: PASS
+- HARD STOP presente no service worker: PASS
+- guarda MAPPING_UNCERTAIN presente: PASS
+- guarda MAPPING_CONFLICT presente: PASS
+- manifesto VERSION=1.1 presente: PASS
+- download exactName usa conflictAction=overwrite: PASS
+- arquivo de teste possui 8 IDs únicos: PASS
+- 8 JOB_ID únicos: PASS
+- 8 SLOT únicos: PASS
+- 8 ARQUIVO_FINAL únicos: PASS
+
+OBSERVACAO
+Esta validacao e estatica/local. O DOM real do Google Flow so pode ser validado no teste do usuario. O criterio principal da V3.1 continua sendo comprovar em execucao real que cada geracao e cada download permanecem associados ao JOB/SLOT correto.

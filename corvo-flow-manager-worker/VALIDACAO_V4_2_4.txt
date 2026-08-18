@@ -1,0 +1,59 @@
+VALIDACAO TECNICA V4.2.4
+
+RESULTADO: PASSOU NOS TESTES LOCAIS DISPONIVEIS
+
+1. SINTAXE JS
+- manager/server.js: OK
+- manager/public/app.js: OK
+- extension/background.js: OK
+- extension/content.js: OK
+
+2. SCHEDULER BALANCEADO
+Cenario simulado:
+12 JOBs
+3 perfis PROJECT_READY
+Burst=5
+
+Resultado:
+FLOW_PROFILE_01=4
+FLOW_PROFILE_02=4
+FLOW_PROFILE_03=4
+
+3. TIMEOUT DE BALANCEAMENTO
+Cenario:
+3 perfis elegiveis
+somente 2 PROJECT_READY
+janela=3s para teste
+12 JOBs
+
+Resultado apos timeout:
+PROFILE_01=5
+PROFILE_02=5
+2 JOBs permaneceram PENDING
+Manager nao ficou bloqueado esperando o terceiro.
+
+4. TELEMETRIA PUSH
+Sequencia simulada e validada:
+SENT
+GENERATION_STARTED
+RESULT_READY
+DOWNLOAD_REQUESTED
+DONE
+
+Manager terminou com:
+STATUS=DONE
+GENERATION_DETECTED_AT preenchido
+RESULT_DETECTED_AT preenchido
+DOWNLOAD_REQUESTED_AT preenchido
+ARQUIVO preservado
+
+5. ORDEM / EVENTO ATRASADO
+Depois de DONE foi enviado um heartbeat antigo com status SENT.
+Resultado: permaneceu DONE e o ARQUIVO continuou preservado.
+
+PENDENCIA DE VALIDACAO REAL
+Somente o Google Flow real pode comprovar:
+- 3 instancias gerando simultaneamente;
+- os eventos DOM de geracao/asset disparando em cada conta;
+- os downloads reais em paralelo;
+- manifesto final real mostrando USED=3 e timestamps preenchidos.

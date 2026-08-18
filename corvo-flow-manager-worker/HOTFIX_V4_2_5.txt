@@ -1,0 +1,68 @@
+CORVO FLOW MANAGER / WORKER
+V4.2.5 - PROFILE PREFLIGHT + LIMIT REVALIDATION
+DATA=2026-08-17
+
+OBJETIVO
+Corrigir dois comportamentos observados no Manager:
+1. LIMIT_REACHED persistia indefinidamente entre testes/execucoes.
+2. A fila podia comecar antes de o Manager saber quais perfis estavam realmente online e em PROJECT_READY.
+
+ALTERACOES
+
+1. PREFLIGHT GLOBAL ANTES DA FILA
+Ao clicar INICIAR:
+- o Manager entra em AQUECENDO PERFIS;
+- revalida estados LIMIT_REACHED;
+- tenta abrir automaticamente todos os perfis habilitados;
+- cada Worker prepara o Flow/New project;
+- aguarda PROJECT_READY;
+- nenhum JOB novo e distribuido durante o aquecimento;
+- ao concluir, cria um snapshot dos Workers realmente prontos;
+- somente entao libera a primeira onda da fila.
+
+Timeout padrao: 30 segundos, configuravel.
+Se nem todos ficarem prontos ate o timeout, trabalha com os que responderam.
+Perfis atrasados podem entrar depois na distribuicao dinamica quando se recuperarem.
+
+2. LIMIT_REACHED TEMPORARIO
+LIMIT_REACHED nao e mais estado eterno.
+
+TEST_MODE:
+- limite originado de lote TEST_MODE e identificado como LIMIT_SOURCE=TEST_MODE;
+- permanece valido para o teste de failover atual;
+- no proximo INICIAR/preflight e liberado automaticamente.
+
+LIMITE REAL:
+- LIMIT_SOURCE=FLOW_REAL;
+- recebe LIMIT_UNTIL;
+- fica fora da escala durante o hold;
+- depois do prazo volta automaticamente para OFFLINE e participa novamente do preflight.
+
+Hold padrao real: 60 minutos, configuravel de 5 a 1440 minutos.
+O botao Reativar continua permitindo revalidacao manual imediata.
+
+3. INTERFACE
+- status global AQUECENDO PERFIS durante preflight;
+- configuracao "Aquecimento / preflight dos perfis";
+- configuracao "Revalidar LIMIT_REACHED apos (minutos)";
+- perfil mostra origem do limite e horario de revalidacao quando aplicavel.
+
+4. BALANCEAMENTO
+O scheduler inicial usa o snapshot dos Workers aprovados no preflight.
+Isso evita que o primeiro Worker que abriu absorva toda a primeira onda.
+
+TESTE INTERNO
+Cenario:
+- 3 perfis cadastrados;
+- PROFILE_01 e PROFILE_02 PROJECT_READY;
+- PROFILE_03 offline;
+- 6 JOBs;
+- preflight de 5 segundos para o teste.
+
+Resultado:
+- durante preflight: nenhum START_BATCH;
+- apos timeout: PROFILE_01 e PROFILE_02 aprovados;
+- PROFILE_03 marcado indisponivel naquela rodada inicial;
+- distribuicao: 3 JOBs PROFILE_01 + 3 JOBs PROFILE_02.
+
+Tambem foi validado que LIMIT_REACHED proveniente de TEST_MODE antigo volta automaticamente para OFFLINE/revalidacao.

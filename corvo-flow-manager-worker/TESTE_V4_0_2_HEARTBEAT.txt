@@ -1,0 +1,28 @@
+TESTE V4.0.2 - PERFIL ONLINE / HEARTBEAT
+
+PREPARACAO
+- Feche todas as janelas de perfil abertas pela V4.0.1.
+- Feche o CMD da V4.0.1.
+- Nao remova nem recrie os perfis.
+
+1. Execute START_MANAGER.bat da V4.0.2.
+2. Aguarde o ambiente ficar pronto.
+3. Abra FLOW_PROFILE_01 pelo botao ABRIR.
+4. Observe o card do perfil no Manager.
+
+APROVADO SE
+- status muda OFFLINE/STARTING -> AVAILABLE (quando o Worker esta ocioso);
+- aparece Worker: FLOW_WORKER_FLOW_PROFILE_01;
+- Ultimo heartbeat passa a mostrar horario atual;
+- nao aparece WORKER_HEARTBEAT_MISSING;
+- o Side Panel da janela identifica FLOW_PROFILE_01.
+
+5. Repita para PROFILE_02 e PROFILE_03.
+
+LOTE PENDENTE
+Se ja existir lote PENDING no Manager, nao precisa cadastrar novamente.
+Assim que o primeiro Worker ficar AVAILABLE, o Manager pode atribuir o lote automaticamente.
+
+SE NAO FICAR ONLINE
+Aguarde 25-30 segundos e veja o campo Erro do card.
+Se aparecer WORKER_HEARTBEAT_MISSING, envie um print do Manager e da janela do Worker/Flow.

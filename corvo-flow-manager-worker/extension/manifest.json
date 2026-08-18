@@ -1,0 +1,59 @@
+{
+  "manifest_version": 3,
+  "name": "Corvo Flow Worker v4.2.9 + App Delivery",
+  "version": "4.2.9.1",
+  "description": "Worker Corvo Flow v4.2.9 preservado + entrega opcional ao app quando DELIVERY_MODE=APP; download normal continua inalterado nos demais lotes.",
+  "permissions": [
+    "storage",
+    "downloads",
+    "activeTab",
+    "scripting",
+    "debugger",
+    "tabs",
+    "sidePanel",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://labs.google/*",
+    "https://flow.google.com/*",
+    "http://127.0.0.1:32145/*",
+    "http://localhost:32145/*",
+    "https://*.googleusercontent.com/*",
+    "https://*.gstatic.com/*",
+    "https://storage.googleapis.com/*"
+  ],
+  "action": {
+    "default_title": "Abrir Corvo Flow Worker"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://labs.google/*",
+        "https://flow.google.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "http://127.0.0.1:32145/worker-bootstrap*",
+        "http://localhost:32145/worker-bootstrap*"
+      ],
+      "js": [
+        "bootstrap.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  }
+}

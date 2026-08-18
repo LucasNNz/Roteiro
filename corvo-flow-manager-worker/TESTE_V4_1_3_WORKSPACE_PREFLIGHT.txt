@@ -1,0 +1,18 @@
+TESTE V4.1.3 — WORKSPACE PREFLIGHT
+
+1. Feche as janelas atuais dos perfis e encerre o Manager antigo.
+2. Inicie V4.1.3.
+3. Abra FLOW_PROFILE_02 e FLOW_PROFILE_03 pelo Manager.
+4. Nao clique manualmente em New project e nao abra o Side Panel.
+5. Deixe o Manager em INICIAR/EM EXECUCAO com os JOBs pendentes existentes.
+
+ESPERADO POR PERFIL QUE RECEBER TRABALHO:
+FLOW_HOME -> OPENING_PROJECT -> PROJECT_READY
+Depois: PENDING/ASSIGNED -> START_BATCH -> envio dos prompts.
+
+Se um assignment antigo ja estiver preso no perfil, ele deve ser recuperado sem recarregar o TXT.
+
+NAO ESPERADO:
+- JOB ASSIGNED indefinidamente enquanto Flow permanece na home;
+- precisar clicar New project manualmente;
+- precisar abrir o Side Panel para o Worker funcionar.

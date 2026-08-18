@@ -1,0 +1,76 @@
+CORVO FLOW WORKER — IMPLEMENTAÇÃO V3.1.0
+DATA=2026-08-17
+
+ESCOPO
+- Mapeamento confiável JOB -> geração -> asset.
+- Manifesto final auditável.
+- Validação de nome final.
+- Guardas anti-associação incorreta.
+- Preservação integral do HARD STOP da V3.0.3.
+
+MAPEAMENTO
+MAPPING_METHOD possíveis:
+- submission_window_single
+- dom_exact
+- submission_window_scored
+- fifo_birth_order
+- restored_rebind
+
+CONFIANÇA
+- submission_window_single = 100
+- dom_exact = 88–99 conforme score
+- submission_window_scored = 82–96
+- fifo_birth_order = 72
+- restored_rebind = 60
+
+REGRA DE SEGURANÇA
+MAPPING_CONFIDENCE < 70:
+STATUS=FAILED
+ERROR_CODE=MAPPING_UNCERTAIN
+Nenhum download é feito.
+
+CONFLITO DE ASSET
+Se o mesmo asset já estiver associado a outro JOB:
+STATUS=FAILED
+ERROR_CODE=MAPPING_CONFLICT
+Nenhum segundo download é feito.
+
+NOME FINAL
+Em lote estruturado ARQUIVO_FINAL é obrigatório.
+O download usa o nome exato solicitado.
+Após o Chrome concluir, o basename real é comparado com ARQUIVO_FINAL.
+Se divergir:
+STATUS=RETRY
+ERROR_CODE=FILE_NAME_MISMATCH
+
+VALIDAÇÃO DE ENTRADA
+Para FLOW_BATCH estruturado são bloqueadas duplicidades de:
+- JOB_ID
+- SLOT
+- ARQUIVO_FINAL
+
+BATCH
+O Worker diferencia:
+PENDING
+SENDING
+ACTIVE
+WAITING_RESULTS
+STOPPED
+COMPLETE
+
+BATCH_COMPLETE ocorre apenas quando todos os JOBs forem terminais.
+
+CHECKPOINT
+- sendSequence persistido;
+- dados de mapeamento persistidos por JOB;
+- assetKey persistido;
+- manifesto corrente persistido;
+- download em andamento pode ser consultado novamente após restauração;
+- recuperação sem evidência suficiente não baixa imagem no escuro.
+
+RETRY MANUAL
+- rearma o CDP;
+- cria runId próprio;
+- limpa rastreamento antigo do JOB;
+- respeita HARD STOP;
+- não reutiliza geração/asset antigo sem querer.

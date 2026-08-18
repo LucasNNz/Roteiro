@@ -1,0 +1,9 @@
+TESTE V4.2.9 — COMPOSER FOCUS RECOVERY
+
+1. Atualize/recarregue a extensão nos perfis 01, 02 e 03.
+2. Reinicie o Manager usando START_MANAGER.bat.
+3. Confirme no painel que todos os Workers reportam 4.2.9.
+4. Rode LOTE_TESTE_6_JOBS.txt.
+5. Esperado: distribuição entre Workers PROJECT_READY.
+6. Se o Flow rerenderizar o compositor, o log pode mostrar COMPOSER_FOCUS_RETRY, mas o JOB deve continuar sem virar FAILED na primeira falha.
+7. No manifesto, verifique SENT_AT. Falha anterior a SENT deve ter sido recuperada localmente até 3 tentativas.

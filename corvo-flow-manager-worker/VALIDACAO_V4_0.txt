@@ -1,0 +1,33 @@
+VALIDACAO TECNICA V4.0.0
+DATA=2026-08-17
+
+VALIDADO EM AMBIENTE DE DESENVOLVIMENTO
+=======================================
+- manifest.json valido;
+- background.js: sintaxe JavaScript OK;
+- content.js: sintaxe JavaScript OK;
+- sidepanel.js: sintaxe JavaScript OK;
+- popup.js: sintaxe JavaScript OK;
+- manager/server.js: sintaxe JavaScript OK;
+- manager/public/app.js: sintaxe JavaScript OK;
+- endpoint /health do Manager respondeu V4.0.0;
+- cadastro dinamico de 3 perfis validado sem codigo fixo profile1/profile2;
+- fila estruturada [FLOW_BATCH] validada;
+- assignment por JOB validado;
+- simulacao de FLOW_LIMIT_REACHED no PROFILE_01 validada;
+- PROFILE_01 mudou para LIMIT_REACHED;
+- JOBs nao enviados voltaram para PENDING;
+- PROFILE_02 recebeu os mesmos JOB_ID no assignment seguinte;
+- TEST_MODE e TEST_ERROR_PROFILE foram preservados no lote entregue ao Worker;
+- dados do Manager configurados para persistir fora da pasta da versao.
+
+AINDA PRECISA DE TESTE REAL NO PC/GOOGLE FLOW
+=============================================
+- Chrome Windows abrindo com --user-data-dir por perfil;
+- carregamento automatico da extensao via --load-extension;
+- login Google persistente em cada perfil real;
+- heartbeat real entre cada instancia Worker e Manager;
+- troca apos mensagem REAL de limite do Flow;
+- duas ou mais instancias gerando/baixando simultaneamente.
+
+Nao marcar esses itens como validados ate o teste no ambiente real do usuario.

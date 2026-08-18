@@ -1,0 +1,50 @@
+CORVO FLOW MANAGER / WORKER V4.0.0 - IMPLEMENTACAO
+
+BASE
+====
+Derivada diretamente da V3.2 Failure Isolation validada em teste real:
+- disparo rapido;
+- HARD STOP;
+- mapping JOB -> geracao -> asset;
+- download individual;
+- JPG/JPEG;
+- manifesto;
+- falha isolada por JOB;
+- retry individual.
+
+NOVO NA V4
+==========
+- Manager local sem dependencias npm externas (Node.js nativo);
+- dashboard web local;
+- cadastro dinamico de N perfis;
+- diretorio de Chrome independente por profileId;
+- cookies/sessao persistentes;
+- bootstrap automatico profileId -> Worker;
+- heartbeat Worker -> Manager;
+- estados AVAILABLE/BUSY/LIMIT_REACHED/OFFLINE/PAUSED;
+- fila central de FLOW_BATCH;
+- roteamento por JOB;
+- assignments com burst configuravel;
+- preservacao de JOB_ID, SLOT, ARQUIVO_FINAL, PROMPT e TENTATIVA;
+- FLOW_LIMIT_REACHED retira o Worker da escala;
+- JOB do limite e JOBs ainda nao enviados retornam a fila;
+- resultados ja enviados podem continuar sendo observados no Worker limitado;
+- outro Worker AVAILABLE recebe os JOBs retornados;
+- perfil limitado so volta a receber trabalho depois de REATIVAR;
+- dados dos perfis ficam fora da pasta da extensao em %LOCALAPPDATA%\CorvoFlowManager.
+
+SEGURANCA OPERACIONAL
+=====================
+O Manager nao recebe nem armazena senha Google.
+A autenticacao e feita manualmente dentro de cada perfil persistente.
+
+O endpoint do Manager escuta somente 127.0.0.1 por padrao.
+Cada perfil possui token local proprio para heartbeat/commands.
+
+LIMITACOES/VALIDACAO NECESSARIA
+===============================
+1. O lancamento automatico de Chrome com --load-extension precisa ser validado no Chrome real do usuario.
+2. A deteccao de limite real depende das mensagens/DOM observados no Flow; a classificacao existente V3.2 foi preservada.
+3. Primeiro teste com 2 perfis. Depois aumentar para 3, 4, 6 etc.
+4. V4.0 ainda nao implementa dashboard remoto pelo CorvoQuiz/celular. O Manager e local.
+5. Manager usa burst por Worker; distribuicao avancada/priority fica para evolucao posterior.

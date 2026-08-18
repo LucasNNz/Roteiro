@@ -1,0 +1,22 @@
+CORVO FLOW MANAGER / WORKER V4.2.6
+AUTO STOP + PREFLIGHT DIAGNOSTICS
+DATA=2026-08-17
+
+1. O PROFILE_02 não era excluído de propósito no teste real.
+   O preflight só libera Workers que chegaram a PROJECT_READY com heartbeat recente.
+   Agora cada card mostra Preflight: READY ou OUT + motivo.
+
+2. Ao concluir todos os JOBs/lotes existentes, o Manager muda automaticamente para PARADO.
+   Isso desliga o supervisor de Auto Launch/Prewarm e faz os Workers receberem HARD STOP/IDLE no próximo heartbeat.
+   Assim, depois do último DONE, o sistema não continua criando projeto, clicando ou mexendo no Flow.
+
+3. Evento novo:
+   AUTO_STOP_COMPLETE
+
+4. PREFLIGHT_COMPLETE agora registra os perfis fora e o motivo, por exemplo:
+   FLOW_PROFILE_02=OFFLINE
+   FLOW_PROFILE_02=HEARTBEAT_STALE
+   FLOW_PROFILE_02=WORKSPACE_ERROR: ...
+   FLOW_PROFILE_02=NOT_PROJECT_READY (...)
+
+5. Tudo da V4.2.5 foi preservado: revalidação de LIMIT_REACHED, balanced scheduler, telemetria, Title Watchdog, Auto Launch, downloads e manifests.

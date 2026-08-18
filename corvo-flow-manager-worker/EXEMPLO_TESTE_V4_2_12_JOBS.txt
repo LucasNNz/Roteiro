@@ -1,0 +1,65 @@
+[FLOW_BATCH]
+VERSION=1.0
+PROJECT_ID=AUTO_V42_MULTI_001
+BATCH_ID=AUTO_V42_MULTI_001:FLOW:B01
+QUANTIDADE=12
+
+[ID:01]
+SLOT=01
+ARQUIVO_FINAL=001-pato-amarelo.jpg
+PROMPT=Uma fotografia horizontal simples de um pato de borracha amarelo sozinho sobre fundo branco, sem texto.
+
+[ID:02]
+SLOT=02
+ARQUIVO_FINAL=002-caminhao-vermelho.jpg
+PROMPT=Uma fotografia horizontal de um caminhão vermelho sozinho em uma estrada vazia durante o dia, sem texto.
+
+[ID:03]
+SLOT=03
+ARQUIVO_FINAL=003-caneca-azul.jpg
+PROMPT=Uma fotografia horizontal de uma caneca azul sozinha sobre uma mesa de madeira clara, sem texto.
+
+[ID:04]
+SLOT=04
+ARQUIVO_FINAL=004-bicicleta-verde.jpg
+PROMPT=Uma fotografia horizontal de uma bicicleta verde sozinha encostada em uma parede clara, sem pessoas e sem texto.
+
+[ID:05]
+SLOT=05
+ARQUIVO_FINAL=005-bolo-rosa.jpg
+PROMPT=Uma fotografia horizontal de um bolo rosa simples sozinho sobre uma mesa, fundo neutro, sem texto.
+
+[ID:06]
+SLOT=06
+ARQUIVO_FINAL=006-robo-prateado.jpg
+PROMPT=Uma imagem horizontal fotorealista de um pequeno robô prateado sozinho em um estúdio claro, sem texto.
+
+[ID:07]
+SLOT=07
+ARQUIVO_FINAL=007-casa-roxa.jpg
+PROMPT=Uma imagem horizontal de uma pequena casa roxa isolada em um gramado durante o dia, sem texto.
+
+[ID:08]
+SLOT=08
+ARQUIVO_FINAL=008-balao-laranja.jpg
+PROMPT=Uma fotografia horizontal de um balão de ar quente laranja sozinho no céu azul, sem texto.
+
+[ID:09]
+SLOT=09
+ARQUIVO_FINAL=009-carro-amarelo.jpg
+PROMPT=Uma fotografia horizontal de um carro esportivo amarelo sozinho estacionado em uma rua limpa, sem texto.
+
+[ID:10]
+SLOT=10
+ARQUIVO_FINAL=010-gato-cinza.jpg
+PROMPT=Uma fotografia horizontal de um gato cinza adulto sozinho sentado em um sofá claro, sem texto.
+
+[ID:11]
+SLOT=11
+ARQUIVO_FINAL=011-aviao-azul.jpg
+PROMPT=Uma imagem horizontal de um pequeno avião azul sozinho em uma pista de aeroporto durante o dia, sem texto.
+
+[ID:12]
+SLOT=12
+ARQUIVO_FINAL=012-relogio-verde.jpg
+PROMPT=Uma fotografia horizontal de um relógio despertador verde sozinho sobre uma mesa branca, sem texto.

@@ -1,0 +1,21 @@
+CORVO FLOW WORKER V3.1.3 — MANIFEST EXPORT FIX
+
+BUG CORRIGIDO
+O Side Panel acionava a exportação fazendo .click() no botão #fbl-manifest do painel oculto injetado no Google Flow. Se o Flow reconstruísse/alterasse esse DOM, o container podia existir enquanto o botão não existia mais, resultando em:
+
+Cannot read properties of null (reading 'click')
+
+CORREÇÃO
+- FLOW_BATCH_REMOTE_EXPORT_MANIFEST chama buildManagerManifest() diretamente.
+- O manifesto é persistido em corvoFlowLastManifest antes do download.
+- O TXT é enviado diretamente para FLOW_BATCH_DOWNLOAD.
+- O retorno remoto também inclui o conteúdo do manifesto.
+- Exportar TXT completo e Só erros também não dependem mais de botões DOM.
+- Pausar e calibração remotos também deixaram de depender de .click(), evitando o mesmo tipo de falha futura.
+
+MANTIDO
+- HARD STOP validado.
+- Download Guard.
+- Suporte JPG/JPEG.
+- Mapeamento JOB -> geração -> asset.
+- Manifesto [CORVO_FLOW_BATCH_RESULT] VERSION=1.1.

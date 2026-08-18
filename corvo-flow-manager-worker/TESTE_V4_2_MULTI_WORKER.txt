@@ -1,0 +1,61 @@
+CORVO FLOW MANAGER / WORKER V4.2.0
+TESTE DE ORQUESTRACAO MULTI-WORKER
+
+OBJETIVO
+Provar que 3 perfis AVAILABLE trabalham no mesmo lote, que o Manager recebe os estados de resultado/download e que o lote termina automaticamente em COMPLETE.
+
+PREPARACAO
+1. Inicie START_MANAGER.bat.
+2. Abra FLOW_PROFILE_01, FLOW_PROFILE_02 e FLOW_PROFILE_03.
+3. Espere os 3 mostrarem PROJECT_READY.
+4. Deixe os 3 como AVAILABLE.
+5. Em Configuracao, use Burst por Worker = 5.
+6. Se houver lote antigo, clique Parar tudo e Limpar fila.
+
+TESTE A - DISTRIBUICAO
+1. Carregue EXEMPLO_TESTE_V4_2_12_JOBS.txt no Manager.
+2. Confirme que os 12 JOBs ficam PENDING enquanto o Manager estiver PARADO.
+3. Clique Iniciar.
+4. Com os 3 perfis AVAILABLE antes do inicio, a divisao esperada e aproximadamente 4/4/4.
+5. Nos Eventos devem surgir 3 eventos ASSIGN, um para cada perfil.
+6. Nao abra Side Panel nem carregue TXT manualmente nos Workers.
+
+TESTE B - ESTADOS E DOWNLOAD
+Durante a geracao, o Manager deve receber automaticamente:
+ASSIGNED -> RUNNING -> RESULT_READY -> DOWNLOADING -> DONE
+
+Os arquivos devem ser baixados pelos Workers com ARQUIVO_FINAL correspondente.
+O campo do perfil no JOB deve identificar o Worker responsavel.
+
+TESTE C - CONCLUSAO AUTOMATICA
+Quando todos os JOBs terminarem:
+BATCH_STATUS=COMPLETE
+BATCH_RESULT=SUCCESS (se todos terminarem)
+DONE=12
+PENDING=0
+ASSIGNED=0
+RUNNING=0
+
+Deve aparecer evento BATCH_COMPLETE.
+Clique Baixar manifesto. O arquivo deve iniciar com:
+[CORVO_FLOW_BATCH_RESULT]
+VERSION=2.0
+
+E deve possuir a secao [WORKERS] e um bloco [ID:...] por JOB.
+
+TESTE D - LIMITE REAL
+A configuracao possui Frases de limite do Flow, uma por linha.
+Quando o Flow mostrar uma dessas frases durante um assignment:
+- o perfil deve virar LIMIT_REACHED;
+- nenhum novo JOB deve ser entregue a ele;
+- JOBs ainda nao enviados devem voltar para PENDING;
+- outros Workers AVAILABLE devem recebe-los;
+- JOBs que ja estavam efetivamente em voo permanecem no Worker original para evitar duplicacao.
+
+TESTE E - REINICIO SEGURO
+1. Com JOBs em ASSIGNED/RUNNING, feche o Manager.
+2. Abra novamente.
+3. A V4.2 deve iniciar em PARADO / RECOVERY_HOLD.
+4. Nenhum JOB deve ser redistribuido automaticamente.
+5. Abra/confirme os Workers e clique Iniciar.
+6. O Manager deve reconciliar os assignments existentes antes de criar novos.

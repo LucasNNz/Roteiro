@@ -1,0 +1,36 @@
+CORVO FLOW WORKER V3.1.1 — DOWNLOAD GUARD
+DATA=2026-08-17
+
+BUG CORRIGIDO
+O Chrome podia mostrar o mesmo arquivo sendo baixado repetidamente e o histórico acumulava várias entradas com o mesmo nome. Como o download usava conflictAction=overwrite, no disco podia existir apenas um arquivo, embora o Chrome registrasse várias solicitações.
+
+CAUSA ENCONTRADA
+Na V3.1.0, quando o acompanhamento do download falhava, interrompia ou expirava:
+- o JOB mudava para RETRY;
+- entry.downloadStarted voltava para false;
+- porém o JOB podia continuar dentro de liveTracking;
+- o MutationObserver encontrava novamente o mesmo cartão pronto;
+- downloadTrackedAsset() era chamado outra vez;
+- o mesmo asset podia iniciar outro chrome.downloads.download();
+- o ciclo podia se repetir indefinidamente.
+
+Também havia outro comportamento perigoso: ao restaurar checkpoint, o observador podia voltar a acompanhar resultados antes do usuário clicar INICIAR. Durante calibração/ajustes no Flow, um cartão antigo podia ser interpretado e baixado.
+
+CORRECOES V3.1.1
+1. Um erro de download remove o JOB de liveTracking. Não existe novo download automático do mesmo asset.
+2. DOWNLOAD_INTERRUPTED e DOWNLOAD_STATUS_UNKNOWN viram RETRY terminal para captura automática. Requer ação manual.
+3. Foi criado downloadToken persistente por batch + JOB + sendSequence + asset.
+4. O background mantém uma reserva persistente antes de chrome.downloads.download(). O mesmo token não cria uma segunda entrada no histórico.
+5. Chamadas simultâneas com o mesmo token compartilham a mesma solicitação.
+6. O downloadId é persistido assim que confirmado.
+7. O Worker inicia com captureArmed=false.
+8. Restaurar checkpoint NÃO arma captura/download automaticamente.
+9. Somente INICIAR ou retry manual arma a captura.
+10. HARD STOP também desarma captura/download.
+11. Carregar um novo TXT deixa a captura desarmada até INICIAR.
+12. FILE_NAME_MISMATCH também encerra o tracking do JOB em vez de tentar baixar de novo.
+
+REGRA NOVA
+UM JOB + UMA GERAÇÃO + UM ASSET = NO MÁXIMO UMA SOLICITAÇÃO AUTOMÁTICA DE DOWNLOAD.
+
+Se o estado do download ficar incerto, é preferível marcar RETRY e parar do que criar uma duplicata.

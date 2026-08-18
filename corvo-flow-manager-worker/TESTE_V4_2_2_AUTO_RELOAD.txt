@@ -1,0 +1,19 @@
+TESTE V4.2.2 — AUTO RELOAD DO FLOW
+
+1. Feche as janelas dos perfis.
+2. Inicie o Manager V4.2.2.
+3. Clique INICIAR e deixe o Auto Launch abrir os perfis.
+4. Nao recarregue manualmente nenhuma pagina.
+5. Se aparecer "Application error: a client-side exception has occurred":
+   - aguarde;
+   - a MESMA aba deve recarregar sozinha;
+   - nao deve nascer uma segunda aba Flow por causa da recuperacao;
+   - depois deve seguir para New project / PROJECT_READY automaticamente.
+6. Se o erro repetir, o Worker pode tentar novamente.
+7. Apos 4 tentativas em 2 minutos, deve parar de recarregar e mostrar RELOAD_LIMIT em vez de entrar em loop.
+
+APROVACAO
+- nenhum clique manual em Atualizar;
+- apenas uma aba Flow por perfil;
+- perfil volta a AVAILABLE/PROJECT_READY depois do reload;
+- lote/assignment continua preservado.

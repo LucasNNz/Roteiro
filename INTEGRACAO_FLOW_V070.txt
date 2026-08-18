@@ -1,0 +1,46 @@
+CORVOQUIZ ROTEIRO V0.7.0 — FLOW INTEGRADO
+
+FLUXO NOVO
+IDEIA -> ROTEIRO -> PROMPTS DE IMAGEM -> CORVO FLOW MANAGER -> ASSETS NO APP/R2 -> ZIP FINAL
+
+O QUE FOI PRESERVADO NO MANAGER V4.2.9
+- Perfis Chrome e logins
+- Preflight e aquecimento
+- Balanceamento e assignments
+- Composer Focus Recovery
+- Watchdog de início
+- Detecção e mapeamento dos resultados
+- Tratamento de limite
+- Auto-stop
+- Download e nomeação tradicionais para lotes normais
+
+MODO NOVO — SOMENTE QUANDO O ROTEIRO ENVIA DELIVERY_MODE=APP
+- O Worker não salva cada imagem na pasta Downloads.
+- O asset já identificado pelo Worker é entregue ao Manager local.
+- O Roteiro busca o asset em 127.0.0.1:32145.
+- O app grava o asset no R2 e usa uma URL estável do próprio projeto.
+- Ao final, o app monta o ZIP consolidado com roteiro, imagens, thumb, metadados e resultado do Flow.
+
+LOTE NORMAL / MANAGER STANDALONE
+- Sem DELIVERY_MODE=APP, o comportamento anterior continua: download físico e ARQUIVO_FINAL normal.
+- A integração não altera a distribuição dos perfis nem o mecanismo principal de geração.
+
+PROMPTS
+- A etapa anterior agora produz prompts de GERACAO para o Flow, não buscas para o Collector.
+- Cada asset físico gera um JOB.
+- QUAL_VOCE_PREFERE / A-B continua obrigatoriamente em dois arquivos separados.
+
+COMPATIBILIDADE
+- O código antigo de Collector / Analista / Refinador / Gerador foi mantido apenas para checkpoints antigos e reversão.
+- O fluxo automático novo não chama essas etapas.
+
+OPERAÇÃO
+- O serviço local do Corvo Flow Manager precisa estar aberto no PC.
+- A partir daí o Roteiro adiciona o lote, manda iniciar e acompanha tudo automaticamente.
+
+VALIDAÇÕES REALIZADAS
+- JavaScript do Manager/Worker passou no node --check.
+- Lote DELIVERY_MODE=APP foi identificado como appDelivery=true.
+- Lote normal foi identificado como appDelivery=false.
+- Entrega real de um PNG de teste Worker -> Manager -> GET /api/batch/asset funcionou.
+- Apenas 4 arquivos do core V4.2.9 foram modificados: manager/server.js, extension/content.js, extension/background.js e extension/manifest.json.

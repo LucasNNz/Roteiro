@@ -1,0 +1,49 @@
+TESTE V3.2 — FAILURE ISOLATION
+
+OBJETIVO
+Provar o fluxo:
+1 OK -> 1 FALHA -> demais continuam -> retry somente do ID afetado.
+
+PREPARACAO
+1. Desative a versao anterior da extensao.
+2. Carregue somente a V3.2.0.
+3. Abra o Google Flow.
+4. Confirme no painel: Flow conectado · CDP ativo.
+5. Use modo Sem ref.
+6. Carregue EXEMPLO_TESTE_FALHA_V3_2.txt.
+
+FASE A — ISOLAMENTO
+Clique INICIAR.
+
+Resultado esperado:
+- 01 enviado normalmente.
+- 02 vira RETRY com UI_ERROR simulado.
+- 03, 04 e 05 DEVEM continuar sendo enviados mesmo com 02 em erro.
+- O lote nao deve pausar por causa do 02.
+- Quando as geracoes concluem, 01/03/04/05 devem chegar a DONE e baixar seus arquivos.
+- 02 deve mostrar NEXT_ACTION=RETRY_SAME_PROMPT e botao "Tentar novamente".
+
+FASE B — RETRY DIRECIONADO
+Depois que a fila principal terminar, clique "Tentar novamente" apenas no 02.
+
+Resultado esperado:
+- somente 02 e digitado/enviado.
+- 01/03/04/05 nao sao refeitos.
+- TEST_ERROR_CODE nao dispara pela segunda vez.
+- 02 deve gerar, baixar e chegar a DONE.
+
+FASE C — RELATORIOS
+1. Antes do retry, use "So erros".
+Esperado: corvo_flow_errors.txt contendo somente [ID:02].
+
+2. Exporte Manifesto V1.2.
+Antes do retry final, esperado BATCH_RESULT=PARTIAL.
+Depois do retry e todos DONE, esperado BATCH_RESULT=SUCCESS e FAILED=0.
+
+CRITERIO DE APROVACAO
+- falha do 02 nao interrompe 03/04/05;
+- retry nao reenvia itens concluidos;
+- "So erros" reflete falhas assincronas atuais;
+- imagens/IDs continuam corretos;
+- nenhum download duplicado;
+- HARD STOP continua funcional.

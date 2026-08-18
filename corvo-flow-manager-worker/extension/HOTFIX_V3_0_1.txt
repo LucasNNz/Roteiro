@@ -1,0 +1,58 @@
+CORVO FLOW WORKER
+HOTFIX V3.0.1
+DATA=2026-08-17
+
+OBJETIVO DESTE HOTFIX
+Corrigir o problema observado no MVP1 em que o Side Panel mostrava JOBs PENDING,
+mas o Worker interno continuava registrando "Carregue um TXT primeiro" e nenhum
+comando chegava ao Chrome DevTools Protocol.
+
+CORRECOES
+1. A aba do Google Flow agora fica travada como alvo do Worker.
+   O refresh do Side Panel nao troca silenciosamente para outra aba Flow.
+
+2. O Worker anexa o Chrome DevTools Protocol (debugger) ao conectar.
+   O painel mostra "Flow conectado · CDP ativo" quando o alvo esta preparado.
+   Esse e o mecanismo usado pelo motor rapido original V2.5.
+
+3. Handshake de versao Side Panel <-> content script.
+   Protocolo esperado: 3.0.1.
+   Se a extensao foi atualizada com o Flow ja aberto e a pagina ainda estiver
+   executando um content script antigo, o painel recarrega a aba Flow uma vez.
+
+4. Sincronizacao forte do TXT.
+   O arquivo recebe uma assinatura. O Side Panel so considera o TXT carregado
+   quando a mesma assinatura existe no Worker da aba Flow.
+
+5. O botao INICIAR envia novamente o TXT junto do comando START como trava de
+   seguranca. Se o estado remoto estiver vazio ou divergente, a fila e reconstruida
+   antes da execucao.
+
+6. O START remoto nao usa mais apenas .click() assincrono no botao oculto.
+   Agora ele aguarda a rotina real de preparacao e inicio do Worker.
+
+7. Corrigida a corrida entre restauracao de checkpoint e carregamento de TXT.
+   Os comandos remotos aguardam a restauracao terminar antes de alterar a fila.
+
+8. O status exibido no Side Panel e calculado a partir da fila real do Worker,
+   evitando a situacao "Nenhum arquivo carregado" com itens PENDING visiveis.
+
+TESTE RECOMENDADO
+1. Em chrome://extensions, DESATIVE temporariamente a V2.5 original e a V3.0 antiga.
+   Duas extensoes nao devem disputar o mesmo chrome.debugger na mesma aba.
+2. Carregue somente a pasta da V3.0.1.
+3. Mantenha uma aba do Google Flow aberta.
+4. Abra o painel. Deve aparecer: Flow conectado · CDP ativo.
+5. Se o Flow estava aberto durante a troca de versao, ele pode recarregar UMA vez.
+6. Carregue o TXT.
+7. Confirme que o status mostra a quantidade de JOBs e nao "Nenhum arquivo carregado".
+8. Clique INICIAR.
+9. O log esperado começa com algo semelhante a:
+   - Flow preparado via Chrome DevTools Protocol.
+   - Intervalo configurado...
+   - SENT — <ID> ...
+10. Teste primeiro com 1 a 3 prompts.
+
+OBSERVACAO
+A associacao GERACAO -> ASSET continua sendo parte experimental do MVP1.
+Este hotfix prioriza restaurar o comportamento confiavel de lancamento da V2.5.

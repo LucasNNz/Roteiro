@@ -1,0 +1,18 @@
+TESTE V4.2.6 — PREFLIGHT + AUTO STOP
+
+A) PREFLIGHT
+1. Feche todas as janelas de perfil.
+2. Carregue um lote e clique Iniciar.
+3. Durante o aquecimento nenhum JOB deve ser entregue.
+4. Ao terminar, observe cada card:
+   Preflight: READY
+   ou
+   Preflight: OUT · <motivo>
+5. Um perfil OUT não é excluído de propósito: ele não passou o teste de saúde nessa rodada.
+
+B) AUTO STOP
+1. Deixe o lote concluir.
+2. Após o último JOB virar DONE/FAILED terminal, o badge do Manager deve mudar sozinho para PARADO.
+3. Nos eventos deve aparecer AUTO_STOP_COMPLETE.
+4. Aguarde 30-60 segundos. Nenhum Worker deve criar novo projeto, digitar prompt ou clicar no Flow.
+5. Para novo lote, carregue-o e clique Iniciar novamente.

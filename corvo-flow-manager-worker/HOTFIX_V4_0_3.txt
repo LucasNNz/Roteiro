@@ -1,0 +1,40 @@
+CORVO FLOW MANAGER V4.0.3 - SINGLE INSTANCE / EADDRINUSE FIX
+
+PROBLEMA CORRIGIDO
+------------------
+Ao iniciar uma nova versao do Manager enquanto uma instancia anterior ainda estava usando 127.0.0.1:32145, o Node encerrava com:
+
+EADDRINUSE: address already in use 127.0.0.1:32145
+
+CAUSA
+-----
+A porta 32145 aceita apenas um servidor. Uma instancia anterior do CORVO FLOW MANAGER continuava aberta.
+
+CORRECAO V4.0.3
+---------------
+START_MANAGER.bat agora verifica a porta ANTES de iniciar o servidor.
+
+1. Se V4.0.3 ja estiver rodando:
+   - nao abre segundo servidor;
+   - reutiliza a instancia existente;
+   - abre o painel no navegador.
+
+2. Se uma versao antiga do CORVO FLOW MANAGER estiver rodando:
+   - identifica pelo endpoint /health;
+   - encerra automaticamente o processo antigo;
+   - espera a porta 32145 ser liberada;
+   - inicia V4.0.3.
+
+3. Se OUTRO programa desconhecido estiver usando a porta:
+   - NAO encerra o programa por seguranca;
+   - informa PID e nome do processo;
+   - pede para o usuario fecha-lo.
+
+Os perfis e logins continuam persistidos em:
+%LOCALAPPDATA%\CorvoFlowManager
+
+Portanto nao e necessario recriar FLOW_PROFILE_01, 02, 03 etc.
+
+OBSERVACAO
+----------
+O Worker/extension protocol continua compativel com a base V4.0.2. Esta atualizacao atua principalmente no Manager/inicializador.

@@ -1,0 +1,17 @@
+VALIDACAO TECNICA V4.0.2
+
+- manager/server.js: sintaxe Node OK
+- manager/public/app.js: sintaxe Node OK
+- extension/background.js: sintaxe OK
+- extension/content.js: sintaxe OK
+- extension/sidepanel.js: sintaxe OK
+- extension/popup.js: sintaxe OK
+- extension/bootstrap.js: sintaxe OK
+- manifest.json: JSON valido
+- endpoint /health testado: version=4.0.2
+- /api/worker/bootstrap testado: OFFLINE -> STARTING
+- /api/worker/tick testado: STARTING -> AVAILABLE
+- lote PENDING testado: Worker AVAILABLE recebe START_BATCH e passa BUSY
+- JOB_ID/SLOT/ARQUIVO_FINAL preservados no assignment
+
+A verificacao real de download/execucao do Chrome for Testing deve ser feita no Windows do usuario.

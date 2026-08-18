@@ -1,0 +1,25 @@
+CORVO FLOW WORKER — HOTFIX V3.0.3 HARD STOP
+
+PROBLEMA CONFIRMADO
+O STOP da V3.0.2 ainda era cooperativo: alterava o estado da fila e tentava cancelar a chamada de entrada atual. Isso nao garantia o corte do atuador CDP no nivel mais baixo. Em determinadas corridas, uma execucao antiga podia continuar enviando TYPE/CLICK.
+
+CORRECAO V3.0.3
+1. PARAR agora aciona primeiro FLOW_BATCH_HARD_STOP_TAB diretamente no service worker.
+2. O service worker marca a aba como HARD STOPPED.
+3. O debugger/CDP da aba e destacado imediatamente.
+4. Enquanto HARD STOP estiver ativo, qualquer comando de atuacao TYPE, FAST_TYPE, INSERT_TEXT, REAL_AT, REAL_CLICK e CLEAR e recusado com FLOW_BATCH_STOPPED.
+5. O STOP nao depende mais do botao interno oculto nem de uma Promise da fila terminar.
+6. O content script tambem recebe o STOP, invalida runId/runEpoch e devolve o item que ainda estava em SENDING para PENDING.
+7. O polling do Side Panel nao rearma o CDP apos o STOP.
+8. Somente clicar em INICIAR executa FLOW_BATCH_ARM_TAB, libera o HARD STOP e anexa novamente o debugger.
+9. O comando remoto STOP agora aguarda hardStopQueue() diretamente; nao usa mais .click() assincrono como mecanismo principal.
+
+COMPORTAMENTO ESPERADO
+- Clique PARAR enquanto estiver digitando: a digitacao deve cessar imediatamente ou no maximo no evento CDP que ja estava em voo.
+- Nenhum proximo prompt pode ser digitado.
+- Nenhum novo clique em Gerar pode sair do Worker.
+- A conexao deve mostrar: Flow conectado · HARD STOP.
+- Clicar INICIAR rearma o Worker e permite continuar a fila.
+
+OBSERVACAO
+Geracoes que ja foram submetidas ao Flow antes do clique PARAR podem continuar sendo processadas pelo proprio Flow. O HARD STOP impede novos comandos do Worker; ele nao cancela uma geracao que o servidor do Flow ja recebeu.

@@ -1,0 +1,57 @@
+TESTE V4.2.4 — BALANCED SCHEDULER + TELEMETRIA
+
+PREPARACAO
+1. Feche o Manager anterior.
+2. Extraia V4.2.4 em pasta nova.
+3. Execute START_MANAGER.bat.
+4. Nao recrie as contas: os perfis persistentes devem ser reutilizados.
+5. Deixe os 3 perfis habilitados.
+6. Burst por Worker = 5.
+7. Janela inicial de balanceamento = 25 segundos.
+
+TESTE A — DISTRIBUICAO 3 WORKERS
+1. Feche as janelas dos perfis para testar Auto Launch.
+2. Carregue EXEMPLO_TESTE_V4_2_12_JOBS.txt.
+3. Clique INICIAR.
+4. Nao clique ABRIR manualmente.
+5. O Manager deve abrir os 3 perfis.
+6. Cada perfil deve criar/entrar em New project automaticamente.
+7. Antes da primeira distribuicao, o lote pode mostrar BALANCEANDO.
+8. Quando os 3 estiverem PROJECT_READY, esperamos:
+   FLOW_PROFILE_01 = 4 JOBs
+   FLOW_PROFILE_02 = 4 JOBs
+   FLOW_PROFILE_03 = 4 JOBs
+
+TESTE B — CICLO EM TEMPO REAL
+Durante as geracoes, observar no Manager:
+ASSIGNED -> RUNNING -> RESULT_READY -> DOWNLOADING -> DONE
+
+Nao e obrigatorio enxergar RESULT_READY por muitos segundos; ele pode ser muito rapido.
+O importante e o manifesto final registrar os timestamps.
+
+TESTE C — MANIFESTO
+Ao concluir 12/12, baixe o manifesto e confira em alguns JOBs:
+GENERATION_DETECTED_AT=preenchido
+RESULT_DETECTED_AT=preenchido
+DOWNLOAD_REQUESTED_AT=preenchido
+DONE_AT=preenchido
+ARQUIVO=nome correto
+
+Em [WORKERS], o esperado com 3 perfis saudaveis e algo proximo de:
+USED=3
+FLOW_PROFILE_01=4
+FLOW_PROFILE_02=4
+FLOW_PROFILE_03=4
+
+TESTE D — PERFIL LENTO/ERRO
+Opcionalmente deixe um perfil falhar ao abrir.
+Apos a janela configurada, os perfis prontos devem seguir trabalhando em vez de a fila ficar parada.
+Quando o perfil atrasado recuperar, ele volta a concorrer por JOBs ainda pendentes.
+
+CRITERIO DE APROVACAO
+- nenhum clique manual em ABRIR;
+- New project automatico;
+- primeira onda distribuida entre os Workers prontos;
+- download continua funcionando;
+- JOB chega a DONE no Manager;
+- manifesto registra telemetria e mais de um Worker usado.

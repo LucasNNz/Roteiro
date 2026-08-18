@@ -1,0 +1,14 @@
+<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Corvo Flow Worker</title><link rel="stylesheet" href="sidepanel.css"></head><body>
+<header><div><h1>Corvo Flow Worker</h1><small>v4.0.2 · MULTI PROFILE MVP2</small></div><span id="conn">Conectando…</span></header>
+<main>
+<section><label>Arquivo TXT</label><input id="file" type="file" accept=".txt,text/plain"><button id="loadFile" class="primary small-action">Carregar TXT</button><p id="fileHint" class="hint">Escolha o TXT e clique em Carregar TXT. Também recarrego automaticamente ao iniciar.</p></section>
+<section><label>Modo</label><div class="seg modes"><button data-mode="sem_referencia" class="active">Sem ref</button><button data-mode="referencia">Referência</button><button data-mode="auxiliar">Auxiliar</button><button data-mode="automatico">Auto</button></div><p class="hint">Sem ref: envia o prompt inteiro sem procurar @scene, @vasty ou imagem base.</p><div class="grid"><input id="fixedRef" value="@vasty"><input id="scenePrefix" value="@scene"></div></section>
+<section><label>Delay</label><div class="seg"><button data-delay="fixed">Fixo</button><button data-delay="random" class="active">Aleatório</button></div><div class="grid"><input id="fixed" type="number" step="0.5" value="3" title="Fixo"><input id="min" type="number" step="0.5" value="2" title="Mínimo"><input id="max" type="number" step="0.5" value="4" title="Máximo"></div></section>
+<section class="actions"><button id="start" class="primary">Iniciar</button><button id="pause">Pausar</button><button id="stop" class="danger">Parar</button></section>
+<section class="actions"><button id="calPrompt">Calibrar campo</button><button id="calGenerate">Calibrar gerar</button></section>
+<section class="actions"><button id="exportFull">TXT completo</button><button id="exportErrors">Só erros</button><button id="exportManifest">Manifesto V1.2</button></section>
+<div id="managerInfo" class="hint">Modo local · sem perfil do Manager</div><div id="status" class="status">Nenhum arquivo carregado.</div>
+<div class="filters"><button data-filter="todos" class="active">Todos</button><button data-filter="pending">Pendentes</button><button data-filter="sent">Sent</button><button data-filter="generating">Gerando</button><button data-filter="done">Done</button><button data-filter="failed">Erros</button></div>
+<div id="queue" class="queue"></div>
+<pre id="log"></pre>
+</main><script src="sidepanel.js"></script></body></html>

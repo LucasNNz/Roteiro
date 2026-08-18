@@ -1,0 +1,39 @@
+CORVO FLOW MANAGER / WORKER
+V4.1.4 — RESULT TRACKER RECOVERY + DOWNLOAD SYNC
+DATA=2026-08-17
+
+PROBLEMA CORRIGIDO
+Depois do Workspace Preflight, o Worker conseguia criar o projeto e enviar os prompts,
+mas em alguns projetos novos do Flow os resultados terminavam visualmente e os JOBs
+continuavam RUNNING, sem download.
+
+CAUSAS TRATADAS
+1. O Flow pode reutilizar um cartao/placeholder que ja existia antes do envio. A versao
+   anterior excluia permanentemente qualquer raiz existente no baseline, mesmo quando
+   aquele mesmo cartao mudava e passava a conter a imagem pronta.
+2. Em navegacao/reidratacao do projeto, o checkpoint pode voltar com captureArmed=false.
+   O envio ja ocorreu, mas o observador de resultado/download ficava desarmado.
+
+CORRECOES
+- baseline agora guarda assinatura do conteudo de cada cartao, nao apenas o elemento DOM;
+- um cartao pre-existente que mudou depois do clique em Gerar passa a ser elegivel;
+- Manager mantem RESULT TRACKER ativo enquanto houver SENT/GENERATING/RESULT_READY/DOWNLOADING;
+- se captureArmed cair, o Worker rearma CDP/captura automaticamente;
+- se liveTracking for perdido/recriado, JOBs ativos sao reanexados ao observador;
+- recuperacao por ordem usa manager_recovery_fifo com confianca 72%, equivalente ao FIFO
+  que ja foi validado no lote 8/8;
+- Download Guard permanece ativo: a recuperacao nao pode criar downloads infinitos;
+- ARQUIVO_FINAL continua sendo usado como nome do download e JPG/JPEG continuam aceitos.
+
+RESULTADO ESPERADO
+ASSIGNED -> SENDING -> SENT -> GENERATING -> RESULT_READY -> DOWNLOADING -> DONE
+
+No Manager, quando o Flow terminar a imagem, o JOB deve sair de RUNNING para DONE e o
+arquivo deve aparecer nos Downloads com o nome do ARQUIVO_FINAL (com ajuste .jpg/.jpeg
+quando o Flow entregar JPG).
+
+RECUPERACAO SEM REGERAR
+O Manager agora inclui MANAGER_STATUS/WORKER_STATUS no assignment. Se um JOB ja estava
+RUNNING antes de atualizar/reabrir o Worker, ele e hidratado como SENT/GENERATING e vai
+direto para recuperacao de resultado. Ele NAO volta para PENDING e NAO reenviara o prompt.
+Isso permite tentar recuperar os JOBs que ja terminaram visualmente no projeto atual.

@@ -1,0 +1,45 @@
+TESTE CORVO FLOW WORKER V3.1.1 — DOWNLOAD GUARD
+
+PREPARACAO
+1. Desative versões anteriores do Corvo Flow Worker.
+2. Carregue somente V3.1.1.
+3. Recarregue a aba do Google Flow uma vez.
+4. Abra o Side Panel e confirme v3.1.1.
+
+TESTE A — NAO BAIXAR ANTES DE INICIAR
+1. Abra um projeto do Flow que já contenha uma imagem pronta.
+2. Ajuste/calibre campos sem clicar INICIAR.
+3. Aguarde pelo menos 15 segundos.
+ESPERADO: nenhum download novo deve aparecer no Chrome.
+
+TESTE B — UM JOB, UM DOWNLOAD
+1. Carregue TXT com 1 prompt.
+2. Clique INICIAR.
+3. Aguarde a geração terminar.
+ESPERADO:
+- exatamente 1 solicitação de download para esse JOB;
+- exatamente 1 entrada nova no histórico do Chrome;
+- JOB termina em DONE;
+- não surgem novas entradas depois de DONE.
+
+TESTE C — DEIXAR PARADO DEPOIS DO DONE
+1. Após o JOB chegar a DONE, deixe a aba aberta por 1 minuto.
+ESPERADO: contagem de downloads não aumenta.
+
+TESTE D — HARD STOP
+1. Rode 3 prompts.
+2. Clique PARAR durante a execução.
+ESPERADO:
+- nenhum prompt novo;
+- captura/download também ficam desarmados;
+- cartões que terminarem depois do STOP não iniciam novos downloads até um novo INICIAR.
+
+TESTE E — LOTE
+1. Rode 3 prompts visualmente diferentes.
+ESPERADO:
+- 3 JOBs = no máximo 3 downloads automáticos;
+- cada JOB baixa uma única vez;
+- nenhuma repetição infinita no histórico.
+
+SE UM DOWNLOAD FALHAR
+O JOB deve ficar RETRY/DOWNLOAD_FAILED (ou DOWNLOAD_INTERRUPTED / DOWNLOAD_STATUS_UNKNOWN) e NÃO deve iniciar outro download sozinho.

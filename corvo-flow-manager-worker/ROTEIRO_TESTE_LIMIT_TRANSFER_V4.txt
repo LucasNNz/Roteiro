@@ -1,0 +1,32 @@
+TESTE V4.0 - LIMIT_REACHED -> OUTRO WORKER
+
+PREPARO
+1. Cadastre FLOW_PROFILE_01 e FLOW_PROFILE_02.
+2. Confirme os dois vinculados ao Manager.
+3. Pause FLOW_PROFILE_02 no dashboard.
+4. Deixe FLOW_PROFILE_01 AVAILABLE.
+5. No Manager, carregue EXEMPLO_TESTE_LIMIT_TRANSFER_V4.txt.
+
+COMPORTAMENTO ESPERADO NO PROFILE 01
+- Recebe o lote/assignment.
+- ID 01 simula FLOW_LIMIT_REACHED somente no FLOW_PROFILE_01.
+- FLOW_PROFILE_01 vira LIMIT_REACHED.
+- o prompt nao deve ser reescrito;
+- ID 01 e JOBs ainda nao enviados retornam a fila central.
+
+TRANSFERENCIA
+6. Clique REATIVAR/ABRIR em FLOW_PROFILE_02 caso necessario.
+7. FLOW_PROFILE_02 deve receber os JOBs retornados.
+8. O TEST_ERROR_PROFILE faz a falha simulada valer apenas no PROFILE_01; portanto ID 01 deve gerar normalmente no PROFILE_02.
+
+APROVACAO
+- PROFILE_01 permanece LIMIT_REACHED e fora da escala;
+- PROFILE_02 executa os JOBs retornados;
+- JOB_ID/SLOT/ARQUIVO_FINAL permanecem iguais;
+- itens DONE nao sao recriados;
+- nenhuma troca de login e feita pelo sistema;
+- reativar PROFILE_01 e uma acao explicita no Manager.
+
+OBSERVACAO
+Este teste usa TEST_MODE para validar a arquitetura sem precisar esgotar credito real do Flow.
+Depois, o mesmo comportamento deve ser repetido quando a mensagem real de limite for detectada pela UI do Flow.

@@ -1,0 +1,64 @@
+CORVO FLOW MANAGER / WORKER
+VERSION=4.2.0
+ORQUESTRACAO MULTI-WORKER + CONSOLIDACAO DE RESULTADOS
+
+PRINCIPAIS MUDANCAS
+
+1. DISTRIBUICAO JUSTA ENTRE WORKERS
+- O Burst continua sendo o teto de JOBs por assignment.
+- Quando varios perfis ja estao AVAILABLE, o Manager calcula uma fatia do lote para cada Worker.
+- Exemplo validado: 12 JOBs + 3 Workers AVAILABLE + burst 5 = 4 / 4 / 4.
+- O primeiro Worker nao absorve sozinho o lote quando os demais ja estao prontos.
+
+2. ESTADOS CONSOLIDADOS NO MANAGER
+- PENDING
+- ASSIGNED
+- RUNNING
+- RESULT_READY
+- DOWNLOADING
+- DONE
+- FAILED / MANUAL_REVIEW
+
+O Worker envia ao Manager tambem timestamps de envio, geracao detectada, resultado detectado, solicitacao de download e conclusao.
+
+3. MANIFESTO CONSOLIDADO AUTOMATICO
+- Ao terminar o lote, o Manager cria [CORVO_FLOW_BATCH_RESULT] VERSION=2.0.
+- O manifesto fica persistido em %LOCALAPPDATA%\CorvoFlowManager\manifests.
+- O dashboard possui botao Baixar manifesto.
+- O manifesto inclui totais, Workers usados, arquivo final, arquivo baixado, mapeamento, timestamps e erros por JOB.
+
+4. BATCH COMPLETE AUTOMATICO
+- Quando todos os JOBs chegam a um estado final, BATCH_STATUS vira COMPLETE.
+- BATCH_RESULT pode ser SUCCESS, PARTIAL ou FAILED.
+- Um evento BATCH_COMPLETE e salvo uma unica vez.
+
+5. HISTORICO DE WORKER POR JOB
+- Cada JOB guarda workerHistory.
+- Troca por limite preserva JOB_ID/SLOT/ARQUIVO_FINAL e registra por quais perfis o JOB passou.
+
+6. LIMITE REAL CONFIGURAVEL
+- O Manager possui campo Frases de limite do Flow.
+- As frases sao enviadas aos Workers pelo heartbeat.
+- O Worker verifica as frases configuradas alem dos padroes internos.
+- Um limite detectado durante assignment e reportado ao Manager mesmo sem depender de TEST_MODE.
+- Apenas JOBs ainda nao enviados sao transferidos imediatamente; itens em voo nao sao duplicados.
+
+7. RECUPERACAO APOS REINICIO
+- Se o Manager for fechado enquanto estava EM EXECUCAO, ao reabrir ele entra em RECOVERY_HOLD/PARADO.
+- Assignments sao preservados.
+- O usuario clica Iniciar para liberar a reconciliacao.
+- RUNNING/RESULT_READY/DOWNLOADING recuperados nao voltam a PENDING automaticamente.
+
+8. DASHBOARD
+- Resumo geral de perfis, BUSY, fila, RUNNING, DONE e falhas.
+- Progresso visual por lote.
+- Perfil/Worker visivel por JOB.
+- Estados RESULT_READY e DOWNLOADING visiveis no Manager.
+
+9. COMPATIBILIDADE
+- Mantidos: Auto Setup, Chrome for Testing, perfis persistentes, Auto Project, Profile Prewarm, HARD STOP, Download Guard, JPG/JPEG, Failure Isolation, Queue Reset e backup/importacao de configuracoes.
+
+----------------------------------------
+ATUALIZACAO V4.2.1 — AUTO LAUNCH
+----------------------------------------
+O Manager agora abre automaticamente todos os perfis habilitados ao clicar INICIAR e possui supervisor de recuperacao para Workers OFFLINE. O botao ABRIR deixa de ser requisito operacional e permanece apenas como fallback/diagnostico.

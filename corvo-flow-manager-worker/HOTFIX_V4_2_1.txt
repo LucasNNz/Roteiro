@@ -1,0 +1,44 @@
+CORVO FLOW MANAGER / WORKER
+V4.2.1 — AUTO LAUNCH / SELF-HEALING PROFILES
+DATA=2026-08-17
+
+OBJETIVO
+Eliminar a necessidade de clicar em ABRIR em cada perfil cadastrado antes de iniciar uma producao.
+
+COMPORTAMENTO NOVO
+1. Ao clicar INICIAR, o Manager procura todos os perfis cadastrados e habilitados.
+2. Perfis OFFLINE elegiveis sao abertos automaticamente com seu diretorio persistente.
+3. A sessao Google/Flow existente daquele perfil e reutilizada.
+4. Depois do heartbeat, o Worker executa o PREPARE_WORKSPACE/PROFILE_PREWARM ja existente.
+5. PROJECT_READY -> assignment -> prompts -> resultados/downloads.
+6. O usuario nao precisa clicar ABRIR perfil por perfil.
+
+SUPERVISOR AUTOMATICO
+- roda no processo do Manager, mesmo se a pagina do dashboard estiver fechada;
+- verifica os perfis periodicamente enquanto EM EXECUCAO;
+- se um Chrome/Worker habilitado cair e ficar OFFLINE, tenta abrir novamente;
+- usa cooldown entre tentativas para evitar loop de janelas/abas;
+- PAUSED, LIMIT_REACHED e REMOVED nunca sao reabertos automaticamente.
+
+ENTRADA DE NOVA DEMANDA
+Se o Manager ja estiver EM EXECUCAO e um novo lote for adicionado, ele tambem verifica imediatamente se ha perfis OFFLINE que precisam ser abertos.
+
+SEGURANCA OPERACIONAL
+- o botao ABRIR continua disponivel apenas como acao manual de diagnostico/fallback;
+- LIMIT_REACHED continua fora da escala ate REATIVAR;
+- PARAR TUDO continua impedindo distribuicao e o supervisor nao abre novos perfis enquanto PARADO;
+- os dados persistentes dos perfis continuam em %LOCALAPPDATA%\CorvoFlowManager.
+
+FLUXO ESPERADO
+TXT/API -> INICIAR
+       -> Manager abre automaticamente PROFILE_01/02/03/... habilitados
+       -> Worker heartbeat
+       -> New project automatico
+       -> PROJECT_READY
+       -> distribuicao dos JOBs
+       -> geracao/download/consolidacao
+
+VALIDACAO INTERNA
+Teste com 3 perfis cadastrados, todos OFFLINE:
+INICIAR -> 3 PROFILE_AUTO_OPEN -> 3 STARTING.
+PASSOU.

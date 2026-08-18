@@ -1,0 +1,10 @@
+VALIDACAO TECNICA V4.2.6
+
+- manager/server.js: node --check OK
+- manager/public/app.js: node --check OK
+- extension/background.js: node --check OK
+- extension/content.js: node --check OK
+- manifest.json: JSON valido
+- teste AUTO STOP: 1 JOB -> DONE -> Manager running=false / lastAction=AUTO_STOP_COMPLETE -> proximo heartbeat MANAGER_HARD_STOP: OK
+- teste PREFLIGHT: 2 perfis, 1 PROJECT_READY + 1 OFFLINE -> READY=[01], OUT=[02], motivo OFFLINE: OK
+- fila concluida impede supervisor Auto Launch/Prewarm porque control.running passa automaticamente para false.

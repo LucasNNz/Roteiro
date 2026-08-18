@@ -1,0 +1,26 @@
+[FLOW_BATCH]
+VERSION=1.0
+PROJECT_ID=AUTO_TESTE_001
+BATCH_ID=AUTO_TESTE_001:FLOW:B01
+QUANTIDADE=3
+
+[ID:01_A]
+JOB_ID=AUTO_TESTE_001:ITEM:01_A
+SLOT=01_A
+ARQUIVO_FINAL=001-urso-polar.png
+PROMPT=Um urso polar adulto de corpo inteiro caminhando sobre gelo no Ártico, fotografia documental realista, composição horizontal, sem texto.
+TENTATIVA=1
+
+[ID:01_B]
+JOB_ID=AUTO_TESTE_001:ITEM:01_B
+SLOT=01_B
+ARQUIVO_FINAL=001-castelo-flutuante.png
+PROMPT=Um castelo fantástico flutuando acima das nuvens ao pôr do sol, arquitetura monumental, composição horizontal cinematográfica, sem texto.
+TENTATIVA=1
+
+[ID:02_A]
+JOB_ID=AUTO_TESTE_001:ITEM:02_A
+SLOT=02_A
+ARQUIVO_FINAL=002-quarto-chocolate.png
+PROMPT=Um quarto inteiro feito de chocolate, cama, paredes e móveis de chocolate, aparência fotorealista, composição horizontal, sem texto.
+TENTATIVA=1

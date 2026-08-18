@@ -1,0 +1,36 @@
+[FLOW_BATCH]
+VERSION=1.0
+TEST_MODE=FALSE
+PROJECT_ID=AUTO_V426_SMALL_001
+BATCH_ID=AUTO_V426_SMALL_001:FLOW:B01
+QUANTIDADE=6
+
+[ID:01]
+SLOT=01
+ARQUIVO_FINAL=001-pato-amarelo.jpg
+PROMPT=Uma única imagem horizontal fotorrealista de um pato amarelo sozinho, centralizado, corpo inteiro visível, fundo simples de lago, iluminação natural, sem texto, sem logos, sem colagem.
+
+[ID:02]
+SLOT=02
+ARQUIVO_FINAL=002-caminhao-vermelho.jpg
+PROMPT=Uma única imagem horizontal fotorrealista de um caminhão vermelho sozinho em uma estrada, veículo inteiro visível, composição limpa, luz natural, sem texto, sem logos, sem colagem.
+
+[ID:03]
+SLOT=03
+ARQUIVO_FINAL=003-caneca-azul.jpg
+PROMPT=Uma única imagem horizontal fotorrealista de uma caneca azul sozinha sobre uma mesa clara, objeto central e totalmente visível, fundo simples, sem texto, sem logos, sem colagem.
+
+[ID:04]
+SLOT=04
+ARQUIVO_FINAL=004-bicicleta-verde.jpg
+PROMPT=Uma única imagem horizontal fotorrealista de uma bicicleta verde sozinha, vista lateral, bicicleta inteira visível, fundo urbano simples, luz natural, sem texto, sem logos, sem colagem.
+
+[ID:05]
+SLOT=05
+ARQUIVO_FINAL=005-gato-cinza.jpg
+PROMPT=Uma única imagem horizontal fotorrealista de um gato cinza sozinho sentado, corpo inteiro visível, fundo doméstico simples e discreto, iluminação natural, sem texto, sem logos, sem colagem.
+
+[ID:06]
+SLOT=06
+ARQUIVO_FINAL=006-balao-laranja.jpg
+PROMPT=Uma única imagem horizontal fotorrealista de um balão de ar quente laranja sozinho no céu azul, balão inteiro visível, composição limpa, sem texto, sem logos, sem colagem.

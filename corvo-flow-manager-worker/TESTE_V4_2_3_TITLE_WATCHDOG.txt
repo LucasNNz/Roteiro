@@ -1,0 +1,12 @@
+TESTE V4.2.3 — TITLE WATCHDOG AUTO RELOAD
+
+1. Feche o Manager/Workers da versao anterior.
+2. Inicie V4.2.3.
+3. Deixe o Auto Launch abrir um perfil que ocasionalmente apresenta o erro.
+4. Nao pressione F5 e nao clique manualmente na aba.
+5. Se o titulo da aba virar "Application error: a client-side exception has occurred", aguarde.
+6. A MESMA aba deve recarregar automaticamente.
+7. Depois deve voltar ao Flow, criar/abrir projeto e chegar a PROJECT_READY.
+8. Se o erro reaparecer, a extensao pode tentar novamente, com limite de 4 vezes em 2 minutos.
+
+IMPORTANTE: o teste nao depende do Side Panel nem do DOM da pagina de erro.

@@ -1,0 +1,25 @@
+CORVO FLOW MANAGER V4.0.4 - POWERSHELL PID FIX
+
+CAUSA
+-----
+No Windows PowerShell, $PID e uma variavel automatica somente leitura que contem o PID do proprio PowerShell.
+Os nomes de variaveis do PowerShell nao diferenciam maiusculas de minusculas, portanto $pid tambem referencia $PID.
+A V4.0.3 tentava executar:
+
+  $pid = Get-ListenerPid -Port $Port
+
+e o PowerShell interrompia o script com VariableNotWritable antes de liberar a porta 32145.
+
+CORRECAO
+--------
+- substituido $pid por $oldManagerProcessId;
+- nenhuma atribuicao e mais feita a variavel automatica $PID;
+- mantido o comportamento Single Instance da V4.0.3;
+- se houver Manager antigo na porta 32145, ele e identificado pelo /health, encerrado e a nova versao sobe na mesma porta;
+- se V4.0.4 ja estiver rodando, o START_MANAGER reutiliza a instancia;
+- se outro programa ocupar 32145, ele nao e encerrado automaticamente.
+
+IMPORTANTE
+----------
+Extraia esta versao em uma pasta nova. Nao execute START_MANAGER.bat de uma pasta antiga V3/V4 anterior.
+Os perfis/logins continuam persistidos em %LOCALAPPDATA%\CorvoFlowManager e nao precisam ser recriados.

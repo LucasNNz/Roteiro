@@ -1,0 +1,22 @@
+CORVO FLOW MANAGER / WORKER
+V4.0.5 — AUTO TAB RECOVERY
+
+CORRECAO
+- O Manager nao abre mais bootstrap + Flow simultaneamente. Ele abre somente o bootstrap.
+- Depois do binding, a extensao garante automaticamente UMA unica aba do Google Flow.
+- Abas duplicadas do Flow dentro daquele perfil dedicado sao fechadas automaticamente.
+- Abas bootstrap antigas de 127.0.0.1:32145/worker-bootstrap tambem sao removidas.
+- Se nao existir aba Flow, a extensao cria uma.
+- Se o Chrome for reaberto com abas antigas restauradas, o startup da extensao faz a recuperacao automaticamente.
+- /api/worker/bootstrap agora devolve FLOW_URL ao Worker.
+
+OBJETIVO
+Eliminar a necessidade de fechar manualmente todas as abas antes de clicar em ABRIR e evitar que sucessivos cliques em ABRIR acumulem abas e impeçam o heartbeat.
+
+TESTE
+1. Feche o Chrome for Testing do perfil.
+2. No Manager clique ABRIR uma vez.
+3. A janela pode mostrar o bootstrap por poucos instantes.
+4. Automaticamente deve restar somente uma aba do Google Flow.
+5. O perfil deve ir STARTING -> AVAILABLE.
+6. Clique ABRIR novamente com o perfil já aberto: não devem permanecer várias abas duplicadas.

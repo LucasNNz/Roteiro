@@ -1,0 +1,27 @@
+CORVO FLOW WORKER — HOTFIX V3.0.2
+
+BUG CORRIGIDO
+Ao clicar PARAR, a interface marcava parada solicitada, mas a digitação rápida continuava no background.js porque Input.insertText era executado de forma assíncrona e não possuía sinal de cancelamento. Ao terminar de digitar, o fluxo ainda podia clicar em Gerar.
+
+CORREÇÃO
+1. Foi criado um token de cancelamento por aba no background.js.
+2. FLOW_BATCH_CANCEL_INPUT invalida imediatamente a operação de digitação ativa.
+3. Digitação por blocos verifica cancelamento antes/depois de cada bloco.
+4. Digitação por teclas reais verifica cancelamento a cada caractere.
+5. O content.js possui runId próprio; uma execução antiga não pode continuar depois de PARAR/INICIAR novamente.
+6. Antes de clicar em Gerar, o Worker confirma que a execução ainda está ativa.
+7. Se PARAR ocorrer enquanto o prompt ainda está sendo digitado, o JOB volta para PENDING e não avança o índice.
+8. Se o clique em Gerar já tiver sido enviado antes do PARAR, a geração atual não pode ser desfeita; o Worker apenas confirma esse JOB e não envia o próximo. Isso evita duplicar a mesma geração no reinício.
+9. INICIAR aguarda a operação anterior liberar o lock antes de começar uma nova execução.
+
+TESTE RÁPIDO
+- Carregue 5 ou mais prompts.
+- Inicie.
+- Enquanto o primeiro ou segundo prompt ainda estiver sendo digitado, clique PARAR.
+- A digitação deve cessar no próximo bloco/caractere de cancelamento.
+- Nenhum novo clique em Gerar deve ocorrer para o prompt cancelado.
+- O item interrompido deve permanecer PENDING.
+- Clique INICIAR novamente e confirme que a fila retoma desse item, sem pular e sem duplicar os já enviados.
+
+OBSERVAÇÃO
+PARAR impede novos envios. Uma geração cujo botão Gerar já foi efetivamente clicado no Flow não pode ser cancelada retroativamente pelo Worker; ela será mantida como enviada e nenhum próximo JOB será iniciado.

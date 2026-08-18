@@ -1,0 +1,19 @@
+CORVO FLOW MANAGER / WORKER V4.2.8
+START WATCHDOG + ASSIGNMENT ACK
+
+PROBLEMA OBSERVADO
+- Um perfil podia chegar a PROJECT_READY e receber/focar a demanda, mas ficar indefinidamente em ASSIGNED sem lançar o primeiro prompt.
+- O Manager considerava PROJECT_READY suficiente e não exigia confirmação de que o assignment foi carregado e iniciou de verdade.
+
+CORRECOES
+1. ASSIGN_ACK: o Worker confirma que possui o assignment localmente.
+2. FIRST_SENT watchdog: assignment só é considerado iniciado quando aparece SENT/GENERATING/RESULT_READY/DOWNLOADING/DONE.
+3. Após ~7 s PROJECT_READY + ASSIGNED sem primeiro SENT: FORCE_START_ASSIGNMENT.
+4. Até 2 FORCE START automáticos, com limpeza segura de operationLock órfão.
+5. Persistindo por ~22 s sem nenhum prompt enviado: recarrega a mesma página do Flow uma vez e recupera o mesmo assignment do checkpoint.
+6. O reload só ocorre se nenhum JOB daquele assignment tiver sido enviado, evitando duplicação.
+7. O Worker envia START_HEALTH ao Manager: último erro, tentativas, prompt detectado, paused/hold/operationLock.
+8. Falhas na preparação do CDP ou limpeza do compositor agora ficam registradas no START_HEALTH em vez de permanecerem invisíveis.
+
+OBJETIVO
+Se PROFILE_02 aquecer mas não iniciar, o sistema deve tentar se recuperar sozinho e o diagnóstico deixa claro o bloqueio.

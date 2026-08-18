@@ -1,0 +1,12 @@
+VALIDACAO V4.2.5
+
+- manager/server.js: node --check OK
+- manager/public/app.js: node --check OK
+- extension/background.js: node --check OK
+- extension/content.js: node --check OK
+- LIMIT_REACHED TEST_MODE persistido -> revalidacao automatica: OK
+- preflight bloqueia dispatch enquanto aquece: OK
+- 3 perfis cadastrados, somente 2 PROJECT_READY: OK
+- timeout libera apenas os 2 saudaveis: OK
+- 6 JOBs distribuidos 3/3 entre os 2 Workers: OK
+- perfil offline nao bloqueia a fila apos timeout: OK

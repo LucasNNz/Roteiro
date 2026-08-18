@@ -1,0 +1,20 @@
+TESTE V4.1.5
+
+A) PERFIL 03 / PREWARM
+1. Inicie o Manager.
+2. Abra PROFILE_01, PROFILE_02 e PROFILE_03.
+3. Clique INICIAR.
+4. Mesmo sem JOB reservado para o PROFILE_03, todos os perfis online devem evoluir para PROJECT_READY.
+5. Não clique New project manualmente.
+
+B) GERAR NOVAMENTE
+1. Clique PARAR TUDO.
+2. Em um lote existente clique GERAR NOVAMENTE.
+3. Todos os JOBs do lote devem voltar para PENDING/fila.
+4. Clique INICIAR.
+5. O lote deve ser distribuído e gerado novamente.
+
+C) REMOVER / LIMPAR
+1. Com o Manager PARADO, use REMOVER LOTE para apagar apenas um lote da lista.
+2. Ou use LIMPAR FILA para remover todos os lotes.
+3. Confirme que os perfis cadastrados e os logins continuam intactos.

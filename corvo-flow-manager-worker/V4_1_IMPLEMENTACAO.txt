@@ -1,0 +1,22 @@
+CORVO FLOW MANAGER / WORKER
+V4.1.0 — AUTO PROJECT + DEMAND SYNC
+DATA=2026-08-17
+
+OBJETIVO
+Eliminar a etapa manual entre perfil AVAILABLE e o envio dos JOBs.
+
+COMPORTAMENTO
+1. Perfil abre e vincula automaticamente ao Manager.
+2. A aba unica do Flow pode permanecer na home.
+3. Quando o Manager atribui um lote, o Worker detecta se existe compositor de geracao.
+4. Se estiver na home, procura e clica automaticamente em New project / Novo projeto.
+5. Aguarda o compositor e o botao Generate ficarem disponiveis.
+6. So depois arma CDP, sincroniza a demanda e inicia os prompts.
+7. Se a UI ainda nao estiver pronta, o assignment permanece preservado e o Worker tenta novamente nos heartbeats seguintes.
+8. O Manager exibe Flow: FLOW_HOME / OPENING_PROJECT / PROJECT_READY / WAITING_PROJECT.
+
+IMPORTANTE
+- O Side Panel nao e requisito para a automacao. O Worker opera pelo content script + CDP.
+- A interface do Worker continua disponivel manualmente, mas o fluxo gerenciado nao depende de cliques no icone da extensao.
+- Se o perfil ja estiver dentro de um projeto com compositor valido, nenhum novo projeto e criado.
+- A V4.1.0 nao cria um projeto novo para cada burst se ja existir um workspace valido naquele perfil; isso evita perder geracoes em andamento.

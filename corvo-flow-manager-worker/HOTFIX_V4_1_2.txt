@@ -1,0 +1,24 @@
+CORVO FLOW MANAGER / WORKER
+VERSION=4.1.2
+HOTFIX=ASSIGNMENT RECOVERY / START DEADLOCK
+
+CAUSA
+A V4.1.1 podia manter JOBs como ASSIGNED no Manager enquanto o Worker local não possuía MANAGER_ASSIGNMENT_ID.
+Nesse estado, activeAssignmentForProfile bloqueava um novo claim, mas o Manager também não reenviava o assignment existente. O botão INICIAR mudava o controle global, porém nenhum START_BATCH chegava ao Worker.
+
+CORRECOES
+- assignmentCommand() centraliza a reconstrução do START_BATCH.
+- Se o Manager possui assignment ativo e o Worker não o possui localmente, o mesmo assignment é reenviado automaticamente.
+- JOB_ID, SLOT, ARQUIVO_FINAL, perfil e assignment original são preservados.
+- Não cria duplicata nem novo JOB para a recuperação.
+- Assignment obsoleto sem JOBs ativos é encerrado automaticamente.
+- INICIAR marca assignments ativos para reconciliação no próximo heartbeat.
+- Evento ASSIGN_RECOVERY fica visível no painel.
+- Manager envia Cache-Control no-store para evitar app.js/index.html antigos após atualização.
+
+TESTE
+1. Mantenha seus perfis e lote existentes.
+2. Abra o perfil até AVAILABLE.
+3. Clique INICIAR.
+4. Em até um heartbeat (~3s), deve surgir ASSIGN_RECOVERY ou ASSIGN nos Eventos.
+5. O Worker deve receber o lote e preparar/usar o projeto do Flow.

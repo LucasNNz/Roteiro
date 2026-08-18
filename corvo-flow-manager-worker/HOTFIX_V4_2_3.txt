@@ -1,0 +1,17 @@
+CORVO FLOW MANAGER / WORKER
+V4.2.3 — TITLE WATCHDOG AUTO RELOAD
+
+CAUSA ENCONTRADA
+A V4.2.2 procurava a mensagem de erro dentro do DOM da pagina. No caso observado, o Chrome mostrava "Application error: a client-side exception has occurred" como TITULO da aba/hover card, e o body do Flow podia estar vazio ou quebrado. Assim o content script nao encontrava texto e nao pedia reload.
+
+CORRECAO
+- background.js agora observa chrome.tabs.onUpdated e tab.title;
+- se uma aba do Flow recebe titulo de client-side exception, recarrega a MESMA aba automaticamente;
+- funciona mesmo quando o content script nao consegue executar/ler o DOM;
+- tambem verifica ao ativar aba, ao iniciar a extensao e 0,9s / 2,2s / 5s apos abrir o perfil;
+- mantem o guard de no maximo 4 tentativas em 2 minutos;
+- terceira tentativa em diante usa bypass de cache;
+- nao cria nova aba/janela para recuperar;
+- preserva perfil, assignment e JOBs.
+
+O detector antigo pelo DOM continua ativo como segunda camada.

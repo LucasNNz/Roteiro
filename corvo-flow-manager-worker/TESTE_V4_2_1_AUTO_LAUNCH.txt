@@ -1,0 +1,36 @@
+TESTE V4.2.1 — AUTO LAUNCH
+
+PRE-CONDICAO
+- Ter 3 perfis ja cadastrados/logados.
+- Fechar as janelas dos 3 perfis.
+- Deixar os perfis habilitados (nao PAUSED/LIMIT_REACHED).
+
+TESTE A — ABERTURA AUTOMATICA
+1. Inicie START_MANAGER.bat.
+2. NAO clique em ABRIR em nenhum perfil.
+3. Carregue um lote (ou use um lote PENDING existente).
+4. Clique apenas em INICIAR.
+
+ESPERADO
+- PROFILE_01/02/03 sao abertos automaticamente.
+- Eventos mostram PROFILE_AUTO_OPEN.
+- cada perfil vai STARTING -> AVAILABLE/BUSY.
+- Worker prepara New project automaticamente.
+- Flow chega a PROJECT_READY.
+- JOBs sao distribuidos e digitados sem clicar em ABRIR.
+
+TESTE B — RECUPERACAO
+1. Com producao EM EXECUCAO, feche manualmente uma janela de perfil.
+2. Aguarde o timeout de heartbeat + cooldown.
+
+ESPERADO
+- perfil fica OFFLINE;
+- supervisor tenta abrir o mesmo perfil automaticamente;
+- sessao persistente e reutilizada;
+- perfil volta ao pool sem cadastro/login novo (desde que a sessao local continue valida).
+
+NAO DEVE ACONTECER
+- abrir repetidamente a mesma janela em loop;
+- reabrir perfil PAUSED;
+- reabrir perfil LIMIT_REACHED;
+- exigir clique manual em ABRIR para o fluxo normal.

@@ -1,0 +1,54 @@
+CORVO FLOW MANAGER / WORKER V4.0.1
+AUTO SETUP DE DEPENDENCIAS
+DATA=2026-08-17
+
+OBJETIVO
+========
+O usuario nao precisa preparar Node.js manualmente antes de abrir o Manager.
+O START_MANAGER.bat agora executa uma verificacao completa no proprio CMD.
+
+O QUE O START_MANAGER.BAT FAZ
+=============================
+1. Verifica se o Windows PowerShell esta disponivel.
+2. Verifica Node.js.
+3. Se houver Node.js 18+ instalado, reutiliza essa instalacao.
+4. Se Node.js estiver ausente ou antigo, baixa automaticamente uma versao LTS portatil oficial para a pasta .runtime do proprio Corvo.
+5. O Node portatil nao precisa ser instalado globalmente no Windows e nao depende do PATH.
+6. Verifica Google Chrome.
+7. Se Chrome estiver instalado, reutiliza a instalacao existente.
+8. Se Chrome nao existir, tenta instalar automaticamente com winget.
+9. Se winget nao estiver disponivel ou falhar, baixa o MSI oficial do Google Chrome e instala como fallback.
+10. Verifica se manager/server.js e extension/manifest.json existem.
+11. Cria .runtime/runtime.env.cmd com os caminhos encontrados.
+12. Inicia o Manager usando o Node validado.
+
+PASTA .runtime
+==============
+A pasta .runtime e criada automaticamente ao lado do START_MANAGER.bat.
+Ela pode conter:
+- Node.js portatil;
+- downloads temporarios;
+- runtime.env.cmd.
+
+Ela NAO contem os perfis Google/Flow.
+Os perfis continuam persistidos em:
+%LOCALAPPDATA%\CorvoFlowManager\
+
+CHROME
+======
+Se o Chrome precisar ser instalado pelo fallback MSI, o Windows pode exibir a janela de permissao de administrador.
+Basta aceitar uma vez.
+
+SETUP_ONLY.bat
+==============
+Foi adicionado SETUP_ONLY.bat para executar somente a verificacao/instalacao das dependencias sem iniciar o Manager.
+Normalmente nao e necessario usa-lo, pois START_MANAGER.bat ja faz tudo automaticamente.
+
+SEM NPM
+=======
+O Manager V4.0.1 usa apenas modulos nativos do Node.js nesta fase.
+Portanto nao existe npm install, node_modules ou pacote adicional a instalar.
+
+ATUALIZACOES
+============
+A verificacao acontece a cada abertura, mas downloads so sao feitos quando uma dependencia realmente estiver ausente ou incompativel.

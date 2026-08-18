@@ -1,0 +1,16 @@
+CORVO FLOW WORKER V3.1.2 — JPG SUPPORT
+
+CORRECAO
+O Google Flow pode devolver a imagem fisica como JPG/JPEG mesmo quando ARQUIVO_FINAL foi solicitado com extensao PNG.
+A V3.1.1 tratava essa diferenca de extensao como FILE_NAME_MISMATCH e colocava o JOB em RETRY.
+
+NOVO COMPORTAMENTO
+- 001-pato-amarelo.png -> 001-pato-amarelo.jpg: ACEITO / DONE
+- 001-pato-amarelo.jpg -> 001-pato-amarelo.jpeg: ACEITO / DONE
+- 001-pato-amarelo.png -> 002-caminhao.jpg: CONTINUA SENDO ERRO
+
+A REGRA DE SEGURANCA
+Somente a extensao pode variar. O nome-base precisa permanecer exatamente o mesmo (comparacao sem diferenca entre maiusculas/minusculas). Isso evita esconder erros reais de mapeamento.
+
+O manifesto registra ARQUIVO com o nome que o Chrome realmente salvou.
+Download Guard e HARD STOP permanecem ativos.

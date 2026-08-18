@@ -1,0 +1,31 @@
+CORVO FLOW MANAGER / WORKER
+VERSION=4.1.1
+HOTFIX=MANAGER_START_STOP
+DATA=2026-08-17
+
+OBJETIVO
+Adicionar controle central explícito de INICIAR e PARAR no Manager.
+
+COMPORTAMENTO
+1. O Manager inicia em PARADO.
+2. Adicionar um [FLOW_BATCH] apenas coloca os JOBs na fila central.
+3. Nenhum Worker recebe novo assignment enquanto estiver PARADO.
+4. Ao clicar INICIAR, o Manager libera a distribuição para todos os perfis AVAILABLE.
+5. Ao clicar PARAR TUDO, o Manager bloqueia novos assignments e manda MANAGER_HARD_STOP aos Workers ativos no próximo heartbeat.
+6. HARD STOP corta CDP/digitação/cliques, usando o mesmo mecanismo já validado na V3.0.3.
+7. O assignment e os IDs permanecem preservados. Ao clicar INICIAR novamente, o Worker continua os JOBs pendentes sem refazer os DONE.
+8. Gerações que já haviam sido enviadas antes do STOP podem terminar no próprio Flow; o Worker não envia novos prompts até INICIAR.
+9. Pausar/Reativar por perfil continua existindo independentemente do controle global.
+
+INTERFACE
+Na seção Produções / Fila:
+- indicador PARADO / EM EXECUÇÃO
+- botão ▶ Iniciar
+- botão ■ Parar tudo
+
+TESTE RÁPIDO
+A) Abra um perfil e espere AVAILABLE.
+B) Adicione um lote. Deve permanecer PENDING enquanto o Manager estiver PARADO.
+C) Clique INICIAR. Deve virar ASSIGNED e começar automaticamente.
+D) Durante a digitação clique PARAR TUDO. Em até um heartbeat (~3 s), o Worker deve executar HARD STOP e não passar ao próximo prompt.
+E) Clique INICIAR novamente. Deve retomar o JOB pendente, preservando os já concluídos.

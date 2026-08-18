@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Corvo Flow Manager V4.2.9</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <h1>Corvo Flow Manager</h1>
+        <p>V4.2.9 · Composer Focus Recovery + retry seguro pré-SENT + Start Watchdog</p>
+      </div>
+      <div class="health"><span id="dot"></span><span id="health">Manager iniciando…</span></div>
+    </header>
+
+    <section class="overview" id="overview"></section>
+
+    <section class="card">
+      <div class="cardhead">
+        <div><h2>Perfis / Workers</h2><p>Cadastro dinâmico e distribuição automática por capacidade.</p></div>
+        <button id="addProfile" class="primary">+ Adicionar perfil</button>
+      </div>
+      <div id="profiles" class="profiles"></div>
+    </section>
+
+    <section class="grid2">
+      <section class="card">
+        <div class="cardhead"><div><h2>Adicionar lote</h2><p>O Manager divide os JOBs automaticamente entre todos os Workers disponíveis.</p></div></div>
+        <input id="batchFile" type="file" accept=".txt,text/plain" />
+        <textarea id="batchText" placeholder="Cole aqui um [FLOW_BATCH] estruturado…"></textarea>
+        <div class="actions"><button id="sendBatch" class="primary">Enviar para fila central</button><span id="batchMsg"></span></div>
+      </section>
+
+      <section class="card">
+        <div class="cardhead"><div><h2>Configuração</h2><p>Quantos JOBs um Worker pode receber por assignment.</p></div></div>
+        <label>Burst por Worker</label>
+        <input id="burstSize" type="number" min="1" max="20" value="5" />
+        <label>Aquecimento / preflight dos perfis (segundos)</label>
+        <input id="preflightWaitSeconds" type="number" min="5" max="180" value="30" />
+        <div class="muted">Ao clicar Iniciar, abre/revalida as contas e só libera a fila depois de identificar quais Workers chegaram a PROJECT_READY.</div>
+        <label>Janela inicial de balanceamento (segundos)</label>
+        <input id="initialBalanceWaitSeconds" type="number" min="3" max="120" value="25" />
+        <div class="muted">Usada apenas para balancear a primeira onda entre os Workers aprovados pelo preflight.</div>
+        <label>Revalidar LIMIT_REACHED após (minutos)</label>
+        <input id="limitHoldMinutes" type="number" min="5" max="1440" value="60" />
+        <div class="muted">Limites simulados de TEST_MODE são liberados no próximo Iniciar. Limites reais entram em espera temporária e depois voltam ao preflight automaticamente.</div>
+        <label>URL do Flow</label>
+        <input id="flowUrl" type="text" />
+        <label>Caminho do Chrome (opcional)</label>
+        <input id="chromePath" type="text" placeholder="Detectado automaticamente no Windows" />
+        <label>Frases de limite do Flow (uma por linha)</label>
+        <textarea id="limitPhrases" class="smallarea" placeholder="limite diário atingido&#10;quota exceeded&#10;try again later"></textarea>
+        <div class="actions"><button id="saveSettings">Salvar</button><span id="settingsMsg"></span></div>
+        <div class="configbackup">
+          <div class="backuphead"><strong>Backup de configurações / contas</strong><span>Perfis, nomes e configurações. Não exporta senha/cookies Google.</span></div>
+          <div class="actions">
+            <button id="exportConfig">Exportar configurações</button>
+            <button id="importConfig">Importar configurações</button>
+            <input id="configFile" type="file" accept=".json,application/json" hidden />
+            <span id="configMsg"></span>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <section class="card">
+      <div class="cardhead queuehead">
+        <div><h2>Produções / Fila</h2><p>Fila central consolidada: distribuição, execução, download e conclusão do lote em um único estado.</p></div>
+        <div class="queuecontrols">
+          <span id="runState" class="runstate STOPPED">PARADO</span>
+          <button id="startProduction" class="primary">▶ Iniciar</button>
+          <button id="stopProduction" class="danger">■ Parar tudo</button>
+          <button id="clearQueue" class="danger ghost">Limpar fila</button>
+          <button id="refresh">Atualizar</button>
+        </div>
+      </div>
+      <div id="controlMsg" class="controlmsg"></div>
+      <div id="batches"></div>
+    </section>
+
+    <section class="card">
+      <div class="cardhead"><div><h2>Eventos</h2><p>Últimos eventos do Manager.</p></div></div>
+      <pre id="events"></pre>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

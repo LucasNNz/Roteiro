@@ -1,0 +1,21 @@
+CORVO FLOW MANAGER / WORKER V4.2.9
+COMPOSER FOCUS RECOVERY + SAFE PRE-SENT RETRY
+
+PROBLEMA CONFIRMADO NO MANIFESTO
+- JOB podia receber assignment, mas falhar antes de SENT_AT com UI_ERROR.
+- Motivo registrado: "O Flow não manteve o foco no campo do prompt".
+- O foco era validado contra um único elemento DOM após 180 ms. Se o Flow rerenderizasse o contenteditable ou roubasse o foco temporariamente, o Worker encerrava o JOB.
+
+CORRECOES
+1. Seleção do compositor por score, priorizando placeholder/prompt e proximidade de botão Generate.
+2. Campos de busca/referência recebem forte penalidade para não serem confundidos com o compositor principal.
+3. Foco resiliente em até 4 tentativas.
+4. Cada tentativa relocaliza o compositor para sobreviver a rerender React.
+5. Foco combina DOM + clique real via CDP.
+6. Validação aceita o editor atual dentro do mesmo compositor, em vez de exigir identidade rígida do nó antigo.
+7. Falha de foco comprovadamente anterior a SENT recebe até 3 tentativas locais no mesmo JOB.
+8. O retry local não avança a fila e não cria duplicata porque só é usado para erros de foco anteriores à confirmação de envio.
+9. Erros de "envio não confirmado" NÃO entram nesse retry seguro, pois podem representar geração já iniciada.
+
+OBJETIVO
+Eliminar as falhas intermitentes de foco observadas principalmente nos PROFILE_01/02 sem mascarar falhas reais do Flow e sem arriscar gerar o mesmo prompt duas vezes.

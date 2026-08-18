@@ -1,0 +1,18 @@
+TESTE V4.2.8 — PROFILE 02 / START WATCHDOG
+
+1. Feche as janelas dos perfis.
+2. Abra apenas o Manager V4.2.8.
+3. Limpe/reset a fila antiga se necessário.
+4. Carregue o lote pequeno de 6 JOBs.
+5. Clique INICIAR e não clique manualmente nos perfis.
+6. Aguarde os 3 chegarem a PROJECT_READY.
+
+ESPERADO
+- Primeira onda: aproximadamente 2 JOBs por perfil se os 3 estiverem prontos.
+- Se PROFILE_02 receber assignment e não enviar:
+  ASSIGN_ACK -> ASSIGN_FORCE_START -> primeiro SENT.
+- Se continuar travado: ASSIGN_START_RELOAD uma vez; a página recarrega e o mesmo assignment é recuperado.
+- JOBs não são duplicados.
+
+SE AINDA FALHAR
+No card/eventos procure START_HEALTH / ASSIGN_FORCE_START e o último erro (CDP, compositor, operationLock, paused ou hold). Isso identifica o bloqueio real do PROFILE_02.

@@ -1,0 +1,23 @@
+CORVO FLOW MANAGER / WORKER
+VALIDACAO V4.1.1 - MANAGER START / STOP
+DATA=2026-08-17
+
+VALIDACOES EXECUTADAS
+- node --check manager/server.js: OK
+- node --check manager/public/app.js: OK
+- node --check extension/content.js: OK
+- node --check extension/background.js: OK
+- node --check extension/bootstrap.js: OK
+- manifest.json: JSON valido
+
+TESTE DE INTEGRACAO LOCAL
+1. Manager iniciou em PARADO.
+2. Worker conectado em AVAILABLE recebeu MANAGER_HOLD.
+3. Lote foi adicionado e nao foi atribuido enquanto PARADO.
+4. API INICIAR mudou controle para execucao.
+5. Worker em HOLD recebeu MANAGER_START.
+6. No heartbeat seguinte recebeu START_BATCH com os JOBs.
+7. API PARAR TUDO mudou controle para parado.
+8. Worker com assignment ativo/running recebeu MANAGER_HARD_STOP.
+
+RESULTADO=OK

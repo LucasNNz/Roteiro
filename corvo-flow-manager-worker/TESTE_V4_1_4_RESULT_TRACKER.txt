@@ -1,0 +1,23 @@
+TESTE V4.1.4 — RESULT TRACKER + DOWNLOAD
+
+1. Inicie o Manager V4.1.4.
+2. Abra um perfil ate ficar AVAILABLE / PROJECT_READY.
+3. Carregue um lote pequeno de 3 JOBs.
+4. Clique INICIAR.
+5. Nao abra Side Panel e nao clique manualmente nas imagens.
+6. Aguarde as tres geracoes terminarem no Flow.
+
+ESPERADO
+- prompts sao enviados normalmente;
+- cada JOB passa por SENT/GENERATING;
+- ao concluir visualmente no Flow, passa RESULT_READY -> DOWNLOADING -> DONE;
+- tres arquivos sao baixados, um por JOB, com o nome ARQUIVO_FINAL;
+- nenhum download se repete infinitamente;
+- Manager termina com 3 DONE / 0 falhas / 0 pendentes.
+
+RECUPERACAO
+Se o projeto/aba reidratar durante a geracao, o log do Worker pode registrar:
+MANAGER RESULT TRACKER — captura/download rearmados
+MANAGER RESULT RECOVERY — N JOB(s) reanexados ao observador
+
+Isso e esperado e nao deve reenviar prompts.

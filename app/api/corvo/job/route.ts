@@ -63,14 +63,14 @@ function buildScriptPrompt(request: CorvoJobRequest) {
 
 function buildPromptImagesRequest(request: CorvoJobRequest) {
   return [
-    "Leia o roteiro completo abaixo e determine todas as imagens físicas que precisam ser procuradas para produzi-lo.",
-    "Crie prompts de busca objetivos, visuais e sem texto na imagem.",
+    "Leia o roteiro completo abaixo e determine todas as imagens físicas que precisam ser GERADAS para produzi-lo.",
+    "Crie prompts de geração objetivos, visuais e suficientemente descritivos para produzir diretamente a imagem final no Flow. Não peça busca, referência externa, texto sobreposto, marca-d'água, logotipo ou montagem de várias opções no mesmo arquivo.",
     "REGRA CRÍTICA DO PRESET OU / QUAL_VOCE_PREFERE: cada cena possui DOIS assets independentes. IMAGEM_A e IMAGEM_B jamais podem virar uma única imagem comparativa, colagem, split-screen ou painel.",
     "Para QUAL_VOCE_PREFERE devolva DUAS linhas por cena no formato <ID>_A|IMAGEM_A|NOME_EXATO_DO_ARQUIVO|PROMPT e <ID>_B|IMAGEM_B|NOME_EXATO_DO_ARQUIVO|PROMPT. Exemplo: 01_A|IMAGEM_A|q001-urso-real.jpg|urso polar real sozinho; 01_B|IMAGEM_B|q001-urso-ia.jpg|urso polar artificial sozinho.",
-    "Para campos simples, mantenha compatibilidade com ID|PROMPT. Não transforme os sufixos _A e _B em novas perguntas: eles são slots de mídia da mesma cena.",
-    "O prompt de cada slot deve descrever SOMENTE aquela opção e proibir a presença da opção oposta.",
+    "Para campos simples, devolva ID|IMAGEM|NOME_EXATO_DO_ARQUIVO|PROMPT e use exatamente o nome de arquivo referenciado no roteiro. Não transforme os sufixos _A e _B em novas perguntas: eles são slots de mídia da mesma cena.",
+    "O prompt de cada slot deve descrever SOMENTE aquele asset físico. Se houver opções A/B, proíba explicitamente a presença da opção oposta e gere cada opção como arquivo independente.",
     "Retorne somente TXT limpo, uma linha por asset físico. Não use tabela, comentários ou bloco Markdown.",
-    "Esse TXT será enviado diretamente ao Corvo Collector na etapa seguinte.",
+    "Esse TXT será entregue diretamente ao Corvo Flow Manager na etapa seguinte; cada linha representa um JOB de geração.",
     "",
     `PROJETO: ${request.projetoId || "NÃO INFORMADO"}`,
     `TÍTULO: ${request.titulo || "NÃO INFORMADO"}`,

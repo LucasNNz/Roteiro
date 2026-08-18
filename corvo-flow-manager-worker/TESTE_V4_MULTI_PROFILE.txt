@@ -1,0 +1,24 @@
+TESTE V4.0 - CADASTRO DINAMICO E MULTI PROFILE
+
+OBJETIVO
+Provar que perfis nao sao hardcoded em 2 e que cada navegador possui sessao/Worker independente.
+
+1. Execute START_MANAGER.bat.
+2. Clique + Adicionar perfil e crie FLOW_PROFILE_01.
+3. Faça login Google/Flow nessa janela.
+4. Crie FLOW_PROFILE_02 e faça login em outra conta Google.
+5. Crie também FLOW_PROFILE_03 apenas para provar cadastro dinamico.
+6. Confira no dashboard que os tres existem separadamente.
+7. Abra o sidepanel do Worker em cada perfil.
+8. Deve aparecer Manager: FLOW_PROFILE_XX.
+9. Feche e reabra FLOW_PROFILE_01 pelo botao Abrir.
+10. O login deve continuar persistente sem logout/login automatico.
+
+APROVACAO
+- 3 perfis aparecem no Manager;
+- cada um usa diretorio/sessao independente;
+- nenhum perfil substitui o outro;
+- o numero de perfis nao esta fixado no codigo em dois;
+- heartbeat muda OFFLINE -> AVAILABLE quando o Worker/Flow esta aberto.
+
+Depois execute EXEMPLO_TESTE_LIMIT_TRANSFER_V4.txt conforme o roteiro abaixo.

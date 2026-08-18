@@ -1,0 +1,17 @@
+VALIDACAO ESTATICA V3.2.0
+
+- manifest.json valido: PASS
+- content.js sintaxe JavaScript: PASS
+- sidepanel.js sintaxe JavaScript: PASS
+- background.js sintaxe JavaScript: PASS
+- popup.js sintaxe JavaScript: PASS
+- protocolo Side Panel/Worker = 3.2.0: PASS
+- Manifesto Manager VERSION=1.2 presente: PASS
+- [CORVO_FLOW_ERRORS] VERSION=1.0 presente: PASS
+- politica FALLBACK_PROMPT presente: PASS
+- politica RETRY_SAME_PROMPT presente: PASS
+- politica RETRY_DOWNLOAD presente: PASS
+- politica OTHER_WORKER presente: PASS
+- TEST_MODE / TEST_ERROR_CODE presentes: PASS
+
+Validacao funcional ainda deve ser feita no Google Flow real usando TESTE_V3_2_FAILURE_ISOLATION.txt.

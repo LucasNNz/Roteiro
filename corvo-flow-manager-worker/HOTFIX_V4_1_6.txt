@@ -1,0 +1,19 @@
+CORVO FLOW MANAGER / WORKER V4.1.6
+BACKUP / IMPORTACAO DE CONFIGURACOES E PERFIS
+
+NOVO
+- Botao Exportar configuracoes no Manager.
+- Botao Importar configuracoes no Manager.
+- Backup JSON versionado CORVO_FLOW_MANAGER_CONFIG 1.0.
+- Exporta lista de perfis/contas cadastrados (ID, nome/label e habilitado) e configuracoes do Manager.
+- Importacao faz merge pelo FLOW_PROFILE_XX; nao duplica perfil existente.
+- No mesmo computador, se a pasta local do perfil ainda existir, ela e reutilizada e o login Google pode continuar disponivel.
+- Em outro computador, o perfil e recriado, mas sera necessario fazer login Google novamente.
+
+SEGURANCA
+O backup NAO contem senha Google, cookies, tokens de sessao ou credenciais. Isso evita transformar o JSON em um arquivo capaz de assumir uma conta Google.
+
+NAO ALTERADO
+- Perfis fisicos continuam em %LOCALAPPDATA%\CorvoFlowManager\profiles.
+- Fila de producao nao faz parte do backup de configuracao.
+- HARD STOP, prewarm, mapping, downloads e failure isolation permanecem.

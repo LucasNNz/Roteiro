@@ -1,0 +1,54 @@
+CORVO FLOW WORKER v3.0 — ROTEIRO DE TESTE MVP 1
+
+OBJETIVO DO PRIMEIRO TESTE
+Provar a cadeia:
+PROMPT -> JOB -> GERACAO -> ASSET -> JOB CORRETO
+
+NAO testar multiplos perfis ainda.
+
+TESTE A — 1 JOB
+1. Desative/remova a extensão Flow antiga para não ter dois content scripts.
+2. Carregue a pasta desta versão em chrome://extensions.
+3. Abra/atualize o Google Flow.
+4. Abra o Side Panel.
+5. Carregue EXEMPLO_FLOW_BATCH.txt.
+6. Para o primeiro teste, deixe apenas o bloco [ID:01_A] no arquivo ou use um arquivo com 1 JOB.
+7. Clique Iniciar.
+
+ESPERADO:
+PENDING -> SENDING -> SENT -> GENERATING -> RESULT READY -> DOWNLOADING -> DONE
+
+IMPORTANTE:
+- SENT deve aparecer logo depois que o Flow confirmar o envio.
+- O próximo prompt não depende de DONE.
+- DONE só pode aparecer depois de o download do asset terminar.
+- O arquivo deve usar ARQUIVO_FINAL.
+
+SE PARAR EM SENT:
+O launcher funcionou, mas o Worker não reconheceu o container/cartão de geração. Precisamos inspecionar o DOM real do Flow e calibrar findGenerationRoots().
+
+SE PARAR EM GENERATING:
+O cartão foi mapeado ao JOB, mas o Worker ainda não reconheceu o asset final ou considera o cartão ocupado. Precisamos calibrar rootBusy() / bestImageInRoot().
+
+SE BAIXAR A IMAGEM ERRADA:
+NÃO avançar para lotes maiores. Esse é o erro crítico do MVP. Precisamos fortalecer o vínculo cartão -> JOB antes de continuar.
+
+TESTE B — 3 JOBS
+Somente depois do Teste A funcionar.
+Use 3 prompts visualmente muito diferentes.
+Delay recomendado inicial: 3 segundos fixos.
+Confirme que cada ARQUIVO_FINAL corresponde ao prompt/slot correto.
+
+TESTE C — 8 A 10 JOBS
+Somente depois do Teste B sem nenhuma associação errada.
+Use slots identificados 01_A, 01_B, 02_A, 02_B etc.
+Confirme o manifesto no botão Manifesto.
+
+CHECKPOINT
+Com JOBs em SENT/GENERATING, recarregue a aba.
+A extensão deve restaurar o checkpoint e NÃO relançar automaticamente os prompts.
+A recuperação de vínculo DOM após recarga ainda é heurística nesta versão e não deve ser considerada validada até testarmos a interface real.
+
+LIMITE
+Se o Flow mostrar mensagem de limite, o JOB deve receber FLOW_LIMIT_REACHED / LIMIT_REACHED e a fila local deve pausar.
+Troca automática entre perfis pertence ao MVP 2.

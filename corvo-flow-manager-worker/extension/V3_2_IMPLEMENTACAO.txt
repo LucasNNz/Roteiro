@@ -1,0 +1,87 @@
+CORVO FLOW WORKER V3.2.0 — FAILURE ISOLATION
+
+OBJETIVO
+Fechar o tratamento de falhas por JOB antes do MVP de multiplos perfis.
+Uma falha em um ID nao pode interromper os demais IDs do lote.
+
+IMPLEMENTADO
+
+1. CLASSIFICACAO DE FALHA POR JOB
+Cada erro recebe:
+- ERROR_CODE
+- ERROR_CLASS
+- NEXT_ACTION
+- RETRY_ALLOWED
+- FAILURE_AT
+
+Politicas principais:
+PROMPT_REJECTED / CONTENT_BLOCK -> FALLBACK_PROMPT
+GENERATION_FAILED -> RETRY_SAME_PROMPT
+NETWORK_ERROR / UI_ERROR -> RETRY_SAME_PROMPT
+DOWNLOAD_FAILED / DOWNLOAD_INTERRUPTED / DOWNLOAD_STATUS_UNKNOWN -> RETRY_DOWNLOAD
+RESULT_NOT_FOUND -> RESYNC_RESULT
+FLOW_LIMIT_REACHED -> OTHER_WORKER
+SESSION_EXPIRED -> LOGIN_REQUIRED
+MAPPING_UNCERTAIN / MAPPING_CONFLICT -> MANUAL_REVIEW
+INPUT_INVALID -> FIX_INPUT
+
+2. FALHA NAO PARA O LOTE
+O loop principal registra o erro somente no JOB afetado, limpa o compositor quando necessario e segue para o proximo PENDING.
+
+3. RETRY SOMENTE DO ID AFETADO
+O botao de retry e exibido somente quando NEXT_ACTION permite operacao local:
+- RETRY_SAME_PROMPT: relanca apenas aquele JOB.
+- RETRY_DOWNLOAD: NAO gera novamente. Reutiliza assetUrl da geracao existente e repete somente o download.
+- RESYNC_RESULT: NAO reenvia prompt. Rearma observacao para procurar o resultado existente.
+
+Erros de prompt (FALLBACK_PROMPT), limite de conta (OTHER_WORKER), input invalido e conflitos de mapeamento nao recebem retry cego do mesmo prompt.
+
+4. PROTECAO DE RETRY DE DOWNLOAD
+Retry de download recebe nonce proprio para nao ser bloqueado pelo Download Guard da tentativa anterior.
+O mapeamento e a geracao existentes sao preservados.
+
+5. MANIFESTO MANAGER V1.2
+Adicionados:
+- BATCH_RESULT=SUCCESS | PARTIAL | FAILED | IN_PROGRESS
+- RETRY_SAME_PROMPT
+- RETRY_DOWNLOAD
+- FALLBACK_REQUIRED
+- OTHER_WORKER
+- MANUAL_REVIEW
+
+Por ID:
+- ERROR_CLASS
+- NEXT_ACTION
+- RETRY_ALLOWED
+- FAILURE_AT
+
+6. MANIFESTO SOMENTE DE ERROS
+O botao "So erros" agora exporta:
+[CORVO_FLOW_ERRORS]
+VERSION=1.0
+
+Ele e construido diretamente de state.prompts, nao de um snapshot antigo de results.
+Isso evita perder falhas que acontecem depois que o prompt ja foi enviado, como GENERATION_FAILED e DOWNLOAD_FAILED.
+
+7. TEST_MODE
+Somente para validacao controlada.
+No header do FLOW_BATCH:
+TEST_MODE=1
+
+Em um ID:
+TEST_ERROR_CODE=UI_ERROR
+
+A falha e simulada UMA vez antes do envio daquele ID. Os outros JOBs devem continuar. Ao clicar "Tentar novamente" somente aquele ID e enviado e a simulacao nao se repete.
+Nao usar TEST_MODE em producao.
+
+8. PRESERVADO
+- motor rapido CDP
+- HARD STOP
+- Download Guard
+- suporte JPG/JPEG
+- mapeamento JOB -> geracao -> asset
+- manifesto persistente
+- checkpoint
+
+PROTOCOLO DO SIDE PANEL
+3.2.0

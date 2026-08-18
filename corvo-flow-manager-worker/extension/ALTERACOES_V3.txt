@@ -1,0 +1,37 @@
+CORVO FLOW WORKER v3.0.0 — ALTERACOES SOBRE FLOW V2.5 FAST PROMPT
+
+PRESERVADO
+- background.js continua usando Chrome Debugger/CDP para texto/clique real.
+- Input.insertText em chunks continua sendo o caminho rápido.
+- fallback de digitação real continua disponível.
+- intervalo fixo/aleatório continua igual.
+- não espera a imagem anterior terminar para lançar o próximo prompt.
+
+MUDANCA CENTRAL
+Na V2.5, sucesso do envio era marcado como OK/CONCLUIDO.
+Na V3, sucesso do envio vira SENT.
+DONE é reservado para asset detectado e download concluído.
+
+NOVO
+- Parser [FLOW_BATCH] e [ID:...].
+- JOB_ID / PROJECT_ID / BATCH_ID / SLOT / ARQUIVO_FINAL / TENTATIVA.
+- Checkpoint corvoFlowManagerState em chrome.storage.local.
+- Observador de mutações do DOM.
+- Tentativa de vínculo entre nova geração e JOB.
+- Detecção de falha dentro do cartão associado.
+- Detecção do melhor IMG no cartão associado.
+- Download automático com nome final.
+- Poll do chrome.downloads até complete antes de DONE.
+- ERROR_CODE inicial: FLOW_LIMIT_REACHED, NETWORK_ERROR, UI_ERROR, DOWNLOAD_FAILED, RESULT_NOT_FOUND, CONTENT_BLOCK, GENERATION_FAILED, UNKNOWN_ERROR.
+- Manifesto [CORVO_FLOW_BATCH_RESULT] VERSION=1.0.
+
+AINDA NAO IMPLEMENTADO
+- Manager externo/multiprocesso real.
+- criação/gestão de múltiplos perfis Chrome.
+- troca automática de perfil ao limite.
+- várias produções distribuídas entre vários workers.
+- endpoint HTTP definitivo de retorno ao CorvoQuiz.
+- seletor DOM específico e comprovado do Google Flow para cartão/asset (precisa teste real).
+
+CRITERIO PARA PROXIMA VERSAO
+Não avançar para multiworker até provar em lote que nenhuma imagem foi atribuída ao JOB errado.

@@ -1,0 +1,23 @@
+CORVO FLOW MANAGER / WORKER V4.2.7
+LATE READY BALANCE
+
+CAUSA CORRIGIDA
+O preflight V4.2.6 congelava a lista de perfis READY no instante do timeout.
+Se FLOW_PROFILE_02 chegasse a PROJECT_READY poucos segundos depois, ele podia ficar
+saudavel e aquecido, mas continuava excluido da primeira onda. Em lote pequeno,
+01 e 03 recebiam todos os JOBs e nao sobrava trabalho para o 02.
+
+CORRECOES
+- snapshot do preflight deixa de ser exclusao permanente;
+- perfil que fica PROJECT_READY depois do timeout recebe PREFLIGHT_LATE_READY;
+- lista READY e atualizada ate a primeira onda ser realmente distribuida;
+- janela de balanceamento considera TODOS os perfis habilitados, nao somente o snapshot antigo;
+- um perfil atrasado pode entrar na primeira onda se ficar saudavel dentro da janela;
+- ready inicial exige heartbeat recente + PROJECT_READY + AVAILABLE;
+- auto-stop e demais protecoes da V4.2.6 preservados.
+
+TESTE ESPERADO COM 6 JOBS / 3 PERFIS
+Se os tres ficarem PROJECT_READY antes do fim da janela de balanceamento:
+FLOW_PROFILE_01=2
+FLOW_PROFILE_02=2
+FLOW_PROFILE_03=2

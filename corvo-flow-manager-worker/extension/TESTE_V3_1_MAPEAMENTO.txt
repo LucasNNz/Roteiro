@@ -1,0 +1,61 @@
+TESTE CORVO FLOW WORKER V3.1.0 — MAPEAMENTO
+============================================================
+
+ANTES
+1. Deixe somente a V3.1.0 ativa.
+2. Abra o Google Flow.
+3. Confirme: Flow conectado · CDP ativo.
+4. Use modo Sem ref.
+
+TESTE A — 1 JOB
+- Carregue EXEMPLO_TESTE_MAPEAMENTO_V3_1.txt ou lote equivalente com 1 item.
+- Inicie.
+- Esperado:
+  SENDING -> SENT -> GENERATING -> RESULT READY -> DOWNLOADING -> DONE
+- Confira que o arquivo baixado tem exatamente ARQUIVO_FINAL.
+- No item deve aparecer "mapa: ... · XX% · geração #N".
+
+TESTE B — 3 JOBs
+- Use os 3 primeiros IDs do arquivo de exemplo.
+- Confirme que os prompts são enviados em sequência sem esperar a imagem anterior terminar.
+- Compare visualmente cada imagem com o prompt e o nome:
+  01_A = pato amarelo
+  01_B = caminhão vermelho
+  02_A = caneca azul
+- Nenhum nome pode trocar de imagem.
+
+TESTE C — 8 JOBs
+- Use os 8 IDs do exemplo.
+- Espere todos terminarem.
+- Exporte Manifesto.
+- Esperado:
+  BATCH_STATUS=COMPLETE
+  JOBS=8
+  DONE=8
+  FAILED=0
+  ACTIVE=0
+  PENDING=0
+  MAPPING_CONFLICTS=0
+
+VALIDAÇÃO DO MANIFESTO
+Para cada ID confira:
+- SEND_SEQUENCE segue ordem dos envios.
+- GENERATION_SEQUENCE é único por geração.
+- MAPPING_METHOD está preenchido.
+- MAPPING_CONFIDENCE >= 70 para qualquer JOB DONE.
+- ARQUIVO é exatamente ARQUIVO_FINAL.
+- DONE_AT está preenchido.
+
+TESTE D — HARD STOP DE REGRESSÃO
+- Inicie 5+ prompts.
+- Clique PARAR enquanto estiver digitando.
+- Esperado: nenhuma nova digitação/clique depois do HARD STOP.
+- Uma geração já enviada antes do clique pode terminar.
+- Clique INICIAR e confirme retomada do item pendente.
+
+NÃO APROVAR SE
+- um asset for baixado com ID/nome errado;
+- dois JOBs receberem a mesma imagem por erro de mapeamento;
+- aparecer DONE sem download concluído;
+- HARD STOP deixar passar o próximo prompt;
+- manifesto declarar COMPLETE com JOB ativo ou pendente.

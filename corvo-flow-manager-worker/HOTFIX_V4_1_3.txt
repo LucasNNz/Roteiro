@@ -1,0 +1,20 @@
+CORVO FLOW MANAGER / WORKER
+V4.1.3 — WORKSPACE PREFLIGHT + DEMAND SYNC
+DATA=2026-08-17
+
+PROBLEMA CORRIGIDO
+Perfis adicionais podiam receber JOBs/assignment enquanto ainda estavam na home do Google Flow. O Manager marcava os JOBs como ASSIGNED, mas o Worker nem sempre chegava a criar New project antes da sincronizacao.
+
+NOVA REGRA
+1. Worker conectado reporta workspace.ready.
+2. Se existe fila pendente ou assignment e o Worker ainda nao esta PROJECT_READY, o Manager envia PREPARE_WORKSPACE.
+3. O Worker localiza e clica New project automaticamente.
+4. Aguarda compositor + botao Gerar.
+5. Reporta PROJECT_READY no heartbeat.
+6. Somente entao o Manager envia/recupera START_BATCH.
+
+RECUPERACAO
+Assignments que ja ficaram presos nos perfis 02/03 nao precisam ser apagados. Ao atualizar para V4.1.3, o Manager detecta assignment + workspace nao pronto, manda PREPARE_WORKSPACE e depois continua o mesmo assignment. IDs, SLOTs e ARQUIVO_FINAL sao preservados.
+
+PLUGIN / SIDE PANEL
+O Side Panel nao precisa estar aberto. A extensao trabalha pelo content script + background. A abertura automatica do projeto e a sincronizacao sao comandadas pelo Manager.

@@ -1,0 +1,14 @@
+TESTE V4.2.7 — LATE READY BALANCE
+
+1. Feche as janelas dos 3 perfis.
+2. Abra apenas o Manager V4.2.7.
+3. Use o lote pequeno de 6 JOBs.
+4. Clique Iniciar. Nao abra perfis manualmente.
+5. Observe o preflight.
+6. Se o PROFILE_02 demorar um pouco mais que 01/03, ele pode inicialmente aparecer OUT/NOT_PROJECT_READY.
+7. Se ele ficar PROJECT_READY antes da primeira onda, deve surgir evento PREFLIGHT_LATE_READY e ele volta a participar.
+8. Resultado esperado com os 3 prontos: 2 JOBs por perfil.
+9. Ao 6/6 DONE, Manager deve Auto Stop e ficar PARADO.
+
+Se PROFILE_02 ainda ficar de fora, copie o texto exibido no card em:
+Preflight / Flow / Workspace / Erro e os eventos PREFLIGHT_COMPLETE/PREFLIGHT_LATE_READY.

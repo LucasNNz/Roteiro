@@ -1,0 +1,23 @@
+VALIDACAO TECNICA V4.2.0
+
+VALIDADO EM AMBIENTE LOCAL SIMULADO:
+- server.js: sintaxe OK
+- app.js: sintaxe OK
+- content.js: sintaxe OK
+- background.js: sintaxe OK
+- manifest.json: JSON valido
+- distribuicao de 12 JOBs entre 3 Workers AVAILABLE: 4 / 4 / 4
+- sincronizacao simulada de RESULT_READY no Manager
+- conclusao de 12/12 JOBs: COMPLETE / SUCCESS
+- manifesto VERSION=2.0 gerado e persistido
+- secao [WORKERS] registrou os 3 perfis
+- evento BATCH_COMPLETE gerado
+- reinicio do Manager com estado anteriormente running: RECOVERY_HOLD / running=false
+- lista configuravel de frases de limite salva no Manager e enviada no heartbeat
+
+AINDA PRECISA DE VALIDACAO NO FLOW REAL:
+- distribuicao simultanea com as 3 contas reais do usuario
+- transicoes RESULT_READY/DOWNLOADING vindas do DOM real em todos os Workers
+- mensagem real de limite/credito do Google Flow
+- transferencia automatica real depois de limite
+- recuperacao de um lote em voo apos fechar/reabrir Manager + browsers

@@ -1,0 +1,42 @@
+[FLOW_BATCH]
+VERSION=1.0
+PROJECT_ID=AUTO_FAIL_TEST_001
+BATCH_ID=AUTO_FAIL_TEST_001:FLOW:B01
+QUANTIDADE=5
+TEST_MODE=1
+
+[ID:01]
+JOB_ID=AUTO_FAIL_TEST_001:ITEM:01
+SLOT=01
+ARQUIVO_FINAL=001-pato-amarelo.png
+PROMPT=Uma unica imagem horizontal fotorealista de um pato amarelo de brinquedo sobre uma mesa branca, fundo simples, sem texto e sem marca-d'agua.
+TENTATIVA=1
+
+[ID:02]
+JOB_ID=AUTO_FAIL_TEST_001:ITEM:02
+SLOT=02
+ARQUIVO_FINAL=002-caminhao-vermelho.png
+TEST_ERROR_CODE=UI_ERROR
+PROMPT=Uma unica imagem horizontal fotorealista de um caminhao vermelho estacionado em uma estrada vazia, composicao simples, sem texto e sem marca-d'agua.
+TENTATIVA=1
+
+[ID:03]
+JOB_ID=AUTO_FAIL_TEST_001:ITEM:03
+SLOT=03
+ARQUIVO_FINAL=003-caneca-azul.png
+PROMPT=Uma unica imagem horizontal fotorealista de uma caneca azul sobre uma mesa de madeira clara, fundo simples, sem texto e sem marca-d'agua.
+TENTATIVA=1
+
+[ID:04]
+JOB_ID=AUTO_FAIL_TEST_001:ITEM:04
+SLOT=04
+ARQUIVO_FINAL=004-bicicleta-verde.png
+PROMPT=Uma unica imagem horizontal fotorealista de uma bicicleta verde parada em uma rua tranquila, fundo discreto, sem texto e sem marca-d'agua.
+TENTATIVA=1
+
+[ID:05]
+JOB_ID=AUTO_FAIL_TEST_001:ITEM:05
+SLOT=05
+ARQUIVO_FINAL=005-balao-laranja.png
+PROMPT=Uma unica imagem horizontal fotorealista de um balao laranja flutuando em ceu azul limpo, composicao simples, sem texto e sem marca-d'agua.
+TENTATIVA=1

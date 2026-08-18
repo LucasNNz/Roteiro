@@ -1,0 +1,56 @@
+CORVO FLOW MANAGER / WORKER V4.0.2
+CFT + BINDING + HEARTBEAT FIX
+DATA=2026-08-17
+
+PROBLEMA OBSERVADO
+- perfis eram criados e as contas Google podiam ser logadas;
+- Manager continuava mostrando todos os perfis como OFFLINE;
+- lotes permaneciam PENDING porque nenhum Worker enviava heartbeat.
+
+CAUSA PRINCIPAL
+A V4.0.1 tentava carregar a extensao automaticamente no Google Chrome instalado usando:
+--load-extension=<pasta da extensao>
+
+Google Chrome oficial removeu o suporte a --load-extension a partir do Chrome 137.
+Assim, a janela do perfil podia abrir normalmente e manter login Google, mas o Corvo Flow Worker nao era carregado.
+Sem extensao:
+- nao havia binding PROFILE -> Worker;
+- nao havia heartbeat;
+- perfil permanecia OFFLINE;
+- Manager nao entregava JOBs.
+
+CORRECAO V4.0.2
+1. START_MANAGER agora verifica e baixa automaticamente Chrome for Testing Stable oficial.
+2. Chrome for Testing fica persistente em:
+   %LOCALAPPDATA%\CorvoFlowManager\runtime\chrome-for-testing
+3. O Manager usa esse runtime para os Workers e continua usando os mesmos diretorios:
+   %LOCALAPPDATA%\CorvoFlowManager\profiles\FLOW_PROFILE_XX\chrome-data
+4. Portanto perfis/logins existentes sao preservados e nao precisam ser cadastrados novamente.
+5. Adicionado bootstrap.js exclusivo para /worker-bootstrap.
+6. O bootstrap grava explicitamente PROFILE_ID + token na extensao.
+7. O Worker confirma binding ao Manager pelo endpoint /api/worker/bootstrap.
+8. Estados agora podem mostrar:
+   STARTING -> AVAILABLE/BUSY
+9. Se apos ~25 s nao houver heartbeat, o Manager registra:
+   WORKER_HEARTBEAT_MISSING
+10. O lote que ja estava PENDING continua salvo e deve ser atribuido assim que um Worker ficar AVAILABLE.
+
+TESTE RECOMENDADO
+1. Fechar as janelas antigas dos 3 perfis abertas pela V4.0.1.
+2. Encerrar o CMD antigo do Manager.
+3. Extrair V4.0.2.
+4. Executar START_MANAGER.bat.
+5. Na primeira execucao, aguardar o download do Chrome for Testing.
+6. No painel, clicar ABRIR em FLOW_PROFILE_01.
+7. Esperado:
+   STARTING
+   depois AVAILABLE
+   Worker: FLOW_WORKER_FLOW_PROFILE_01
+   Ultimo heartbeat: horario atual
+8. Repetir para PROFILE_02 e PROFILE_03.
+9. Nao recriar os perfis.
+10. O batch pendente deve ser atribuido automaticamente ao primeiro Worker AVAILABLE.
+
+OBSERVACAO
+Se uma sessao Google pedir login novamente ao abrir com Chrome for Testing, faca o login uma vez.
+Os diretorios persistentes continuam sendo os mesmos; o Manager nao apaga os dados existentes.

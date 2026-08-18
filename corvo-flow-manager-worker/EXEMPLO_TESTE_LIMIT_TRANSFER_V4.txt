@@ -1,0 +1,32 @@
+[FLOW_BATCH]
+VERSION=1.0
+TEST_MODE=TRUE
+PROJECT_ID=AUTO_MULTI_PROFILE_TEST_001
+BATCH_ID=AUTO_MULTI_PROFILE_TEST_001:FLOW:B01
+QUANTIDADE=4
+
+[ID:01]
+JOB_ID=AUTO_MULTI_PROFILE_TEST_001:ITEM:01
+SLOT=01
+ARQUIVO_FINAL=001-pato-amarelo.jpg
+TEST_ERROR_CODE=FLOW_LIMIT_REACHED
+TEST_ERROR_PROFILE=FLOW_PROFILE_01
+PROMPT=Uma unica imagem horizontal fotorealista de um pato amarelo de borracha centralizado sobre fundo azul-claro, sem texto e sem colagem.
+
+[ID:02]
+JOB_ID=AUTO_MULTI_PROFILE_TEST_001:ITEM:02
+SLOT=02
+ARQUIVO_FINAL=002-caminhao-vermelho.jpg
+PROMPT=Uma unica imagem horizontal fotorealista de um caminhao vermelho isolado em uma estrada vazia sob ceu claro, sem texto e sem colagem.
+
+[ID:03]
+JOB_ID=AUTO_MULTI_PROFILE_TEST_001:ITEM:03
+SLOT=03
+ARQUIVO_FINAL=003-caneca-azul.jpg
+PROMPT=Uma unica imagem horizontal fotorealista de uma caneca azul sobre uma mesa de madeira clara, fundo simples, sem texto e sem colagem.
+
+[ID:04]
+JOB_ID=AUTO_MULTI_PROFILE_TEST_001:ITEM:04
+SLOT=04
+ARQUIVO_FINAL=004-balao-laranja.jpg
+PROMPT=Uma unica imagem horizontal fotorealista de um balao laranja flutuando em um ceu azul limpo, sem texto e sem colagem.

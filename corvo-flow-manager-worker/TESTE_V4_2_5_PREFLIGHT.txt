@@ -1,0 +1,37 @@
+TESTE V4.2.5 - PREFLIGHT + LIMIT REVALIDATION
+
+1. Feche as janelas dos perfis.
+2. Inicie apenas o Manager V4.2.5.
+3. Deixe os perfis cadastrados e habilitados.
+4. Carregue um lote, mas ainda nao abra os perfis manualmente.
+5. Clique INICIAR.
+
+ESPERADO
+- badge: AQUECENDO PERFIS;
+- Manager tenta abrir os perfis sozinho;
+- nenhum JOB sai da fila durante o preflight;
+- Workers vao para PROJECT_READY conforme responderem;
+- ao fim do preflight, somente os Workers prontos recebem a primeira onda;
+- a distribuicao e balanceada entre os Workers aprovados.
+
+LIMIT_REACHED ANTIGO DE TEST_MODE
+Se FLOW_PROFILE_01 ainda estiver LIMIT_REACHED daquele teste inicial:
+- ao clicar INICIAR ele deve sair do hold automaticamente;
+- deve voltar para OFFLINE/STARTING;
+- deve ser aberto/revalidado junto dos demais;
+- se chegar a PROJECT_READY, participa da distribuicao.
+
+LIMIT_REACHED REAL
+Se o Flow detectar limite real:
+- perfil fica LIMIT_REACHED;
+- o painel mostra FLOW_REAL e horario de revalidacao;
+- durante o hold ele nao recebe JOBs;
+- apos o prazo configurado ele volta automaticamente ao preflight.
+
+TESTE DE 3 PERFIS
+Com PROFILE_01, 02 e 03 prontos antes do fim do preflight e 12 JOBs:
+- esperamos primeira onda aproximadamente 4 / 4 / 4.
+
+Se somente 2 perfis ficarem prontos:
+- a fila deve iniciar com os 2 apos o timeout;
+- o terceiro nao deve bloquear a producao inteira.

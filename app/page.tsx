@@ -18,6 +18,7 @@ import {
   type SourceMode,
 } from "../lib/corvo-collector";
 import { captureCorvoBridgeFile, completeCorvoBridgeJob, dispatchCorvoBridge, focusCorvoBridgeJob, getCorvoBridgeJobActivity, probeCorvoBridge, type CorvoBridgeJobActivity } from "../lib/corvo-bridge";
+import { addFlowBatch, fetchFlowAsset, getFlowBatchManifest, getFlowManagerState, probeFlowManager, startFlowManager, stopFlowManager } from "../lib/corvo-flow";
 
 type Format = "REELS" | "VÍDEO COMPLETO";
 type Quantity = "1 VÍDEO" | "LOTE";
@@ -27,15 +28,15 @@ type CorvoIdea = { tema:string; titulo:string };
 type WorkflowKind = "ROTEIRO" | "PROMPTS";
 type ProjectArtifact = "IDEIA" | "ROTEIRO" | "PROMPTS";
 type AutoRunStatus = "RUNNING" | "DONE" | "ERROR" | "CANCELLED";
-type AutoRunStep = "VALIDANDO" | "IDEIA" | "ROTEIRO" | "PROMPTS" | "COLLECTOR" | "ANALISTA" | "IMAGENS" | "THUMB" | "METADADOS" | "CONSOLIDANDO" | "CONCLUIDO" | "ERRO";
+type AutoRunStep = "VALIDANDO" | "IDEIA" | "ROTEIRO" | "PROMPTS" | "FLOW" | "COLLECTOR" | "ANALISTA" | "IMAGENS" | "THUMB" | "METADADOS" | "CONSOLIDANDO" | "CONCLUIDO" | "ERRO";
 type ActivityFilter = AutoRunStep | "TODOS";
 type IdeaRequestOptions = { format:Format; quantity:Quantity; mode:Mode; topic?:string; revisionProjectId?:string };
 type PipelineHistoryEvent = {
-  at:string; attempt:number; specialist:"REFINADOR"|"GERADOR"|"FALLBACK"; status:string; jobId?:string;
+  at:string; attempt:number; specialist:"FLOW"|"REFINADOR"|"GERADOR"|"FALLBACK"; status:string; jobId?:string;
   errorCode?:string; reason?:string; destination?:string; promptRetry?:string; batchId?:string; logicalJobId?:string;
 };
 type PipelineItem = {
-  id:string; route:"REFINADOR"|"GERADOR"; sourceFile?:string; selectedFile?:string; sourceUrl?:string; refinement?:string; reason?:string; generationPrompt?:string;
+  id:string; route:"FLOW"|"REFINADOR"|"GERADOR"; sourceFile?:string; selectedFile?:string; sourceUrl?:string; refinement?:string; reason?:string; generationPrompt?:string;
   sceneId?:string; slot?:"A"|"B"|"SINGLE"; formaField?:string; preset?:string;
   retryPrompt?:string; finalFile:string; jobId?:string; fallbackJobId?:string; status?:string; outputUrl?:string; outputFile?:string;
   error?:string; errorCode?:string; tentativaAtual?:number; finalFailure?:boolean; history?:PipelineHistoryEvent[];
@@ -45,6 +46,7 @@ type PipelineItem = {
 type Project = {
   id:string; title:string; topic:string; format:Format; quantity:Quantity; mode:Mode;
   stage:number; createdAt:string; ideaText?:string; scriptText?:string; promptText?:string; packageCode?:string; imageCount?:number;
+  flowBatchId?:string; flowStatus?:string; flowStartedAt?:string; flowCompletedAt?:string; flowTotal?:number; flowDone?:number; flowFailed?:number; flowManifest?:string;
   thumbJobId?:string; thumbUploadToken?:string; thumbStatus?:string; thumbUrl?:string; thumbFileName?:string; thumbError?:string; thumbFormat?:Format; thumbAspectRatio?:"9:16"|"16:9";
   analysisJobId?:string; analysisStatus?:string; analysisZipUrl?:string; analysisZipName?:string; analysisManifest?:string; analysisExpectedIds?:string[];
   analysisPrompt?:string; analysisUploadToken?:string; analysisPreparedAt?:string; analysisLastDispatchAt?:string; analysisRetryAt?:string; analysisRetryCount?:number; analysisLastError?:string;
@@ -67,7 +69,7 @@ type CollectorSettings = {
 };
 
 const EMPTY_IMAGE_PIPELINE:Partial<Project> = {
-  packageCode:undefined, imageCount:undefined,
+  packageCode:undefined, imageCount:undefined, flowBatchId:undefined, flowStatus:undefined, flowStartedAt:undefined, flowCompletedAt:undefined, flowTotal:undefined, flowDone:undefined, flowFailed:undefined, flowManifest:undefined,
   analysisJobId:undefined, analysisStatus:undefined, analysisZipUrl:undefined, analysisZipName:undefined, analysisManifest:undefined,
   analysisExpectedIds:undefined, analysisPrompt:undefined, analysisUploadToken:undefined, analysisPreparedAt:undefined,
   analysisLastDispatchAt:undefined, analysisRetryAt:undefined, analysisRetryCount:undefined, analysisLastError:undefined, analysisBridgeStage:undefined, analysisBridgeUpdatedAt:undefined, analysisZipDownloadUrl:undefined,
@@ -321,13 +323,59 @@ function comparisonSlotForItem(project:Project, id:string) {
   return formaComparisonSlots(project.scriptText).find((slot) => slot.key.toUpperCase() === key);
 }
 
+function scriptSingleImageByScene(scriptText?:string) {
+  const out = new Map<string,{field:string;file:string}>();
+  const text = String(scriptText || "");
+  const blockRegex = /(?:^|\n)\s*\[([^\]\r\n]+)\]\s*\r?\n([\s\S]*?)(?=\n\s*\[[^\]\r\n]+\]\s*(?:\r?\n|$)|$)/g;
+  for (const match of text.matchAll(blockRegex)) {
+    const sceneId = normalizeSceneId(String(match[1] || ""));
+    const block = String(match[2] || "");
+    const fields = ["IMAGEM","IMAGEM_RESULTADO","IMAGEM1","IMAGEM2"];
+    for (const field of fields) {
+      const file = scriptField(block, field);
+      if (file) { out.set(sceneId.toUpperCase(), {field, file}); break; }
+    }
+  }
+  return out;
+}
+
+function flowGuideItemsForProject(project:Project):GuideItem[] {
+  const items = guideItemsForProject(project, project.promptText || "");
+  const singles = scriptSingleImageByScene(project.scriptText);
+  const refs = scriptImageReferences(project.scriptText);
+  return items.map((item, index) => {
+    if (item.targetFile) return item;
+    const single = singles.get(normalizeSceneId(String(item.id || "")).toUpperCase());
+    if (single) return { ...item, formaField:item.formaField || single.field, targetFile:single.file };
+    const fallback = refs[index];
+    return fallback ? { ...item, formaField:item.formaField || fallback.field, targetFile:fallback.file } : item;
+  });
+}
+
+function flowBatchText(project:Project, batchId:string, items:GuideItem[]) {
+  const lines = [
+    "[FLOW_BATCH]", "VERSION=1.1", "DELIVERY_MODE=APP", `PROJECT_ID=${project.id}`, `BATCH_ID=${batchId}`, `QUANTIDADE=${items.length}`, "",
+  ];
+  for (const item of items) {
+    const id = String(item.id || "").trim();
+    const filename = String(item.targetFile || "").replace(/^.*[\\/]/, "");
+    lines.push(`[ID:${id}]`);
+    lines.push(`JOB_ID=${project.id}:FLOW:${id}`);
+    lines.push(`SLOT=${id}`);
+    lines.push(`ARQUIVO_FINAL=${filename}`);
+    lines.push(`METADATA=ORIGEM=ROTEIRO_APP;FORMATO=${project.format};CAMPO=${item.formaField || "IMAGEM"}`);
+    lines.push(`PROMPT=${item.query}`);
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
 function autoRunChecklist(project:Project, youtubeEnabled:boolean):Array<{key:ActivityFilter;label:string;done:boolean}> {
   return [
     { key:"IDEIA", label:"IDEIA", done:Boolean(project.ideaText) },
     { key:"ROTEIRO", label:"ROTEIRO", done:Boolean(project.scriptText) },
     { key:"PROMPTS", label:"PROMPTS", done:Boolean(project.promptText) },
-    { key:"COLLECTOR", label:"COLLECTOR", done:Boolean(project.packageCode || project.analysisJobId) },
-    { key:"ANALISTA", label:"ANALISTA", done:project.analysisStatus === "CONCLUÍDA" },
+    { key:"FLOW", label:"FLOW", done:project.pipelineStatus === "IMAGENS FINAIS PRONTAS" },
     { key:"IMAGENS", label:"IMAGENS", done:project.pipelineStatus === "IMAGENS FINAIS PRONTAS" },
     { key:"THUMB", label:"THUMB", done:thumbMatchesProjectFormat(project) },
     { key:"METADADOS", label:"METADADOS", done:!youtubeEnabled || Boolean(project.youtubeMetadata) },
@@ -630,6 +678,7 @@ export default function Home() {
     if (step === "IDEIA") return project.ideaText ? "CONCLUÍDA" : project.autoRunStep === "IDEIA" ? project.autoRunMessage || "EM ANDAMENTO" : "AGUARDANDO";
     if (step === "ROTEIRO") return project.scriptText ? "CONCLUÍDO" : project.autoRunStep === "ROTEIRO" ? project.autoRunMessage || "EM ANDAMENTO" : "AGUARDANDO";
     if (step === "PROMPTS") return project.promptText ? "CONCLUÍDOS" : project.autoRunStep === "PROMPTS" ? project.autoRunMessage || "EM ANDAMENTO" : "AGUARDANDO";
+    if (step === "FLOW") return project.flowStatus || (project.autoRunStep === "FLOW" ? project.autoRunMessage || "EM PRODUÇÃO" : project.pipelineStatus === "IMAGENS FINAIS PRONTAS" ? "CONCLUÍDO" : "AGUARDANDO");
     if (step === "COLLECTOR") return project.analysisPreparationStage ? preparationStageLabel(project) : project.autoRunStep === "COLLECTOR" ? project.autoRunMessage || "COLETANDO" : project.packageCode ? "CONCLUÍDO" : "AGUARDANDO";
     if (step === "ANALISTA") return project.analysisStatus || (project.autoRunStep === "ANALISTA" ? project.autoRunMessage || "EM ANDAMENTO" : "AGUARDANDO");
     if (step === "IMAGENS") return project.pipelineStatus || (project.autoRunStep === "IMAGENS" ? project.autoRunMessage || "EM ANDAMENTO" : "AGUARDANDO");
@@ -747,7 +796,7 @@ export default function Home() {
     // como ERRO terminal, reabra automaticamente o mesmo projeto no checkpoint.
     for (const project of projectsRef.current) {
       if (project.autoRunStatus !== "ERROR" || !isBridgeContextInvalidated(project.autoRunError)) continue;
-      const inferredStep:AutoRunStep = project.pipelineItems?.length ? "IMAGENS" : project.promptText ? "COLLECTOR" : project.scriptText ? "PROMPTS" : project.ideaText ? "ROTEIRO" : "IDEIA";
+      const inferredStep:AutoRunStep = project.pipelineItems?.length ? "IMAGENS" : project.promptText ? "FLOW" : project.scriptText ? "PROMPTS" : project.ideaText ? "ROTEIRO" : "IDEIA";
       patchProject(project.id, {
         autoRunStatus:"RUNNING",
         autoRunStep:inferredStep,
@@ -806,7 +855,7 @@ export default function Home() {
       } else {
         patchProject(project.id, {
           autoRunStatus:"RUNNING",
-          autoRunStep:project.ideaText ? project.scriptText ? project.promptText ? "COLLECTOR" : "PROMPTS" : "ROTEIRO" : "IDEIA",
+          autoRunStep:project.ideaText ? project.scriptText ? project.promptText ? "FLOW" : "PROMPTS" : "ROTEIRO" : "IDEIA",
           autoRunMessage:"Produção automática recuperada. Retomando sozinha do último ponto salvo...",
           autoRunError:undefined,
         });
@@ -1129,7 +1178,7 @@ export default function Home() {
       if (!active.promptText) void runSpecialist("PROMPTS", active);
       return;
     }
-    if (active.stage === 4) { void startImageFlow(); return; }
+    if (active.stage === 4) { void startFlowImageProduction(active); return; }
     void downloadProject(active);
   }
 
@@ -1292,7 +1341,7 @@ export default function Home() {
           ? { ...current, stage:3, scriptText:normalizedOutput, promptText:undefined, ...EMPTY_IMAGE_PIPELINE, pipelineCheckpointVersion:4, ...clearWorkflow }
           : { ...current, stage:4, promptText:normalizedOutput, ...EMPTY_IMAGE_PIPELINE, ...clearWorkflow };
         patchProject(project.id, updated);
-        updateAutoRun(project.id, kind === "ROTEIRO" ? "PROMPTS" : "COLLECTOR", kind === "ROTEIRO" ? "Roteiro recebido. Iniciando prompts automaticamente..." : "Prompts recebidos. Preparando o Collector automaticamente...");
+        updateAutoRun(project.id, kind === "ROTEIRO" ? "PROMPTS" : "FLOW", kind === "ROTEIRO" ? "Roteiro recebido. Iniciando prompts automaticamente..." : "Prompts recebidos. Preparando produção no Flow automaticamente...");
         return updated;
       }
       if (status.status === "ERROR") throw new Error(status?.error || status?.manifest?.reason || `${kind} informou uma falha.`);
@@ -1322,7 +1371,7 @@ export default function Home() {
     if (!initial) return;
     autoRunLocks.current.add(projectId);
     const startedAt = initial.autoRunStatus === "RUNNING" && initial.autoRunStartedAt ? initial.autoRunStartedAt : new Date().toISOString();
-    const initialStep:AutoRunStep = initial.ideaText ? initial.scriptText ? initial.promptText ? "COLLECTOR" : "PROMPTS" : "ROTEIRO" : "IDEIA";
+    const initialStep:AutoRunStep = initial.ideaText ? initial.scriptText ? initial.promptText ? "FLOW" : "PROMPTS" : "ROTEIRO" : "IDEIA";
     patchProject(projectId, { autoRunStatus:"RUNNING", autoRunStep:initialStep, autoRunMessage:"Automático ativo. Retomando do último ponto salvo...", autoRunError:undefined, autoRunStartedAt:startedAt, autoRunCompletedAt:undefined, autoRunRetryAt:undefined });
     setNotice("MODO AUTOMÁTICO TOTAL INICIADO.");
     setTimeout(() => setNotice(""), 2400);
@@ -1336,33 +1385,17 @@ export default function Home() {
         project = await runAutomaticSpecialist("ROTEIRO", project);
       }
       if (!project.promptText?.trim()) {
-        updateAutoRun(projectId, "PROMPTS", "Transformando o roteiro em buscas de imagem...");
+        updateAutoRun(projectId, "PROMPTS", "Transformando o roteiro em prompts de geração para o Flow...");
         project = await runAutomaticSpecialist("PROMPTS", project);
       }
 
       project = latestProject(projectId) || project;
       const imagesAlreadyReady = project.pipelineStatus === "IMAGENS FINAIS PRONTAS" && consolidationState(project).ready;
-      const pipelineRoutingExists = hasPipelineRoutingCheckpoint(project);
-      const needsCollectorNow = !imagesAlreadyReady && !pipelineRoutingExists && !hasPreparedAnalysis(project) && !hasAnalysisPreparationCheckpoint(project);
-      if (needsCollectorNow) {
-        updateAutoRun(projectId, "COLLECTOR", "Ideia, roteiro e prompts concluídos. Validando R2 e Collector somente agora...");
-        await ensurePipelineStorageReady();
-        const ping = await sendCollectorMessage<{ok?:boolean;authorized?:boolean;error?:string}>("PING", undefined, settings.extensionId);
-        if (!ping?.ok) throw new Error(ping?.error || "COLLECTOR_CONNECTION_ERROR");
-        if (ping.authorized === false) throw new Error("ORIGIN_NOT_AUTHORIZED");
-      }
-      updateAutoRun(projectId, pipelineRoutingExists ? "IMAGENS" : "COLLECTOR", pipelineRoutingExists
-        ? "Checkpoint de Refinador/Gerador encontrado. Retomando os mesmos jobs/lotes sem repetir o Collector..."
-        : "Collector trabalhando em segundo plano. Todas as candidatas seguirão ao Analista automaticamente...");
+      updateAutoRun(projectId, "FLOW", imagesAlreadyReady ? "Imagens do Flow já estão preservadas no projeto." : "Prompts concluídos. Enviando os JOBs ao Corvo Flow Manager...");
       if (!project.thumbUrl) void startThumbBranch(project);
       if (settings.youtubeParallel && !project.youtubeMetadata) void startYoutubeBranch(project);
-      const imageOk = imagesAlreadyReady ? true : await startImageFlow(project, { automaticRun:true, skipParallelBranches:true, selectionMode:"AUTO" });
-      if (!imageOk) {
-        const waitingProject = latestProject(projectId);
-        if (hasPreparedAnalysis(waitingProject) && waitingProject?.analysisRetryAt) throw new Error("ANALYST_RETRY_SCHEDULED");
-        if (hasAnalysisPreparationCheckpoint(waitingProject)) throw new Error("ANALYSIS_PREPARATION_RETRY_SCHEDULED");
-        throw new Error("O pipeline de imagens não chegou a um resultado final completo.");
-      }
+      const imageOk = imagesAlreadyReady ? true : await startFlowImageProduction(project, { automaticRun:true, skipParallelBranches:true });
+      if (!imageOk) throw new Error("O Flow não chegou a um conjunto final completo de imagens.");
 
       updateAutoRun(projectId, "THUMB", "Imagens finais prontas. Aguardando thumbnail e ramos paralelos...");
       project = await waitForAutomaticParallelAssets(projectId);
@@ -1459,7 +1492,7 @@ export default function Home() {
     zip.folder("prompts")?.file(`PROMPTS_${project.id}.txt`, project.promptText || defaultQueries(project).map((item) => `${item.id}|${item.query}`).join("\n"));
     zip.folder("forma")?.file("PACOTE.txt", project.packageCode ? `PACOTE_CODE=${project.packageCode}` : "O pacote de imagens ainda não foi concluído.");
     zip.folder("thumbnail")?.file("THUMBNAIL.txt", project.thumbUrl ? `ARQUIVO=${project.thumbFileName || "thumbnail.png"}\nURL=${project.thumbUrl}` : `STATUS=${project.thumbStatus || "PENDENTE"}\n${project.thumbError ? `ERRO=${project.thumbError}` : ""}`);
-    zip.folder("analise")?.file("CORVO_IMAGE_ANALYSIS.txt", project.analysisManifest || `STATUS=${project.analysisStatus || "PENDENTE"}\n`);
+    zip.folder("flow")?.file("CORVO_FLOW_RESULT.txt", project.flowManifest || `STATUS=${project.flowStatus || "PENDENTE"}\nBATCH_ID=${project.flowBatchId || ""}\nTOTAL=${project.flowTotal || 0}\nDONE=${project.flowDone || 0}\nFAILED=${project.flowFailed || 0}\n`);
     zip.folder("pipeline")?.file("IMAGENS_FINAIS.json", JSON.stringify(safePipelineItems, null, 2));
     zip.folder("youtube")?.file("METADADOS.txt", project.youtubeMetadata || `STATUS=${project.youtubeStatus || "PENDENTE"}\n${project.youtubeError ? `ERRO=${project.youtubeError}` : ""}`);
     zip.folder("consolidacao")?.file("STATUS.txt", `STATUS=${project.finalZipStatus || "PENDENTE"}\nGERADO_EM=${project.finalZipGeneratedAt || ""}\n${project.finalZipError ? `ERRO=${project.finalZipError}` : ""}`);
@@ -1516,7 +1549,7 @@ export default function Home() {
     window.sessionStorage.setItem(key, String(now));
     if (projectId) {
       const current = latestProject(projectId);
-      const inferredStep:AutoRunStep = current?.pipelineItems?.length ? "IMAGENS" : current?.promptText ? "COLLECTOR" : current?.scriptText ? "PROMPTS" : current?.ideaText ? "ROTEIRO" : "IDEIA";
+      const inferredStep:AutoRunStep = current?.pipelineItems?.length ? "IMAGENS" : current?.promptText ? "FLOW" : current?.scriptText ? "PROMPTS" : current?.ideaText ? "ROTEIRO" : "IDEIA";
       patchProject(projectId, {
         autoRunStatus:"RUNNING",
         autoRunStep:current?.autoRunStep && current.autoRunStep !== "ERRO" ? current.autoRunStep : inferredStep,
@@ -1533,11 +1566,14 @@ export default function Home() {
   function isAutomaticTransientError(error:unknown) {
     const message = String(error instanceof Error ? error.message : error || "").toUpperCase();
     if (/R2_(NOT_CONFIGURED|ENDPOINT_INVALID|BUCKET_NOT_FOUND|ACCESS_KEY_INVALID|SIGNATURE_FAILED|ACCESS_DENIED)|ORIGIN_NOT_AUTHORIZED|GPT_URL_NOT_CONFIGURED|TRATAMENTO_MANUAL_NECESSARIO/.test(message)) return false;
-    return /CORVO_BRIDGE|GPT_SEND|GPT_CONTENT|PROGRESS_TIMEOUT|HARD_TIMEOUT|FETCH FAILED|NETWORK|TIMEOUT|COLLECTOR_CONNECTION_ERROR|JOB_ALREADY_RUNNING|PACKAGE_ALREADY_RUNNING|TEMPORAR|HTTP 5\d\d|EXTENSION[_ ]CONTEXT[_ ]INVALIDATED|RECEIVING END DOES NOT EXIST/.test(message);
+    return /CORVO_BRIDGE|GPT_SEND|GPT_CONTENT|PROGRESS_TIMEOUT|HARD_TIMEOUT|FETCH FAILED|NETWORK|TIMEOUT|COLLECTOR_CONNECTION_ERROR|JOB_ALREADY_RUNNING|PACKAGE_ALREADY_RUNNING|TEMPORAR|HTTP 5\d\d|EXTENSION[_ ]CONTEXT[_ ]INVALIDATED|RECEIVING END DOES NOT EXIST|FLOW_MANAGER|FLOW_HTTP|FLOW_ASSET_HTTP/.test(message);
   }
 
   function friendlyError(error:unknown) {
     const message = String(error instanceof Error ? error.message : error);
+    if (message.includes("FLOW_MANAGER_OFFLINE")) return "O Corvo Flow Manager não está aberto neste PC. Abra o Manager integrado e tente novamente.";
+    if (message.includes("FLOW_MANAGER_APP_INTEGRATION_REQUIRED")) return "O Manager aberto é a versão antiga. Use o Flow Manager integrado incluído nesta versão do Roteiro.";
+    if (message.includes("FLOW_ASSET_HTTP")) return "A imagem foi gerada, mas o app ainda não conseguiu puxar o asset do Manager local. O lote ficou preservado e pode ser retomado.";
     const r2Trail = message.includes("|") ? ` [${message.split("|").at(-1)?.trim() || ""}]` : "";
     if (message.includes("EXTENSION_CONTEXT_INVALIDATED") || message.toLowerCase().includes("extension context invalidated")) return "O Bridge foi atualizado enquanto esta página estava aberta. O app vai recarregar a página e retomar automaticamente do checkpoint.";
     if (message.includes("ORIGIN_NOT_AUTHORIZED")) return "Autorize este endereço uma única vez no Corvo Collector e tente novamente.";
@@ -1714,6 +1750,123 @@ export default function Home() {
     } catch (error) {
       patchProject(project.id, { youtubeStatus:"FALHOU", youtubeError:bridgeErrorMessage(error) });
     }
+  }
+
+  async function startFlowImageProduction(projectArg?:Project, options:{automaticRun?:boolean;skipParallelBranches?:boolean} = {}) {
+    let project = projectArg || active;
+    if (!project?.promptText?.trim()) { setNotice("CRIE OS PROMPTS DE IMAGEM ANTES DE ABRIR O FLOW."); return false; }
+    const items = flowGuideItemsForProject(project);
+    if (!items.length) { setNotice("NENHUM PROMPT DE IMAGEM FOI IDENTIFICADO."); return false; }
+    const withoutFile = items.filter((item) => !String(item.targetFile || "").trim());
+    if (withoutFile.length) {
+      setImageOpen(true); setImagePhase("error"); setImageMessage(`Faltam nomes de arquivo no roteiro/prompts para: ${withoutFile.map((item)=>item.id).join(", ")}.`);
+      return false;
+    }
+
+    setImageOpen(true); setImagePhase("connecting"); setImageProgress(4); setImageStatusLine("CONECTANDO AO MANAGER LOCAL · 127.0.0.1:32145");
+    setImageMessage("Conectando o Roteiro ao Corvo Flow Manager...");
+    try {
+      await ensurePipelineStorageReady();
+      const health = await probeFlowManager().catch(() => { throw new Error("FLOW_MANAGER_OFFLINE"); });
+      if (!health?.ok) throw new Error("FLOW_MANAGER_OFFLINE");
+      if (!health.appIntegration) throw new Error("FLOW_MANAGER_APP_INTEGRATION_REQUIRED");
+
+      project = latestProject(project.id) || project;
+      let batchId = String(project.flowBatchId || "").trim();
+      if (!batchId) {
+        batchId = `${project.id}:APP_FLOW:${Date.now()}`;
+        patchProject(project.id, { flowBatchId:batchId, flowStatus:"PREPARANDO", flowStartedAt:new Date().toISOString(), flowTotal:items.length, flowDone:0, flowFailed:0, pipelineItems:[] });
+      }
+
+      let state = await getFlowManagerState();
+      let batch = state.batches.find((candidate) => candidate.batchId === batchId && candidate.projectId === project!.id);
+      if (!batch) {
+        await addFlowBatch(flowBatchText(project, batchId, items), `${project.id}_FLOW_APP.txt`);
+        state = await getFlowManagerState();
+        batch = state.batches.find((candidate) => candidate.batchId === batchId && candidate.projectId === project!.id);
+      }
+      if (!batch) throw new Error("O Manager recebeu o lote, mas ele não apareceu no estado local.");
+      if (!state.control?.running && batch.status !== "COMPLETE") await startFlowManager();
+
+      setImagePhase("searching"); setImageMessage("Flow produzindo as imagens automaticamente...");
+      patchProject(project.id, { flowStatus:"EM PRODUÇÃO", flowBatchId:batchId, flowTotal:items.length });
+      if (options.automaticRun) updateAutoRun(project.id, "FLOW", `Flow iniciado com ${items.length} JOB(s). O app receberá cada imagem sem baixar na pasta Downloads.`);
+
+      const guideById = new Map(items.map((item) => [String(item.id).toUpperCase(), item]));
+      const started = Date.now();
+      while (true) {
+        state = await getFlowManagerState();
+        batch = state.batches.find((candidate) => candidate.batchId === batchId && candidate.projectId === project!.id);
+        if (!batch) throw new Error("O lote desapareceu do Manager local.");
+        const done = Number(batch.done || 0); const failed = Number(batch.failed || 0); const total = Number(batch.total || items.length);
+        const progress = total ? Math.min(92, 8 + Math.round(((done + failed) / total) * 80)) : 8;
+        setImageProgress(progress); setImageStatusLine(`FLOW · ${done}/${total} PRONTAS · ${failed} FALHA(S) · ${Math.max(0,total-done-failed)} EM FILA/EXECUÇÃO`);
+        patchProject(project.id, { flowStatus:batch.status === "COMPLETE" ? "RECEBENDO ASSETS" : "EM PRODUÇÃO", flowTotal:total, flowDone:done, flowFailed:failed });
+
+        const current = latestProject(project.id) || project;
+        const existing = new Map((current.pipelineItems || []).filter((item) => item.outputUrl).map((item) => [String(item.id).toUpperCase(), item]));
+        for (const job of batch.jobs || []) {
+          const key = String(job.id || "").toUpperCase();
+          if (existing.has(key) || job.managerStatus !== "DONE" || !job.appAssetReady) continue;
+          setImagePhase("packaging"); setImageMessage(`Recebendo ${job.id} do Flow e guardando no projeto...`); setImageStatusLine(`FLOW → APP · SALVANDO ${job.id}`);
+          const blob = await fetchFlowAsset(batchId, job.jobId);
+          const guide = guideById.get(key);
+          const finalFile = String(guide?.targetFile || job.arquivoFinal || job.appAssetFile || `${job.id}.png`).replace(/^.*[\\/]/, "");
+          const form = new FormData();
+          form.set("projectId", project.id); form.set("batchId", batchId); form.set("id", String(job.id)); form.set("fileName", finalFile);
+          form.set("file", new File([blob], finalFile, { type:blob.type || job.appAssetContentType || "application/octet-stream" }));
+          const upload = await fetch("/api/corvo/flow-asset", { method:"POST", body:form });
+          const saved = await upload.json().catch(() => ({}));
+          if (!upload.ok || !saved?.url) throw new Error(saved?.message || `Falha ao guardar o asset ${job.id} no projeto.`);
+          const slotInfo = comparisonSlotForItem(project, String(job.id));
+          const nextItem:PipelineItem = {
+            id:String(job.id), route:"FLOW", sourceFile:"", selectedFile:undefined, sourceUrl:undefined,
+            sceneId:slotInfo?.sceneId || guide?.sceneId || normalizeSceneId(String(job.id).replace(/[_-][AB]$/i,"")),
+            slot:(slotInfo?.slot || guide?.slot || "SINGLE") as "A"|"B"|"SINGLE",
+            formaField:slotInfo?.formaField || guide?.formaField, preset:slotInfo?.preset,
+            generationPrompt:guide?.query, finalFile, outputFile:finalFile, outputUrl:String(saved.url), status:"CONCLUÍDO", tentativaAtual:1,
+            logicalJobId:job.jobId, batchId,
+            history:[{ at:new Date().toISOString(), attempt:1, specialist:"FLOW", status:"DONE", jobId:job.jobId, batchId }],
+          };
+          const latest = latestProject(project.id) || project;
+          const merged = [...(latest.pipelineItems || []).filter((item) => String(item.id).toUpperCase() !== key), nextItem]
+            .sort((a,b) => String(a.id).localeCompare(String(b.id), "pt-BR", {numeric:true}));
+          patchProject(project.id, { pipelineItems:merged, pipelineStatus:`FLOW · ${merged.filter((item)=>item.outputUrl).length}/${total} IMAGENS RECEBIDAS`, imageCount:merged.length, packageCode:`FLOW-${batchId.split(":").pop()}` });
+          existing.set(key,nextItem);
+          setImagePhase("searching");
+        }
+
+        const latest = latestProject(project.id) || project;
+        const completeCount = (latest.pipelineItems || []).filter((item) => item.outputUrl).length;
+        if (batch.status === "COMPLETE") {
+          if (failed > 0) {
+            const failedIds = (batch.jobs || []).filter((job) => ["FAILED","MANUAL_REVIEW"].includes(String(job.managerStatus))).map((job)=>job.id);
+            throw new Error(`FLOW concluiu com ${failed} falha(s): ${failedIds.join(", ")}.`);
+          }
+          if (completeCount >= total) {
+            const completedAt = new Date().toISOString();
+            const flowResult = await getFlowBatchManifest(batchId).catch(() => null);
+            patchProject(project.id, { flowStatus:"CONCLUÍDO", flowCompletedAt:completedAt, flowDone:total, flowFailed:0, flowManifest:flowResult?.manifest || undefined, pipelineStatus:"IMAGENS FINAIS PRONTAS", imageCount:total, stage:5 });
+            setPackageCode(`FLOW-${batchId.split(":").pop()}`); setImageProgress(100); setImagePhase("done"); setImageMessage(`${total} imagens produzidas no Flow e preservadas no projeto.`); setImageStatusLine("FLOW CONCLUÍDO · ASSETS NO APP · NENHUM DOWNLOAD INDIVIDUAL");
+            if (options.automaticRun) updateAutoRun(project.id, "IMAGENS", `${total} imagens recebidas do Flow. Preparando consolidação final...`);
+            return true;
+          }
+        }
+        if (Date.now() - started > 45 * 60 * 1000) throw new Error("Tempo máximo de acompanhamento do Flow excedido. O lote permanece preservado no Manager e pode ser retomado.");
+        await wait(1200);
+      }
+    } catch (error) {
+      const message = friendlyError(error);
+      patchProject(project.id, { flowStatus:"ERRO", pipelineStatus:"ERRO NO FLOW" });
+      setImagePhase("error"); setImageMessage(message); setImageStatusLine("O LOTE E OS ASSETS JÁ GERADOS FICAM PRESERVADOS PARA RETOMADA.");
+      return false;
+    }
+  }
+
+  async function cancelFlowProduction() {
+    await stopFlowManager().catch(() => {});
+    if (active) patchProject(active.id, { flowStatus:"PAUSADO" });
+    setImageOpen(false);
   }
 
   async function startImageFlow(projectArg?:Project, options:{automaticRun?:boolean;skipParallelBranches?:boolean;selectionMode?:SelectionMode} = {}) {
@@ -2281,6 +2434,7 @@ export default function Home() {
   async function runRoutedBatch(project:Project, batch:PipelineItem[], batchId:string, attempt:number) {
     if (!batch.length) return { successes:[] as PipelineItem[], failures:[] as Array<{item:PipelineItem;errorCode:string;reason:string;technical?:boolean}> };
     const route = batch[0].route;
+    if (route === "FLOW") throw new Error("PIPELINE_FLOW_ITEM_NOT_ROUTABLE");
     if (batch.some((item) => item.route !== route)) throw new Error("PIPELINE_BATCH_ROUTE_MISMATCH");
     if (batch.length > PIPELINE_BATCH_SIZE) throw new Error("PIPELINE_BATCH_TOO_LARGE");
     const ids = batch.map((item) => item.id);
@@ -2363,6 +2517,7 @@ export default function Home() {
     if (!failures.length) return [] as Array<{item:PipelineItem;fallbackStatus:string;destination:string;promptRetry:string;reason:string;jobId?:string;fallbackError?:string;fallbackTechnical?:boolean;fallbackConversationUrl?:string}>;
     if (failures.length > PIPELINE_BATCH_SIZE) throw new Error("FALLBACK_BATCH_TOO_LARGE");
     const origin = failures[0].item.route;
+    if (origin === "FLOW") throw new Error("PIPELINE_FLOW_ITEM_NOT_FALLBACK");
     if (failures.some((failure) => failure.item.route !== origin)) throw new Error("FALLBACK_BATCH_ORIGIN_MISMATCH");
     const entrada = [
       `LOTE_ID=${batchId}`,
@@ -2595,6 +2750,7 @@ export default function Home() {
       "CAPTURANDO_LOTE_REFINADOR", "CAPTURANDO_LOTE_GERADOR",
     ]);
     for (const item of pending) {
+      if (item.route === "FLOW") continue;
       const lastRoute = latestPipelineHistory(item, item.route);
       const itemStatus = String(item.status || "").toUpperCase();
       const checkpointLooksActive = activeCheckpointStatuses.has(itemStatus) || lastRoute?.status === "ENVIANDO_LOTE";
@@ -3553,14 +3709,14 @@ export default function Home() {
 
       zip.file("ROTEIRO.txt", project.scriptText || "");
       zip.folder("youtube")?.file("METADADOS.txt", project.youtubeMetadata || `STATUS=${project.youtubeStatus || "PENDENTE"}\\n${project.youtubeError ? `ERRO=${project.youtubeError}` : ""}`);
-      zip.folder("analise")?.file("CORVO_IMAGE_ANALYSIS.txt", project.analysisManifest || "STATUS=NAO_DISPONIVEL");
+      zip.folder("flow")?.file("CORVO_FLOW_RESULT.txt", project.flowManifest || `STATUS=${project.flowStatus || "CONCLUIDO"}\nBATCH_ID=${project.flowBatchId || ""}\nTOTAL=${project.flowTotal || summary.items.length}\nDONE=${project.flowDone || summary.items.length}\nFAILED=${project.flowFailed || 0}`);
       zip.file("CORVO_FINAL_MANIFEST.json", JSON.stringify({
         protocol:"corvo-final/1", projectId:project.id, generatedAt:new Date().toISOString(), total:summary.items.length,
         thumbnail:liveProject.thumbFileName || null, youtubeMetadata:Boolean(liveProject.youtubeMetadata), automaticTotal:options.automaticRun === true, images:manifestItems,
       }, null, 2));
       zip.file("LEIA-ME.txt", [
         "CORVOQUIZ — PACOTE FINAL", `PROJETO=${project.id}`, `TOTAL_IMAGENS=${summary.items.length}`,
-        "", "ROTEIRO.txt = roteiro compatível com o Forma", "imagens/ = imagens finais; QUAL_VOCE_PREFERE usa IMAGEM_A + IMAGEM_B como dois arquivos físicos separados", "thumbnail/ = thumbnail real quando disponível", "youtube/ = metadados editoriais", "analise/ = manifesto do Corvo Analista",
+        "", "ROTEIRO.txt = roteiro compatível com o Forma", "imagens/ = imagens finais; QUAL_VOCE_PREFERE usa IMAGEM_A + IMAGEM_B como dois arquivos físicos separados", "thumbnail/ = thumbnail real quando disponível", "youtube/ = metadados editoriais", "flow/ = manifesto da produção do Corvo Flow Manager",
       ].join("\\n"));
       const blob = await zip.generateAsync({ type:"blob", compression:"DEFLATE", compressionOptions:{ level:6 } });
       const url = URL.createObjectURL(blob);
@@ -3645,10 +3801,9 @@ export default function Home() {
           <button className={`file-row action ${active.scriptText?"done":"pending"}`} disabled={!active.scriptText} onClick={()=>openArtifact("ROTEIRO")}><span>▤</span><div><b>ROTEIRO.TXT</b><small>{active.scriptText?"ABRIR ROTEIRO COMPLETO":"AGUARDANDO ROTEIRISTA"}</small></div><i>{active.scriptText?"→":"○"}</i></button>
           <button className={`file-row action ${active.promptText?"done":"pending"}`} disabled={!active.promptText} onClick={()=>openArtifact("PROMPTS")}><span>✦</span><div><b>PROMPTS.TXT</b><small>{active.promptText?"ABRIR BUSCAS DE IMAGEM":"AGUARDANDO ROTEIRO"}</small></div><i>{active.promptText?"→":"○"}</i></button>
           <button className={`file-row action ${thumbMatchesProjectFormat(active)?"done":active.thumbStatus==="FALHOU"?"pending":""}`} disabled={!active.scriptText && !thumbMatchesProjectFormat(active)} onClick={()=>thumbMatchesProjectFormat(active)?window.open(active.thumbUrl,"_blank","noopener,noreferrer"):void startThumbBranch(active)}><span>▰</span><div><b>THUMBNAIL · {thumbAspectRatioForFormat(active.format)}</b><small>{thumbMatchesProjectFormat(active)?"ABRIR IMAGEM FINAL":active.thumbError||active.thumbStatus||`CLIQUE PARA GERAR · ${thumbOrientationForFormat(active.format)}`}</small></div><i>{thumbMatchesProjectFormat(active)?"→":"↻"}</i></button>
-          <button className={`file-row action ${active.analysisStatus==="CONCLUÍDA"?"done":active.analysisStatus?"pending":""}`} disabled={!active.analysisManifest&&!hasPreparedAnalysis(active)&&!hasAnalysisPreparationCheckpoint(active)} onClick={()=>{if(analysisMessageCommitted(active)){openActivity("ANALISTA");}else if(active.analysisManifest){openActivity("ANALISTA");}else if(hasPreparedAnalysis(active)){void resumePreparedAnalysis(active.id,true);}else if(hasAnalysisPreparationCheckpoint(active)){void resumeAnalysisPreparation(active.id,true);}}}><span>◫</span><div><b>{hasPreparedAnalysis(active)?"PACOTE DO ANALISTA SALVO":hasAnalysisPreparationCheckpoint(active)?"CHECKPOINT DO ANALISTA SALVO":"ANÁLISE DE IMAGENS"}</b><small>{hasPreparedAnalysis(active)?`${active.analysisStatus||"AGUARDANDO ANALISTA"} · ${analysisRetryLabel(active.analysisRetryAt)}`:hasAnalysisPreparationCheckpoint(active)?`${preparationStageLabel(active)} · ${analysisRetryLabel(active.analysisPreparationRetryAt)}`:active.analysisStatus||"COMEÇA APÓS O PACOTE DO COLLECTOR"}</small>{active.analysisLastError&&hasPreparedAnalysis(active)?<em>{active.analysisLastError}</em>:null}{active.analysisPreparationError&&hasAnalysisPreparationCheckpoint(active)?<em>{active.analysisPreparationError}</em>:null}</div><i>{active.analysisStatus==="CONCLUÍDA"?"✓":hasPreparedAnalysis(active)||hasAnalysisPreparationCheckpoint(active)?"↻":"○"}</i></button>
           <button className={`file-row action ${active.youtubeMetadata?"done":active.youtubeStatus==="FALHOU"?"pending":""}`} disabled={!active.youtubeMetadata} onClick={()=>{if(active.youtubeMetadata)downloadTextFile(`${active.id}_YOUTUBE.txt`,active.youtubeMetadata);}}><span>▶</span><div><b>YOUTUBE / METADADOS</b><small>{active.youtubeMetadata?"BAIXAR DADOS EDITORIAIS":active.youtubeError||active.youtubeStatus||(settings.youtubeParallel?"INICIA EM PARALELO":"DESATIVADO NAS CONFIGURAÇÕES")}</small></div><i>{active.youtubeMetadata?"↓":"○"}</i></button>
-          <button className={`file-row action ${consolidationState(active).ready?"done":active.pipelineItems?.length?"pending":""}`} disabled={!active.pipelineItems?.length} onClick={()=>{setConsolidationMessage("");setConsolidationOpen(true);}}><span>▦</span><div><b>CONSOLIDAÇÃO / ZIP FINAL</b><small>{active.pipelineItems?.length ? `${consolidationState(active).completed}/${consolidationState(active).items.length} FINAIS · ${consolidationState(active).ready ? "PRONTO PARA GERAR" : active.pipelineStatus || "AGUARDANDO"}` : "AGUARDANDO O ANALISTA"}</small></div><i>{active.finalZipStatus==="CONCLUIDO"?"✓":consolidationState(active).ready?"→":"○"}</i></button>
-          {active.packageCode ? <button className="package-ready" onClick={() => analysisMessageCommitted(active) ? openActivity("ANALISTA") : hasLegacyAnalysisStorage(active) ? void startImageFlow(active,{ automaticRun:active.autoRunStatus==="RUNNING", skipParallelBranches:true, selectionMode:"AUTO" }) : hasPreparedAnalysis(active) ? void resumePreparedAnalysis(active.id,true) : hasAnalysisPreparationCheckpoint(active) ? void resumeAnalysisPreparation(active.id,true) : active.pipelineStatus==="ERRO NO PIPELINE" ? void startImageFlow() : setImageOpen(true)}><span>{active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?"✓":hasLegacyAnalysisStorage(active)||hasPreparedAnalysis(active)||hasAnalysisPreparationCheckpoint(active)?"↻":"⌁"}</span><div><b>{active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?"IMAGENS FINAIS PRONTAS":hasLegacyAnalysisStorage(active)?"CHECKPOINT ANTIGO · MIGRAR PARA R2":hasPreparedAnalysis(active)?(analysisMessageCommitted(active)?"ANALISTA PROCESSANDO · ACOMPANHAR":"PACOTE PRESERVADO · REENVIAR ANALISTA"):hasAnalysisPreparationCheckpoint(active)?"CHECKPOINT PRESERVADO · RETOMAR PREPARAÇÃO":"PIPELINE DE IMAGENS"}</b><small>{hasLegacyAnalysisStorage(active)?"O VERCEL BLOB ANTIGO NÃO SERÁ REUTILIZADO":hasPreparedAnalysis(active)?`${active.analysisZipName||"ZIP DO ANALISTA"} · ${analysisRetryLabel(active.analysisRetryAt)}`:hasAnalysisPreparationCheckpoint(active)?`${preparationStageLabel(active)} · ${analysisRetryLabel(active.analysisPreparationRetryAt)}`:active.pipelineStatus||`${active.imageCount || 0} ARQUIVOS · ${active.packageCode}`}</small></div></button> : <button className="collector-box" disabled={!active.promptText || active.stage<4} onClick={()=>void startImageFlow()}><span>⌁</span><b>{collectorRunning?"ACOMPANHAR BUSCA":active.promptText&&active.stage>=4?"BUSCAR COM O CORVO":"AGUARDANDO PROMPTS"}</b><small>{collectorRunning?"O COLLECTOR CONTINUA TRABALHANDO":active.promptText&&active.stage>=4?`MOTOR: ${collectorEngines[settings.sourceMode].label} · SEGUNDO PLANO`:"A PRÓXIMA ETAPA SERÁ LIBERADA"}</small></button>}
+          <button className={`file-row action ${consolidationState(active).ready?"done":active.pipelineItems?.length?"pending":""}`} disabled={!active.pipelineItems?.length} onClick={()=>{setConsolidationMessage("");setConsolidationOpen(true);}}><span>▦</span><div><b>CONSOLIDAÇÃO / ZIP FINAL</b><small>{active.pipelineItems?.length ? `${consolidationState(active).completed}/${consolidationState(active).items.length} FINAIS · ${consolidationState(active).ready ? "PRONTO PARA GERAR" : active.pipelineStatus || "AGUARDANDO"}` : "AGUARDANDO O FLOW"}</small></div><i>{active.finalZipStatus==="CONCLUIDO"?"✓":consolidationState(active).ready?"→":"○"}</i></button>
+          {active.packageCode ? <button className="package-ready" onClick={()=>active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?setImageOpen(true):void startFlowImageProduction(active)}><span>{active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?"✓":"⌁"}</span><div><b>{active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?"IMAGENS DO FLOW PRONTAS":"FLOW EM PRODUÇÃO / RETOMADA"}</b><small>{active.flowStatus||active.pipelineStatus||`${active.imageCount||0} ASSET(S) RECEBIDO(S)`}</small></div></button> : <button className="collector-box" disabled={!active.promptText || active.stage<4} onClick={()=>void startFlowImageProduction(active)}><span>⌁</span><b>{active.flowStatus==="EM PRODUÇÃO"?"ACOMPANHAR FLOW":active.promptText&&active.stage>=4?"PRODUZIR NO FLOW":"AGUARDANDO PROMPTS"}</b><small>{active.flowStatus||(active.promptText&&active.stage>=4?"MANAGER LOCAL · PERFIS AUTOMÁTICOS · ENTREGA DIRETO AO APP":"A PRÓXIMA ETAPA SERÁ LIBERADA")}</small></button>}
         </aside>
       </article>}
     </section>
@@ -3657,7 +3812,7 @@ export default function Home() {
     {activityOpen && active && <div className="modal-backdrop activity-backdrop" onMouseDown={(event)=>{if(event.currentTarget===event.target)setActivityOpen(false);}}><section className="activity-modal" role="dialog" aria-modal="true" aria-labelledby="activity-title">
       <button className="modal-x" onClick={()=>setActivityOpen(false)}>×</button>
       <span className="modal-kicker">CENTRAL AO VIVO</span><h2 id="activity-title">ACOMPANHAR PRODUÇÃO</h2><p>{active.title}</p>
-      <div className="activity-tabs">{(["TODOS","IDEIA","ROTEIRO","PROMPTS","COLLECTOR","ANALISTA","IMAGENS","THUMB","METADADOS"] as ActivityFilter[]).map((step)=><button key={step} className={activityFilter===step?"active":""} onClick={()=>setActivityFilter(step)}>{step}</button>)}</div>
+      <div className="activity-tabs">{(["TODOS","IDEIA","ROTEIRO","PROMPTS","FLOW","IMAGENS","THUMB","METADADOS"] as ActivityFilter[]).map((step)=><button key={step} className={activityFilter===step?"active":""} onClick={()=>setActivityFilter(step)}>{step}</button>)}</div>
       <div className="activity-current"><span>ETAPA SELECIONADA</span><b>{activityFilter}</b><small>{activityStepStatus(active,activityFilter)}</small></div>
       <div className="activity-list">
         {activityJobs.filter((job)=>activityFilter==="TODOS" || specialistToActivityStep(job.specialist)===activityFilter).map((job)=><div className="activity-job" key={job.jobId}>
@@ -3701,7 +3856,7 @@ export default function Home() {
       <button className="modal-close" onClick={()=>setSettingsOpen(false)} aria-label="Fechar configurações">×</button>
       <span className="modal-kicker">COMPORTAMENTO DAS IMAGENS</span><h2>COMO O CORVO DEVE ESCOLHER?</h2><p>Estas opções ficam salvas e não aparecem durante a produção.</p>
       <div className="choice-cards"><button className={settings.selectionMode==="AUTO"?"selected":""} onClick={()=>setSettings({...settings,selectionMode:"AUTO"})}><b>⚡ AUTOMÁTICO</b><small>ENVIA ATÉ {settings.analystCandidatesPerId} CANDIDATAS/ID AO ANALISTA</small></button><button className={settings.selectionMode==="MANUAL"?"selected":""} onClick={()=>setSettings({...settings,selectionMode:"MANUAL"})}><b>◉ REVISÃO RÁPIDA</b><small>VOCÊ ESCOLHE UMA CANDIDATA POR ID</small></button></div>
-      <div className="choice-cards"><button className={settings.youtubeParallel?"selected":""} onClick={()=>setSettings({...settings,youtubeParallel:true})}><b>▶ METADADOS EM PARALELO</b><small>CHAMA O CORVO YOUTUBE JUNTO AO COLLECTOR</small></button><button className={!settings.youtubeParallel?"selected":""} onClick={()=>setSettings({...settings,youtubeParallel:false})}><b>○ METADADOS DESATIVADOS</b><small>PODE SER ATIVADO QUANDO O GPT YOUTUBE ESTIVER PRONTO</small></button></div>
+      <div className="choice-cards"><button className={settings.youtubeParallel?"selected":""} onClick={()=>setSettings({...settings,youtubeParallel:true})}><b>▶ METADADOS EM PARALELO</b><small>CHAMA O CORVO YOUTUBE EM PARALELO AO FLOW</small></button><button className={!settings.youtubeParallel?"selected":""} onClick={()=>setSettings({...settings,youtubeParallel:false})}><b>○ METADADOS DESATIVADOS</b><small>PODE SER ATIVADO QUANDO O GPT YOUTUBE ESTIVER PRONTO</small></button></div>
       <section className="collector-engine-settings" aria-labelledby="collector-engine-title">
         <div className="engine-heading"><div><span>MOTOR DO COLETOR</span><h3 id="collector-engine-title">ONDE BUSCAR AS IMAGENS?</h3></div><small>ATIVO: {collectorEngines[settings.sourceMode].label}</small></div>
         <div className="engine-cards">{(["MIXED","GOOGLE","PINTEREST"] as SourceMode[]).map((item)=>{
@@ -3713,7 +3868,7 @@ export default function Home() {
       <section className="downloads-section" aria-labelledby="downloads-title">
         <div className="downloads-head"><div><span>INSTALAÇÃO E SUPORTE</span><h3 id="downloads-title">ARQUIVOS PARA BAIXAR</h3></div><small>SE PRECISAR REINSTALAR</small></div>
         <div className="download-grid">
-          <a className="download-card" href="/downloads/CORVO_COLLECTOR_V080_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.8.0</small></div><i>↓</i></a>
+          <a className="download-card" href="/downloads/CORVO_FLOW_MANAGER_WORKER_APP_INTEGRATION.zip" download><span>⌁</span><div><b>FLOW MANAGER INTEGRADO</b><small>V4.2.9 · APP DELIVERY</small></div><i>↓</i></a><a className="download-card" href="/downloads/CORVO_COLLECTOR_V080_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.8.0</small></div><i>↓</i></a>
           <a className="download-card" href="/downloads/CORVO_BRIDGE_V0636_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.36 · BACKUP/IMPORTAÇÃO DE GPTs + CAPTURA A/B</small></div><i>↓</i></a>
           <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0653.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
         </div>
@@ -3741,7 +3896,7 @@ export default function Home() {
       <span className="modal-kicker">{workflowKind==="ROTEIRO"?"CORVO ROTEIRO":"PROMPTS DE IMAGEM"}</span>
       <h2 id="workflow-title">{workflowLoading?workflowKind==="ROTEIRO"?"CRIANDO O ROTEIRO...":"LENDO O ROTEIRO...":workflowError?"PRECISAMOS TENTAR NOVAMENTE":workflowKind==="ROTEIRO"?"ROTEIRO DISPONÍVEL":"PROMPTS DISPONÍVEIS"}</h2>
       {workflowLoading ? <div className="workflow-wait"><div className="idea-spinner" /><p>{workflowMessage||"O especialista está trabalhando em segundo plano."}</p><small>O RESULTADO VOLTA AUTOMATICAMENTE PARA ESTE CAMPO.</small></div> : workflowError ? <div className="workflow-error"><p>{workflowError}</p><button className="modal-submit" onClick={()=>runSpecialist(workflowKind)}>TENTAR NOVAMENTE <span>↻</span></button></div> : workflowOutput ? <>
-        <div className="workflow-file-head"><span>{workflowKind==="ROTEIRO"?"ROTEIRO.TXT":"PROMPTS.TXT"}</span><small>{workflowKind==="PROMPTS"?`${parseGuideText(workflowOutput).length} BUSCAS IDENTIFICADAS`:"TEXTO COMPLETO RECEBIDO"}</small></div>
+        <div className="workflow-file-head"><span>{workflowKind==="ROTEIRO"?"ROTEIRO.TXT":"PROMPTS.TXT"}</span><small>{workflowKind==="PROMPTS"?`${parseGuideText(workflowOutput).length} IMAGENS IDENTIFICADAS`:"TEXTO COMPLETO RECEBIDO"}</small></div>
         <pre className="workflow-output">{workflowOutput}</pre>
         <div className="workflow-actions"><button onClick={()=>runSpecialist(workflowKind)}>↻ PEDIR OUTRO</button><button onClick={()=>downloadTextFile(workflowKind==="ROTEIRO"?`${active.id}_ROTEIRO.txt`:`${active.id}_PROMPTS.txt`,workflowOutput)}>↓ BAIXAR TXT</button></div>
         <button className="modal-submit" onClick={approveWorkflow}>{workflowKind==="ROTEIRO"?"APROVAR E CRIAR PROMPTS":"APROVAR E IR PARA IMAGENS"} <span>→</span></button>
@@ -3753,7 +3908,7 @@ export default function Home() {
       {imagePhase==="review" && currentGroup && currentRank ? <>
         <div className="review-top"><div><span className="modal-kicker">SELEÇÃO RÁPIDA · {groupIndex+1}/{groups.length}</span><h2>{currentGroup.query}</h2></div><div className="review-counter">CENA {String(groupIndex+1).padStart(2,"0")}</div></div>
         <div className="review-layout"><div className="candidate-stage"><img src={currentRank.candidate.previewUrl} alt={currentGroup.query} referrerPolicy="no-referrer" /><div className="image-quality"><span>{currentRank.candidate.width||"—"} × {currentRank.candidate.height||"—"}</span><span>OPÇÃO {candidatePos+1}/{currentGroup.ranked.length}</span></div></div><aside className="review-side"><span className="review-label">ESTA IMAGEM FUNCIONA?</span><p>Escolha rapidamente. O Corvo guarda reservas e prepara os nomes automaticamente.</p><button className="use-image" onClick={useCurrentCandidate}>✓ USAR ESTA IMAGEM</button><button className="next-image" onClick={()=>setCandidatePos((value)=>Math.min(value+1,currentGroup.ranked.length-1))}>VER PRÓXIMA <span>→</span></button><button className="search-more" disabled={searchingMore} onClick={searchMore}>{searchingMore?"PROCURANDO...":"↻ PROCURAR MAIS"}</button><div className="thumb-strip">{currentGroup.ranked.slice(0,4).map((rank,index)=><button className={candidatePos===index?"active":""} onClick={()=>setCandidatePos(index)} key={candidateUrl(rank.candidate)}><img src={rank.candidate.previewUrl} alt="" referrerPolicy="no-referrer"/></button>)}</div></aside></div>
-      </> : <div className="image-status-view"><div className={`status-orb ${imagePhase}`}>{imagePhase==="done"?"✓":imagePhase==="error"?"!":"⌁"}</div><span className="modal-kicker">{imagePhase==="connecting"?"CONECTANDO":imagePhase==="searching"?"BUSCANDO IMAGENS":imagePhase==="packaging"?"ORGANIZANDO":imagePhase==="done"?"PACOTE PRONTO":"PRECISAMOS AJUSTAR"}</span><h2>{imagePhase==="done"?"TUDO CERTO.":imagePhase==="error"?"NÃO FOI POSSÍVEL CONTINUAR":imageMessage}</h2>{!["searching","packaging"].includes(imagePhase)&&<p>{imageMessage}</p>}<div className="image-progress"><i style={{width:`${imageProgress}%`}} /></div>{imagePhase==="searching"&&<div className="collector-live-status"><b>{imageStatusLine}</b><small>SEM LIMITE CURTO DE TEMPO · VOCÊ PODE OCULTAR ESTA JANELA E VOLTAR DEPOIS</small><button onClick={cancelImageFlow}>CANCELAR BUSCA</button></div>}{imagePhase==="packaging"&&<div className="collector-live-status"><b>{imageStatusLine||"CHECKPOINT SALVO · PREPARANDO PACOTE"}</b><small>{active?.analysisPreparationError||"O COLLECTOR NÃO SERÁ REFEITO ENQUANTO EXISTIR UM CHECKPOINT RECUPERÁVEL."}</small>{active&&hasAnalysisPreparationCheckpoint(active)&&<button onClick={()=>void resumeAnalysisPreparation(active.id,true)}>RETOMAR AGORA</button>}</div>}{imagePhase==="done"&&<><div className="package-summary"><span>✓ IMAGENS</span><span>✓ NOMES CONFERIDOS</span><span>✓ PIPELINE</span><b>{packageCode||active?.packageCode}</b></div><button className="modal-submit success" onClick={()=>setImageOpen(false)}>CONCLUIR ETAPA <span>→</span></button><details className="package-options"><summary>OPÇÕES DO PACOTE</summary><button onClick={savePackageCopy}>SALVAR ZIP ORIGINAL DO COLLECTOR</button></details></>}{imagePhase==="error"&&<><button className="modal-submit" onClick={retryImageFlow}>{terminalFailureCount ? `REABRIR ${terminalFailureCount} FALHA(S)` : packageRetryRef.current?.length ? "REENVIAR AS IMAGENS" : "TENTAR NOVAMENTE"} <span>↻</span></button><button className="plain-close" onClick={()=>setImageOpen(false)}>FECHAR</button></>}</div>}
+      </> : <div className="image-status-view"><div className={`status-orb ${imagePhase}`}>{imagePhase==="done"?"✓":imagePhase==="error"?"!":"⌁"}</div><span className="modal-kicker">{imagePhase==="connecting"?"CONECTANDO":imagePhase==="searching"?"PRODUZINDO NO FLOW":imagePhase==="packaging"?"RECEBENDO ASSETS":imagePhase==="done"?"PACOTE PRONTO":"PRECISAMOS AJUSTAR"}</span><h2>{imagePhase==="done"?"TUDO CERTO.":imagePhase==="error"?"NÃO FOI POSSÍVEL CONTINUAR":imageMessage}</h2>{!["searching","packaging"].includes(imagePhase)&&<p>{imageMessage}</p>}<div className="image-progress"><i style={{width:`${imageProgress}%`}} /></div>{imagePhase==="searching"&&<div className="collector-live-status"><b>{imageStatusLine}</b><small>SEM LIMITE CURTO DE TEMPO · VOCÊ PODE OCULTAR ESTA JANELA E VOLTAR DEPOIS</small><button onClick={cancelFlowProduction}>PARAR FLOW</button></div>}{imagePhase==="packaging"&&<div className="collector-live-status"><b>{imageStatusLine||"ASSET RECEBIDO DO FLOW · SALVANDO NO PROJETO"}</b><small>O ARQUIVO É GUARDADO NO APP/R2 E ENTRA NO ZIP FINAL.</small></div>}{imagePhase==="done"&&<><div className="package-summary"><span>✓ IMAGENS</span><span>✓ NOMES CONFERIDOS</span><span>✓ FLOW → APP</span><b>{packageCode||active?.packageCode}</b></div><button className="modal-submit success" onClick={()=>setImageOpen(false)}>CONCLUIR ETAPA <span>→</span></button></>}{imagePhase==="error"&&<><button className="modal-submit" onClick={()=>active&&void startFlowImageProduction(active)}>RETOMAR FLOW <span>↻</span></button><button className="plain-close" onClick={()=>setImageOpen(false)}>FECHAR</button></>}</div>}
     </section></div>}
   </main>;
 }

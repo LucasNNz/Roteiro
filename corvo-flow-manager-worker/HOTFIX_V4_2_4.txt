@@ -1,0 +1,90 @@
+CORVO FLOW MANAGER / WORKER
+V4.2.4 — BALANCED SCHEDULER + LIFECYCLE TELEMETRY
+DATA=2026-08-17
+
+OBJETIVO
+Fechar os dois pontos encontrados no manifesto V4.2 anterior:
+1. evitar que o primeiro Worker pronto absorva o lote inteiro;
+2. registrar no Manager o ciclo real GENERATING -> RESULT_READY -> DOWNLOADING -> DONE, sem depender apenas do heartbeat de 3 segundos.
+
+1. BALANCED INITIAL WAVE
+- O primeiro heartbeat pronto nao captura mais imediatamente o Burst completo.
+- Quando existe um lote novo, o Manager inicia uma janela de balanceamento.
+- Todos os perfis habilitados sao Auto Launch + Profile Prewarm.
+- A primeira distribuicao espera os perfis chegarem a PROJECT_READY.
+- Assim que todos os perfis elegiveis estiverem prontos, a distribuicao e liberada imediatamente.
+- Se algum perfil nao conseguir ficar pronto, o Manager nao bloqueia para sempre: usa timeout configuravel.
+- Padrao: 25 segundos.
+- Nova configuracao no painel: "Janela inicial de balanceamento (segundos)".
+
+EXEMPLO
+12 JOBs + 3 perfis PROJECT_READY + Burst 5:
+FLOW_PROFILE_01 = 4 JOBs
+FLOW_PROFILE_02 = 4 JOBs
+FLOW_PROFILE_03 = 4 JOBs
+
+Depois da primeira onda, a fila continua dinamica: conforme um Worker libera capacidade, pode receber novos JOBs respeitando o Burst.
+
+Se 3 perfis estiverem cadastrados, mas apenas 2 conseguirem ficar PROJECT_READY ate o timeout:
+- o Manager continua com os 2 prontos;
+- nao fica travado esperando eternamente o terceiro;
+- quando o terceiro recuperar, volta a concorrer aos JOBs pendentes.
+
+2. LIFECYCLE TELEMETRY PUSH
+O Worker agora envia eventos imediatamente para o Manager quando cada JOB muda de etapa:
+- SENT
+- GENERATION_STARTED
+- RESULT_READY
+- DOWNLOAD_REQUESTED
+- DONE
+- FAILED
+
+Nova rota local:
+POST /api/worker/event
+
+O heartbeat continua existindo como reconciliacao/fallback, mas nao e mais a unica fonte para estados curtos como RESULT_READY e DOWNLOADING.
+
+3. TIMESTAMPS DO MANIFESTO
+O manifesto consolidado agora deve preencher com muito mais confiabilidade:
+SENT_AT
+GENERATION_DETECTED_AT
+RESULT_DETECTED_AT
+DOWNLOAD_REQUESTED_AT
+DONE_AT
+
+4. PROTECAO CONTRA EVENTO ATRASADO
+Um heartbeat/evento antigo nao pode regredir um JOB.
+Exemplo:
+DONE -> heartbeat atrasado dizendo SENT
+Resultado: continua DONE.
+
+Tambem preserva ARQUIVO, sequencias e dados de mapeamento ja confirmados quando chega um snapshot antigo/incompleto.
+
+5. TITLE WATCHDOG PRESERVADO
+Toda a recuperacao da V4.2.3 continua presente:
+- deteccao de "Application error: a client-side exception has occurred" pelo titulo da aba;
+- reload automatico da mesma aba;
+- limite de tentativas para evitar loop infinito.
+
+6. COMPATIBILIDADE
+Preservados:
+- perfis e logins em %LOCALAPPDATA%\CorvoFlowManager;
+- Auto Launch;
+- Auto Project / New project;
+- Profile Prewarm;
+- HARD STOP;
+- Download Guard;
+- JPG/JPEG;
+- Failure Isolation;
+- fila/reset/limpeza;
+- backup/importacao de configuracoes;
+- LIMIT_REACHED;
+- recuperacao de assignments.
+
+VALIDACOES LOCAIS REALIZADAS
+- Node syntax check: server.js, app.js, background.js e content.js.
+- 12 JOBs / 3 Workers PROJECT_READY / Burst 5 => 4 / 4 / 4.
+- timeout com 3 perfis elegiveis e apenas 2 prontos => 5 / 5 + 2 PENDING, sem travamento.
+- lifecycle push SENT -> GENERATION_STARTED -> RESULT_READY -> DOWNLOAD_REQUESTED -> DONE.
+- heartbeat SENT atrasado depois de DONE nao regrediu o JOB.
+- arquivo final e timestamps de telemetria permaneceram preservados.

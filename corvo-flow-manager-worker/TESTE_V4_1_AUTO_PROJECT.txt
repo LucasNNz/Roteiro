@@ -1,0 +1,22 @@
+TESTE V4.1.0 — AUTO PROJECT
+
+1. Feche as janelas dos perfis e o Manager antigo.
+2. Inicie START_MANAGER.bat da V4.1.0.
+3. Abra FLOW_PROFILE_01.
+4. Deixe a aba exatamente na HOME do Google Flow; nao clique em New project.
+5. Confirme no Manager: AVAILABLE e Flow=FLOW_HOME.
+6. Adicione um [FLOW_BATCH] pequeno ao Manager.
+7. Nao clique em nada no Flow.
+
+ESPERADO
+- perfil muda para BUSY;
+- Flow=OPENING_PROJECT;
+- Worker clica New project sozinho;
+- quando o compositor aparece: Flow=PROJECT_READY;
+- JOB sai de ASSIGNED para RUNNING/SENT;
+- prompts entram automaticamente;
+- downloads e manifesto seguem como nas versoes V3 validadas.
+
+SE NEW PROJECT ABRIR ALGUM DIALOGO
+A V4.1 tenta automaticamente botoes Create/Create project/Criar/Criar projeto/Continue/Continuar/Start/Iniciar dentro de um dialogo.
+Se a interface real exigir um campo obrigatorio inesperado, o Manager mostrara WAITING_PROJECT e a mensagem no campo Workspace, sem perder o assignment.

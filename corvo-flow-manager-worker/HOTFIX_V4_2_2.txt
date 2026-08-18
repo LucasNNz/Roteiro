@@ -1,0 +1,35 @@
+CORVO FLOW MANAGER / WORKER
+V4.2.2 — FLOW CLIENT ERROR AUTO RELOAD
+DATA=2026-08-17
+
+CORRECAO PRINCIPAL
+
+Algumas aberturas do Google Flow exibem:
+Application error: a client-side exception has occurred
+
+A partir desta versao o Worker detecta essa tela automaticamente e recarrega A MESMA ABA.
+Nao abre nova janela e nao exige clique manual em atualizar.
+
+FLUXO
+1. Perfil e aberto pelo Manager.
+2. Worker detecta a tela client-side exception.
+3. Perfil aparece temporariamente como FLOW_CLIENT_ERROR / RELOADING.
+4. Service worker solicita chrome.tabs.reload na mesma aba.
+5. Depois da pagina estabilizar, o fluxo normal continua:
+   FLOW_HOME -> OPENING_PROJECT -> PROJECT_READY -> demanda.
+
+PROTECAO CONTRA LOOP
+- cooldown minimo entre reloads: 3,5 segundos;
+- maximo: 4 reloads dentro de 2 minutos por perfil;
+- na 3a/4a tentativa o reload usa bypass de cache;
+- se ainda falhar, para automaticamente e informa FLOW_CLIENT_ERROR_RELOAD_LIMIT.
+
+PRESERVADO
+- Auto Launch de perfis;
+- Profile Prewarm / New Project automatico;
+- fila e assignments;
+- Result Tracker e downloads;
+- HARD STOP;
+- Download Guard;
+- multi-worker;
+- configuracoes e perfis persistentes.

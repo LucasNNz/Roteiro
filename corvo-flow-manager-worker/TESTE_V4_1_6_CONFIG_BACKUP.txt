@@ -1,0 +1,12 @@
+TESTE V4.1.6 - BACKUP DE CONFIGURACOES
+
+1. Deixe o Manager PARADO.
+2. Confirme que os perfis 01, 02 e 03 aparecem.
+3. Clique Exportar configuracoes.
+4. Deve baixar corvo-flow-manager-config-AAAA-MM-DD.json.
+5. Altere temporariamente o nome de um perfil ou remova um perfil do Manager (dados locais preservados).
+6. Clique Importar configuracoes e selecione o JSON.
+7. Confirme a importacao.
+8. Os perfis devem reaparecer/ser mesclados pelos IDs originais.
+9. No mesmo PC, clique Abrir: se a pasta local chrome-data continuou existente, a sessao Google deve ser reaproveitada.
+10. Em outro PC, o perfil sera criado, mas o login Google devera ser realizado manualmente.
