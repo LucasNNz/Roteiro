@@ -1,0 +1,11 @@
+CORVOQUIZ ROTEIRO V0.8.0 — VERIFICAÇÃO DA INTEGRAÇÃO FORMA
+
+1. Fonte do Forma incorporada: OK.
+2. Comparação com o ZIP original: somente FormaEditor.tsx e lib/batch/assets.ts receberam extensões da ponte; os demais arquivos do editor/lib foram preservados.
+3. Parser original testado com IMAGEM e QUAL_VOCE_PREFERE (IMAGEM_A/IMAGEM_B): OK, sem issues.
+4. Imports internos @/ da árvore app/components/lib: 0 ausentes.
+5. Transpile de 119 arquivos TS/TSX: 0 erros de sintaxe/transpile.
+6. Esteira automática não chama buildFinalZip; o MP4 é baixado somente após retorno válido do exportProjectMp4 original do Forma.
+7. Transporte: direto em memória; fallback automático para ZIP em memória; ZIP manual permanece disponível.
+8. Forma manual permanece disponível em /forma.
+9. Build npm completo não foi executado neste ambiente: node_modules não veio nos ZIPs e o registry npm não ficou acessível. O vercel.json força npm install no deploy para reconciliar/instalar as dependências declaradas.

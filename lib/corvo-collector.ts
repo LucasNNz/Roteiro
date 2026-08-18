@@ -40,6 +40,26 @@ export type RankedGroup = CandidateGroup & {
   selectionMode: SelectionMode;
 };
 
+function cleanPromptParagraph(value: string) {
+  return String(value || "")
+    .replace(/^\s*```(?:text|txt)?\s*$/gim, "")
+    .replace(/^\s*```\s*$/gim, "")
+    .trim()
+    // O contrato atual do Corvo usa 1 parágrafo = 1 asset físico. Quebras de
+    // linha simples dentro do mesmo parágrafo são apenas wrapping visual e não
+    // devem virar JOBs adicionais.
+    .replace(/\s*\n\s*/g, " ")
+    .replace(/[\t ]{2,}/g, " ")
+    .trim();
+}
+
+export function isStructuredGuideText(text: string) {
+  return String(text || "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .some((line) => /^[#>*\-\s]*[A-Za-z0-9_-]+\s*\|\s*\S/.test(line.trim()));
+}
+
 type ChromeWindow = Window & {
   chrome?: {
     runtime?: {
@@ -54,9 +74,37 @@ type ChromeWindow = Window & {
 };
 
 export function parseGuideText(text: string): GuideItem[] {
-  const lines = text.split(/\n+/).map((line) => line.trim()).filter((line) => line && !/^```/.test(line));
+  const normalized = String(text || "").replace(/\r\n?/g, "\n").trim();
+  const lines = normalized.split("\n").map((line) => line.trim()).filter((line) => line && !/^```/.test(line));
   const pipeLines = lines.filter((line) => /^[#>*\-\s]*[A-Za-z0-9_-]+\s*\|\s*\S/.test(line));
-  const source = pipeLines.length ? pipeLines : lines.filter((line) => !/^(prompts?|buscas?|imagens?)\s*:?s*$/i.test(line));
+
+  // Contrato novo: UM PARÁGRAFO = UMA IMAGEM FÍSICA, com uma linha em branco
+  // entre prompts. Mantemos o parser antigo de ID|... para compatibilidade.
+  let source:string[];
+  if (pipeLines.length) {
+    source = pipeLines;
+  } else {
+    const withoutFence = normalized
+      .replace(/^\s*```(?:text|txt)?\s*$/gim, "")
+      .replace(/^\s*```\s*$/gim, "")
+      .trim();
+    let paragraphs = withoutFence
+      .split(/\n\s*\n+/)
+      .map(cleanPromptParagraph)
+      .filter((value) => value && !/^(prompts?|buscas?|imagens?)\s*:?\s*$/i.test(value));
+
+    // Compatibilidade com TXT antigos sem linha vazia: se não houver nenhum
+    // separador de parágrafo, cada linha não vazia continua sendo um prompt.
+    if (paragraphs.length <= 1 && !/\n\s*\n/.test(withoutFence)) {
+      const legacyLines = withoutFence
+        .split("\n")
+        .map(cleanPromptParagraph)
+        .filter((value) => value && !/^(prompts?|buscas?|imagens?)\s*:?\s*$/i.test(value));
+      if (legacyLines.length > 1) paragraphs = legacyLines;
+    }
+    source = paragraphs;
+  }
+
   return source.map((line, index) => {
     const cleaned = line.replace(/^[#>*\-\s]+/, "").trim();
     const parts = cleaned.split("|").map((value) => value.trim());

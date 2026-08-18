@@ -1,0 +1,34 @@
+CORVOQUIZ ROTEIRO V0.7.3 — CONTRATO PROMPTS POR PARAGRAFO → FLOW MANAGER
+
+OBJETIVO
+Aceitar diretamente o novo PROMPTS.TXT produzido pelo especialista de imagens:
+- 1 paragrafo = 1 asset fisico.
+- 1 linha em branco separa um prompt do proximo.
+- O TXT nao precisa conter ID, IMAGEM, nome de arquivo ou sufixo _A/_B.
+
+FONTE DE VERDADE
+O ROTEIRO.TXT continua sendo a fonte de verdade para:
+- ID da cena.
+- slot fisico (IMAGEM, IMAGEM_A, IMAGEM_B etc.).
+- nome exato do arquivo final.
+- ordem dos assets fisicos.
+
+MAPEAMENTO AUTOMATICO
+1. O app recebe e salva o texto integral de PROMPTS.TXT.
+2. O parser identifica se o conteudo usa o formato novo por paragrafos ou o legado ID|... .
+3. No formato novo, cada paragrafo e convertido em exatamente um GuideItem.
+4. O app extrai do ROTEIRO todos os campos fisicos IMAGEM, IMAGEM_A, IMAGEM_B, IMAGEM_RESULTADO, IMAGEM1 e IMAGEM2 na ordem em que aparecem.
+5. Prompt 1 e associado ao asset fisico 1; prompt 2 ao asset fisico 2; e assim por diante.
+6. Em QUAL_VOCE_PREFERE, IMAGEM_A e IMAGEM_B sao dois assets consecutivos e independentes. O app nunca duplica o mesmo prompt para os dois slots.
+7. Antes do envio, a quantidade de paragrafos deve ser exatamente igual a quantidade de assets fisicos do roteiro. Divergencia bloqueia o envio e mostra erro claro.
+8. O app monta o lote estruturado [FLOW_BATCH] exigido pelo Manager, preenchendo JOB_ID, SLOT, ARQUIVO_FINAL, METADATA e PROMPT.
+9. O Manager recebe JOBs individuais, distribui aos perfis e devolve cada asset ao app.
+
+COMPATIBILIDADE
+O formato antigo ID|PROMPT e ID|IMAGEM|ARQUIVO|PROMPT continua aceito. O novo formato por paragrafos passa a ser o padrao preferencial.
+
+AUTOMACAO
+No modo automatico, ao receber PROMPTS.TXT do especialista o app segue sozinho para FLOW, inicia/conecta o Agent local, cria o batch, inicia o Manager quando necessario, acompanha os JOBs e recebe os assets diretamente no projeto.
+
+VALIDACAO DE REGRESSAO
+O parser foi validado com AUTO_1787076612823_PROMPTS.txt: 5 paragrafos foram reconhecidos como 5 assets independentes, na ordem original.

@@ -1,0 +1,27 @@
+CORVOQUIZ ROTEIRO V0.8.0 — FORMA EMBUTIDO / ESTEIRA AUTOMÁTICA
+
+OBJETIVO
+Integrar o Forma ao próprio app Roteiro sem substituir nem reescrever seu módulo Lote, presets, cenas ou exportador MP4.
+
+ESTEIRA AUTOMÁTICA
+IDEIA → ROTEIRO.TXT → PROMPTS.TXT → FLOW MANAGER → ASSETS NO APP/R2 → FORMA / IMPORTAR LOTE → MP4 FINAL → DOWNLOAD AUTOMÁTICO.
+
+TRANSPORTE FLOW → FORMA
+1. O Roteiro valida que todos os arquivos físicos citados em ROTEIRO.TXT existem e estão concluídos no Flow.
+2. O app busca os assets finais preservando os nomes exatos do roteiro.
+3. Caminho principal: entrega ROTEIRO.TXT + bytes das imagens diretamente ao Forma embutido, sem ZIP nem download intermediário.
+4. Fallback automático: se o transporte direto for recusado pelo Lote, o app monta um ZIP em memória e chama o importador ZIP original do Forma. Esse ZIP não é baixado no computador.
+5. Fallback manual: o botão ZIP DE BACKUP / FORMA MANUAL continua disponível e usa o contrato tradicional ROTEIRO.TXT + ZIP.
+
+FORMA PRESERVADO
+- O Forma completo continua disponível na rota /forma.
+- O painel IMPORTAR LOTE manual continua aceitando TXT + ZIP como antes.
+- O parser de roteiro, attachBatchZip, presets, montagem de cenas, transições, áudio e renderização MP4 originais foram preservados.
+- A única extensão de entrada adicionada ao Lote é attachBatchFiles para receber os mesmos arquivos já em memória.
+- A automação chama o exportProjectMp4 original somente depois que o novo lote foi aplicado e renderizado no estado React.
+
+DOWNLOADS
+O modo automático não baixa PROMPTS, imagens, ZIP intermediário ou pacote final. O download automático é disparado somente quando o Forma devolve um Blob MP4 válido. Thumbnail e metadados continuam armazenados em seus fluxos sem download automático.
+
+RETOMADA
+Se a página for recarregada depois das imagens, o checkpoint detecta IMAGENS FINAIS PRONTAS e retoma na etapa FORMA. Se o vídeo já estiver concluído, não gera outro MP4 automaticamente.

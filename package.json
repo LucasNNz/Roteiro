@@ -1,6 +1,6 @@
 {
   "name": "corvoquiz-producao",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -15,7 +15,11 @@
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "@aws-sdk/client-s3": "^3.0.0",
-    "@aws-sdk/s3-request-presigner": "^3.0.0"
+    "@aws-sdk/s3-request-presigner": "^3.0.0",
+    "@fontsource/montserrat": "^5.2.8",
+    "@vercel/blob": "2.7.0",
+    "fflate": "^0.8.2",
+    "mp4-muxer": "^5.2.2"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "4.2.1",
