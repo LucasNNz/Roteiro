@@ -4081,7 +4081,7 @@ export default function Home() {
       <section className="downloads-section" aria-labelledby="downloads-title">
         <div className="downloads-head"><div><span>INSTALAÇÃO E SUPORTE</span><h3 id="downloads-title">ARQUIVOS PARA BAIXAR</h3></div><small>SE PRECISAR REINSTALAR</small></div>
         <div className="download-grid">
-          <a className="download-card" href="/downloads/CORVO_FLOW_AGENT_V4_2_9_AUTO.zip" download><span>⌁</span><div><b>FLOW AGENT AUTOMÁTICO</b><small>V4.2.9 · ABRE MINIMIZADO · FECHA PERFIS AO FINAL</small></div><i>↓</i></a><a className="download-card" href="/downloads/CORVO_COLLECTOR_V080_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.8.0</small></div><i>↓</i></a>
+          <a className="download-card" href="/downloads/CORVO_FLOW_AGENT_V4_2_9_AUTO.zip" download><span>⌁</span><div><b>FLOW AGENT AUTOMÁTICO</b><small>V4.2.9 · APP DELIVERY 1.1 · SEM DOWNLOAD INDIVIDUAL</small></div><i>↓</i></a><a className="download-card" href="/downloads/CORVO_COLLECTOR_V080_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.8.0</small></div><i>↓</i></a>
           <a className="download-card" href="/downloads/CORVO_BRIDGE_V0636_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.36 · BACKUP/IMPORTAÇÃO DE GPTs + CAPTURA A/B</small></div><i>↓</i></a>
           <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0653.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
         </div>

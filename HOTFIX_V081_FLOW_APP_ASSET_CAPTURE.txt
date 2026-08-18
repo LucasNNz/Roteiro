@@ -1,0 +1,15 @@
+CORVO ROTEIRO V0.8.1 — FLOW APP ASSET CAPTURE
+
+Problema observado:
+- Flow gerava e detectava os assets.
+- DELIVERY_MODE=APP falhava em RESULT_READY -> entrega, deixando ARQUIVO vazio e ERROR_CODE=DOWNLOAD_FAILED.
+
+Correcao:
+- modo APP nao depende mais do download do Chrome;
+- asset HTTP(S) e capturado pela mesma sessao autenticada do Flow via Chrome DevTools Protocol;
+- binario segue Worker -> Manager -> app, em memoria;
+- nome final vem de ARQUIVO_FINAL;
+- retry de entrega reutiliza o asset existente, sem nova geracao;
+- erro especifico passa a ser APP_ASSET_CAPTURE_FAILED;
+- modo manual/legado de download permanece intacto;
+- Forma e esteira posterior nao foram alterados.
