@@ -1,0 +1,21 @@
+CORVOQUIZ ROTEIRO V0.7.2 — FLOW LOCAL AUTOMATICO EM SEGUNDO PLANO
+
+FLUXO DE USO
+1. O Roteiro verifica/acorda o Corvo Flow Agent automaticamente.
+2. Ao iniciar a producao, o Roteiro marca a sessao como MODE=APP.
+3. O Manager V4.2.9 abre apenas os perfis necessarios.
+4. Nas sessoes APP, os Chromes sao iniciados minimizados.
+5. O Worker gera normalmente no Flow e entrega os assets ao Manager/app sem Downloads.
+6. Quando a fila termina, o Manager faz AUTO_STOP.
+7. Depois de o ultimo asset estar entregue, as janelas de Chrome abertas por aquela sessao APP sao encerradas automaticamente.
+8. O agente leve continua rodando invisivel para o proximo lote.
+
+PROTECOES
+- Manager manual continua MODE=MANUAL e nao recebe o auto-close do app.
+- So sao encerrados processos Chrome que foram abertos pelo proprio Manager e pertencem ao sessionId atual do app.
+- Perfis/cookies/logins permanecem em %LOCALAPPDATA%\CorvoFlowManager.
+- Nenhuma pasta de perfil e apagada no fechamento.
+- O core de fila, preflight, balanceamento, watchdog, Composer Focus Recovery e mapeamento de assets continua V4.2.9.
+
+RECUPERACAO
+Se o login do Google expirar ou o Flow exigir intervencao manual, abra o Manager/perfil normalmente para corrigir o login; o modo MANUAL nao fecha a janela automaticamente.

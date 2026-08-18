@@ -18,7 +18,7 @@ import {
   type SourceMode,
 } from "../lib/corvo-collector";
 import { captureCorvoBridgeFile, completeCorvoBridgeJob, dispatchCorvoBridge, focusCorvoBridgeJob, getCorvoBridgeJobActivity, probeCorvoBridge, type CorvoBridgeJobActivity } from "../lib/corvo-bridge";
-import { addFlowBatch, fetchFlowAsset, getFlowBatchManifest, getFlowManagerState, probeFlowManager, startFlowManager, stopFlowManager } from "../lib/corvo-flow";
+import { addFlowBatch, ensureFlowAgentReady, fetchFlowAsset, getFlowBatchManifest, getFlowManagerState, startFlowManager, stopFlowManager } from "../lib/corvo-flow";
 
 type Format = "REELS" | "VÍDEO COMPLETO";
 type Quantity = "1 VÍDEO" | "LOTE";
@@ -1193,7 +1193,7 @@ export default function Home() {
     if (workflowKind === "PROMPTS" && active.promptText) {
       setProjects((current) => current.map((item) => item.id === active.id ? { ...item, stage:4 } : item));
       setWorkflowOpen(false);
-      setNotice("PROMPTS APROVADOS. A BUSCA DE IMAGENS ESTÁ LIBERADA.");
+      setNotice("PROMPTS APROVADOS. A PRODUÇÃO AUTOMÁTICA NO FLOW ESTÁ LIBERADA.");
       setTimeout(() => setNotice(""), 4200);
     }
   }
@@ -1571,7 +1571,7 @@ export default function Home() {
 
   function friendlyError(error:unknown) {
     const message = String(error instanceof Error ? error.message : error);
-    if (message.includes("FLOW_MANAGER_OFFLINE")) return "O Corvo Flow Manager não está aberto neste PC. Abra o Manager integrado e tente novamente.";
+    if (message.includes("FLOW_AGENT_NOT_INSTALLED_OR_UNAVAILABLE") || message.includes("FLOW_MANAGER_OFFLINE")) return "O motor do Flow não respondeu. Instale o CORVO FLOW AGENT uma única vez neste PC; depois disso ele inicia sozinho e o Roteiro passa a chamá-lo automaticamente.";
     if (message.includes("FLOW_MANAGER_APP_INTEGRATION_REQUIRED")) return "O Manager aberto é a versão antiga. Use o Flow Manager integrado incluído nesta versão do Roteiro.";
     if (message.includes("FLOW_ASSET_HTTP")) return "A imagem foi gerada, mas o app ainda não conseguiu puxar o asset do Manager local. O lote ficou preservado e pode ser retomado.";
     const r2Trail = message.includes("|") ? ` [${message.split("|").at(-1)?.trim() || ""}]` : "";
@@ -1763,12 +1763,12 @@ export default function Home() {
       return false;
     }
 
-    setImageOpen(true); setImagePhase("connecting"); setImageProgress(4); setImageStatusLine("CONECTANDO AO MANAGER LOCAL · 127.0.0.1:32145");
-    setImageMessage("Conectando o Roteiro ao Corvo Flow Manager...");
+    setImageOpen(true); setImagePhase("connecting"); setImageProgress(4); setImageStatusLine("INICIANDO / CONECTANDO AO MOTOR FLOW AUTOMÁTICO");
+    setImageMessage("Preparando o motor Flow em segundo plano...");
     try {
       await ensurePipelineStorageReady();
-      const health = await probeFlowManager().catch(() => { throw new Error("FLOW_MANAGER_OFFLINE"); });
-      if (!health?.ok) throw new Error("FLOW_MANAGER_OFFLINE");
+      const health = await ensureFlowAgentReady();
+      if (!health?.ok) throw new Error("FLOW_AGENT_NOT_INSTALLED_OR_UNAVAILABLE");
       if (!health.appIntegration) throw new Error("FLOW_MANAGER_APP_INTEGRATION_REQUIRED");
 
       project = latestProject(project.id) || project;
@@ -3803,7 +3803,7 @@ export default function Home() {
           <button className={`file-row action ${thumbMatchesProjectFormat(active)?"done":active.thumbStatus==="FALHOU"?"pending":""}`} disabled={!active.scriptText && !thumbMatchesProjectFormat(active)} onClick={()=>thumbMatchesProjectFormat(active)?window.open(active.thumbUrl,"_blank","noopener,noreferrer"):void startThumbBranch(active)}><span>▰</span><div><b>THUMBNAIL · {thumbAspectRatioForFormat(active.format)}</b><small>{thumbMatchesProjectFormat(active)?"ABRIR IMAGEM FINAL":active.thumbError||active.thumbStatus||`CLIQUE PARA GERAR · ${thumbOrientationForFormat(active.format)}`}</small></div><i>{thumbMatchesProjectFormat(active)?"→":"↻"}</i></button>
           <button className={`file-row action ${active.youtubeMetadata?"done":active.youtubeStatus==="FALHOU"?"pending":""}`} disabled={!active.youtubeMetadata} onClick={()=>{if(active.youtubeMetadata)downloadTextFile(`${active.id}_YOUTUBE.txt`,active.youtubeMetadata);}}><span>▶</span><div><b>YOUTUBE / METADADOS</b><small>{active.youtubeMetadata?"BAIXAR DADOS EDITORIAIS":active.youtubeError||active.youtubeStatus||(settings.youtubeParallel?"INICIA EM PARALELO":"DESATIVADO NAS CONFIGURAÇÕES")}</small></div><i>{active.youtubeMetadata?"↓":"○"}</i></button>
           <button className={`file-row action ${consolidationState(active).ready?"done":active.pipelineItems?.length?"pending":""}`} disabled={!active.pipelineItems?.length} onClick={()=>{setConsolidationMessage("");setConsolidationOpen(true);}}><span>▦</span><div><b>CONSOLIDAÇÃO / ZIP FINAL</b><small>{active.pipelineItems?.length ? `${consolidationState(active).completed}/${consolidationState(active).items.length} FINAIS · ${consolidationState(active).ready ? "PRONTO PARA GERAR" : active.pipelineStatus || "AGUARDANDO"}` : "AGUARDANDO O FLOW"}</small></div><i>{active.finalZipStatus==="CONCLUIDO"?"✓":consolidationState(active).ready?"→":"○"}</i></button>
-          {active.packageCode ? <button className="package-ready" onClick={()=>active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?setImageOpen(true):void startFlowImageProduction(active)}><span>{active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?"✓":"⌁"}</span><div><b>{active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?"IMAGENS DO FLOW PRONTAS":"FLOW EM PRODUÇÃO / RETOMADA"}</b><small>{active.flowStatus||active.pipelineStatus||`${active.imageCount||0} ASSET(S) RECEBIDO(S)`}</small></div></button> : <button className="collector-box" disabled={!active.promptText || active.stage<4} onClick={()=>void startFlowImageProduction(active)}><span>⌁</span><b>{active.flowStatus==="EM PRODUÇÃO"?"ACOMPANHAR FLOW":active.promptText&&active.stage>=4?"PRODUZIR NO FLOW":"AGUARDANDO PROMPTS"}</b><small>{active.flowStatus||(active.promptText&&active.stage>=4?"MANAGER LOCAL · PERFIS AUTOMÁTICOS · ENTREGA DIRETO AO APP":"A PRÓXIMA ETAPA SERÁ LIBERADA")}</small></button>}
+          {active.packageCode ? <button className="package-ready" onClick={()=>active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?setImageOpen(true):void startFlowImageProduction(active)}><span>{active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?"✓":"⌁"}</span><div><b>{active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?"IMAGENS DO FLOW PRONTAS":"FLOW EM PRODUÇÃO / RETOMADA"}</b><small>{active.flowStatus||active.pipelineStatus||`${active.imageCount||0} ASSET(S) RECEBIDO(S)`}</small></div></button> : <button className="collector-box" disabled={!active.promptText || active.stage<4} onClick={()=>void startFlowImageProduction(active)}><span>⌁</span><b>{active.flowStatus==="EM PRODUÇÃO"?"ACOMPANHAR FLOW":active.promptText&&active.stage>=4?"PRODUZIR NO FLOW":"AGUARDANDO PROMPTS"}</b><small>{active.flowStatus||(active.promptText&&active.stage>=4?"MOTOR FLOW AUTOMÁTICO · PERFIS · ENTREGA DIRETO AO APP":"A PRÓXIMA ETAPA SERÁ LIBERADA")}</small></button>}
         </aside>
       </article>}
     </section>
@@ -3868,7 +3868,7 @@ export default function Home() {
       <section className="downloads-section" aria-labelledby="downloads-title">
         <div className="downloads-head"><div><span>INSTALAÇÃO E SUPORTE</span><h3 id="downloads-title">ARQUIVOS PARA BAIXAR</h3></div><small>SE PRECISAR REINSTALAR</small></div>
         <div className="download-grid">
-          <a className="download-card" href="/downloads/CORVO_FLOW_MANAGER_WORKER_APP_INTEGRATION.zip" download><span>⌁</span><div><b>FLOW MANAGER INTEGRADO</b><small>V4.2.9 · APP DELIVERY</small></div><i>↓</i></a><a className="download-card" href="/downloads/CORVO_COLLECTOR_V080_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.8.0</small></div><i>↓</i></a>
+          <a className="download-card" href="/downloads/CORVO_FLOW_AGENT_V4_2_9_AUTO.zip" download><span>⌁</span><div><b>FLOW AGENT AUTOMÁTICO</b><small>V4.2.9 · ABRE MINIMIZADO · FECHA PERFIS AO FINAL</small></div><i>↓</i></a><a className="download-card" href="/downloads/CORVO_COLLECTOR_V080_EXTENSION.zip" download><span>⌁</span><div><b>EXTENSÃO DE IMAGENS</b><small>CORVO COLLECTOR V0.8.0</small></div><i>↓</i></a>
           <a className="download-card" href="/downloads/CORVO_BRIDGE_V0636_EXTENSION.zip" download><span>↗</span><div><b>EXTENSÃO DO BRIDGE</b><small>CORVO BRIDGE V0.6.36 · BACKUP/IMPORTAÇÃO DE GPTs + CAPTURA A/B</small></div><i>↓</i></a>
           <a className="download-card featured" href="/downloads/CORVOQUIZ_KIT_COMPLETO_V0653.zip" download><span>◆</span><div><b>KIT COMPLETO CORVOQUIZ</b><small>APP + EXTENSÕES + SCHEMA</small></div><i>↓</i></a>
         </div>

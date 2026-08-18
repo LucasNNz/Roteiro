@@ -1,0 +1,16 @@
+CORVOQUIZ ROTEIRO V0.7.1 — FLOW AGENT AUTOMATICO
+
+CORRECAO DA V0.7.0
+A V0.7.0 exigia que o usuario abrisse o Manager no PC antes de produzir.
+A V0.7.1 transforma o mesmo Manager V4.2.9 em um agente local invisivel.
+
+COMPORTAMENTO
+- Instalacao unica: INSTALAR_AGENTE_AUTOMATICO.bat.
+- Depois, o agente inicia automaticamente com o Windows.
+- Se ele tiver sido encerrado, o Roteiro tenta acorda-lo via corvoflow://start.
+- O app nao precisa abrir o dashboard do Manager.
+- O Manager continua em 127.0.0.1:32145 somente como motor local.
+- Perfis/logins continuam em %LOCALAPPDATA%\CorvoFlowManager.
+
+IMPORTANTE
+Um app hospedado na Vercel nao pode executar processos Windows diretamente. O agente local e a ponte minima necessaria para controlar os perfis Chrome locais. Isso preserva a logica validada do Manager em vez de reescreve-la dentro do navegador.

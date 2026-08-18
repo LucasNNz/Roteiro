@@ -1,0 +1,13 @@
+CORVO FLOW AGENT — MODO AUTOMATICO
+
+1. Execute INSTALAR_AGENTE_AUTOMATICO.bat UMA VEZ no PC de producao.
+2. O motor V4.2.9 sera copiado para %LOCALAPPDATA%\CorvoFlowAgent\V4_2_9_APP.
+3. Ele passara a subir invisivelmente quando o Windows iniciar.
+4. O Roteiro tenta corvoflow://start automaticamente se o agente nao estiver respondendo.
+5. Perfis, cookies e logins permanecem em %LOCALAPPDATA%\CorvoFlowManager e nao sao apagados.
+
+O dashboard do Manager continua disponivel em http://127.0.0.1:32145 caso voce queira diagnosticar manualmente.
+No uso normal, nao e necessario abri-lo.
+
+
+V0.7.2 — Quando chamado pelo Roteiro, os perfis sao abertos minimizados e fechados automaticamente ao fim da fila. O agente permanece ativo.

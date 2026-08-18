@@ -50,6 +50,8 @@ function baseState() {
       initialBalanceWaitSeconds: 25,
       preflightWaitSeconds: 30,
       limitHoldMinutes: 60,
+      autoCloseProfilesAfterApp: true,
+      appLaunchMinimized: true,
       limitPhrases: [
         'limite diário atingido', 'limite diario atingido', 'créditos diários esgotados', 'creditos diarios esgotados',
         'quota exceeded', 'rate limit', 'too many requests', 'try again later', 'tente novamente mais tarde'
@@ -58,7 +60,9 @@ function baseState() {
     control: {
       running: false,
       changedAt: nowIso(),
-      lastAction: 'STOP'
+      lastAction: 'STOP',
+      sessionMode: 'MANUAL',
+      sessionId: ''
     },
     profiles: [],
     batches: [],
@@ -211,12 +215,15 @@ function launchProfile(profile) {
     '--no-default-browser-check',
     '--disable-background-mode',
     `--load-extension=${EXTENSION_DIR}`,
+    ...(state.control?.sessionMode === 'APP' && state.settings?.appLaunchMinimized !== false ? ['--start-minimized'] : []),
     bootstrap
   ];
-  const child = spawn(chrome, args, { detached: true, stdio: 'ignore', windowsHide: false });
+  const child = spawn(chrome, args, { detached: true, stdio: 'ignore', windowsHide: state.control?.sessionMode === 'APP' });
   child.unref();
   profile.lastLaunchAt = nowIso();
   profile.lastPid = child.pid || null;
+  profile.launchSessionId = state.control?.sessionId || '';
+  profile.launchSessionMode = state.control?.sessionMode || 'MANUAL';
   profile.lastError = '';
   profile.status = 'STARTING';
   addEvent('PROFILE_OPEN', `${profile.id} aberto com runtime do Worker`, { profileId: profile.id, runtime: chrome });
@@ -437,6 +444,56 @@ function preflightReasonForProfile(profile) {
   return 'NOT_READY';
 }
 
+// APP SESSION — fecha somente os Chromes que o próprio Manager abriu nesta sessão.
+// O agente/servidor local permanece vivo para o próximo lote.
+let appProfileCloseTimer = null;
+function closeManagedProfileProcess(profile, reason = 'APP_SESSION_COMPLETE') {
+  if (!profile) return false;
+  const pid = Number(profile.lastPid || 0);
+  if (!pid) return false;
+  try {
+    if (process.platform === 'win32') {
+      const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { detached:false, stdio:'ignore', windowsHide:true });
+      killer.on('error', () => {});
+    } else {
+      try { process.kill(pid, 'SIGTERM'); } catch (_) {}
+    }
+    addEvent('PROFILE_AUTO_CLOSE', `${profile.id} encerrado após sessão do app.`, { profileId:profile.id, pid, reason });
+    profile.lastPid = null;
+    profile.status = profile.enabled === false ? 'PAUSED' : 'OFFLINE';
+    profile.workspaceReady = false;
+    profile.workspaceStatus = '';
+    profile.workspaceUrl = '';
+    profile.currentBatchId = '';
+    profile.currentJobs = 0;
+    profile.launchSessionId = '';
+    profile.launchSessionMode = '';
+    return true;
+  } catch (error) {
+    profile.lastError = `AUTO_CLOSE_FAILED: ${String(error?.message || error)}`;
+    addEvent('PROFILE_AUTO_CLOSE_FAILED', `${profile.id}: ${profile.lastError}`, { profileId:profile.id, pid, reason });
+    return false;
+  }
+}
+
+function scheduleAppSessionProfileClose(reason = 'APP_QUEUE_COMPLETE') {
+  if (state.control?.sessionMode !== 'APP') return false;
+  if (state.settings?.autoCloseProfilesAfterApp === false) return false;
+  const sessionId = String(state.control?.sessionId || '');
+  if (!sessionId) return false;
+  clearTimeout(appProfileCloseTimer);
+  appProfileCloseTimer = setTimeout(() => {
+    let closed = 0;
+    for (const profile of state.profiles || []) {
+      if (profile.launchSessionId !== sessionId || profile.launchSessionMode !== 'APP') continue;
+      if (closeManagedProfileProcess(profile, reason)) closed += 1;
+    }
+    addEvent('APP_SESSION_CLEANUP', `Sessão ${sessionId}: ${closed} janela(s) de perfil encerrada(s); agente permanece ativo.`, { sessionId, closed, reason });
+    saveNow();
+  }, 1800);
+  return true;
+}
+
 // V4.2.6 — AUTO STOP DE FILA
 // Quando todos os lotes existentes chegaram a estado terminal, o Manager encerra
 // automaticamente a execução global. Isso impede PROFILE_PREWARM, novos cliques,
@@ -457,6 +514,7 @@ function autoStopWhenQueueComplete(reason = 'QUEUE_DRAINED') {
     lastReason: 'AUTO_STOP_COMPLETE'
   };
   addEvent('AUTO_STOP_COMPLETE', 'Fila concluída. Manager mudou automaticamente para PARADO; Workers receberão HARD STOP/IDLE no próximo heartbeat.', { reason });
+  if (state.control?.sessionMode === 'APP') scheduleAppSessionProfileClose(reason);
   return true;
 }
 
@@ -1473,7 +1531,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'OPTIONS') { res.writeHead(204, { 'access-control-allow-origin':'*', 'access-control-allow-private-network':'true', 'access-control-allow-methods':'GET,POST,OPTIONS', 'access-control-allow-headers':'content-type' }); return res.end(); }
     const url = new URL(req.url, `http://${HOST}:${PORT}`);
 
-    if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { ok:true, version:state.version, appIntegration:'1.0', time:nowIso() });
+    if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { ok:true, version:state.version, appIntegration:'1.1', time:nowIso() });
     if (req.method === 'GET' && url.pathname === '/api/state') return json(res, 200, { ok:true, state:publicState() });
 
     if (req.method === 'GET' && url.pathname === '/api/batch/manifest') {
@@ -1565,9 +1623,12 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const action = String(body.action || '').toLowerCase();
       if (action === 'start') {
+        const requestedMode = String(body.mode || body.source || '').toUpperCase() === 'APP' ? 'APP' : 'MANUAL';
         state.control.running = true;
         state.control.changedAt = nowIso();
         state.control.lastAction = 'START';
+        state.control.sessionMode = requestedMode;
+        state.control.sessionId = uid(requestedMode === 'APP' ? 'app_session' : 'manual_session');
         resetSchedulerWave('MANAGER_START');
         const expiredLimits = expireProfileLimits('MANAGER_START');
         const preflightEligible = beginGlobalPreflight('MANAGER_START');
@@ -1592,6 +1653,7 @@ const server = http.createServer(async (req, res) => {
         state.control.changedAt = nowIso();
         state.control.lastAction = 'STOP';
         addEvent('MANAGER_STOP', 'PARAR TUDO solicitado; Workers receberão HARD STOP no próximo heartbeat.');
+        if (state.control?.sessionMode === 'APP') scheduleAppSessionProfileClose('APP_STOP');
         saveNow();
         return json(res, 200, { ok:true, control:state.control });
       }
@@ -1608,6 +1670,8 @@ const server = http.createServer(async (req, res) => {
       if (body.initialBalanceWaitSeconds != null) state.settings.initialBalanceWaitSeconds = asInt(body.initialBalanceWaitSeconds, state.settings.initialBalanceWaitSeconds, 3, 120);
       if (body.preflightWaitSeconds != null) state.settings.preflightWaitSeconds = asInt(body.preflightWaitSeconds, state.settings.preflightWaitSeconds, 5, 180);
       if (body.limitHoldMinutes != null) state.settings.limitHoldMinutes = asInt(body.limitHoldMinutes, state.settings.limitHoldMinutes, 5, 1440);
+      if (body.autoCloseProfilesAfterApp != null) state.settings.autoCloseProfilesAfterApp = body.autoCloseProfilesAfterApp !== false && String(body.autoCloseProfilesAfterApp).toLowerCase() !== 'false';
+      if (body.appLaunchMinimized != null) state.settings.appLaunchMinimized = body.appLaunchMinimized !== false && String(body.appLaunchMinimized).toLowerCase() !== 'false';
       if (body.limitPhrases != null) {
         const raw = Array.isArray(body.limitPhrases) ? body.limitPhrases : String(body.limitPhrases || '').split(/\r?\n/);
         state.settings.limitPhrases = raw.map(x => String(x || '').trim()).filter(Boolean).slice(0, 40);
@@ -1781,11 +1845,15 @@ server.listen(PORT, HOST, () => {
   console.log(`Dashboard: http://${HOST}:${PORT}`);
   console.log(`Extensão: ${EXTENSION_DIR}`);
   console.log(`Perfis persistentes: ${PROFILE_ROOT}\n`);
-  try {
-    if (process.platform === 'win32') spawn('cmd', ['/c', 'start', '', `http://${HOST}:${PORT}`], { detached:true, stdio:'ignore' }).unref();
-    else if (process.platform === 'darwin') spawn('open', [`http://${HOST}:${PORT}`], { detached:true, stdio:'ignore' }).unref();
-    else spawn('xdg-open', [`http://${HOST}:${PORT}`], { detached:true, stdio:'ignore' }).unref();
-  } catch (_) {}
+  // V4.2.9 APP AGENT — em modo silencioso o motor sobe em segundo plano sem abrir o dashboard.
+  // A lógica do Manager/Worker permanece a mesma; isto altera somente a apresentação na inicialização.
+  if (process.env.CORVO_FLOW_SILENT !== '1') {
+    try {
+      if (process.platform === 'win32') spawn('cmd', ['/c', 'start', '', `http://${HOST}:${PORT}`], { detached:true, stdio:'ignore' }).unref();
+      else if (process.platform === 'darwin') spawn('open', [`http://${HOST}:${PORT}`], { detached:true, stdio:'ignore' }).unref();
+      else spawn('xdg-open', [`http://${HOST}:${PORT}`], { detached:true, stdio:'ignore' }).unref();
+    } catch (_) {}
+  }
 });
 
 // Supervisor independente do dashboard. Mesmo que a página do Manager esteja fechada,

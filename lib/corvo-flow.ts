@@ -49,7 +49,7 @@ export async function addFlowBatch(text:string, name:string) {
 
 export async function startFlowManager() {
   return flowFetch<{ok:boolean}>("/api/control", {
-    method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({ action:"start" }),
+    method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({ action:"start", mode:"APP" }),
   });
 }
 
@@ -69,4 +69,33 @@ export async function fetchFlowAsset(batchId:string, jobId:string) {
 
 export async function getFlowBatchManifest(batchId:string) {
   return flowFetch<{ok:boolean;batchId:string;filename:string;complete:boolean;manifest:string}>(`/api/batch/manifest?batchId=${encodeURIComponent(batchId)}`);
+}
+
+export function requestFlowAgentStart() {
+  if (typeof window === "undefined") return;
+  const frame = document.createElement("iframe");
+  frame.style.display = "none";
+  frame.setAttribute("aria-hidden", "true");
+  frame.src = "corvoflow://start";
+  document.body.appendChild(frame);
+  window.setTimeout(() => frame.remove(), 1800);
+}
+
+export async function ensureFlowAgentReady(options:{attempts?:number;delayMs?:number} = {}) {
+  const attempts = Math.max(1, options.attempts ?? 12);
+  const delayMs = Math.max(250, options.delayMs ?? 650);
+  try {
+    const ready = await probeFlowManager();
+    if (ready?.ok) return ready;
+  } catch (_) {}
+
+  requestFlowAgentStart();
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    try {
+      const ready = await probeFlowManager();
+      if (ready?.ok) return ready;
+    } catch (_) {}
+  }
+  throw new Error("FLOW_AGENT_NOT_INSTALLED_OR_UNAVAILABLE");
 }

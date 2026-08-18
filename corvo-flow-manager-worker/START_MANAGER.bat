@@ -16,7 +16,7 @@ if errorlevel 1 (
   echo [ERRO] Windows PowerShell nao foi encontrado.
   echo O inicializador automatico precisa do PowerShell do Windows.
   echo.
-  pause
+  if not "%CORVO_FLOW_SILENT%"=="1" pause
   exit /b 1
 )
 
@@ -26,13 +26,13 @@ if errorlevel 1 (
   echo [ERRO] A preparacao automatica nao foi concluida.
   echo Consulte a mensagem acima e execute START_MANAGER.bat novamente.
   echo.
-  pause
+  if not "%CORVO_FLOW_SILENT%"=="1" pause
   exit /b 1
 )
 
 if not exist "%~dp0.runtime\runtime.env.cmd" (
   echo [ERRO] Arquivo de runtime nao foi criado.
-  pause
+  if not "%CORVO_FLOW_SILENT%"=="1" pause
   exit /b 1
 )
 
@@ -40,13 +40,13 @@ call "%~dp0.runtime\runtime.env.cmd"
 
 if not defined CORVO_NODE_EXE (
   echo [ERRO] Node.js nao foi localizado apos a verificacao automatica.
-  pause
+  if not "%CORVO_FLOW_SILENT%"=="1" pause
   exit /b 1
 )
 
 if not exist "%CORVO_NODE_EXE%" (
   echo [ERRO] Node.js configurado nao existe: %CORVO_NODE_EXE%
-  pause
+  if not "%CORVO_FLOW_SILENT%"=="1" pause
   exit /b 1
 )
 
@@ -68,7 +68,7 @@ if not "%PORT_CHECK%"=="0" (
   echo.
   echo [ERRO] Nao foi possivel preparar a porta 32145 para o Manager.
   echo.
-  pause
+  if not "%CORVO_FLOW_SILENT%"=="1" pause
   exit /b %PORT_CHECK%
 )
 
@@ -89,5 +89,5 @@ set "CORVO_EXIT=%ERRORLEVEL%"
 
 echo.
 if not "%CORVO_EXIT%"=="0" echo [ERRO] O Manager encerrou com codigo %CORVO_EXIT%.
-pause
+if not "%CORVO_FLOW_SILENT%"=="1" pause
 exit /b %CORVO_EXIT%
