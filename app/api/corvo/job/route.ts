@@ -47,6 +47,10 @@ function buildScriptPrompt(request: CorvoJobRequest) {
     "NOMES PARA COMPARAÇÃO: prefira nomes pareados e determinísticos com sufixos _A e _B (ex.: video1_01_A.png e video1_01_B.png), pois esses dois arquivos serão associados diretamente a IMAGEM_A e IMAGEM_B no Forma.",
     "REGRA DE CLASSIFICAÇÃO: toda pergunta visual do tipo 1 OU 2, A OU B, REAL OU IA, QUAL É REAL, QUAL É FALSO ou qualquer duelo entre duas imagens deve ser QUAL_VOCE_PREFERE. NÃO use EMOJI_QUIZ para esse caso, mesmo que exista uma resposta factual correta.",
     "Textos destinados ao vídeo devem ser curtos, diretos e em MAIÚSCULAS.",
+    request.formato === "REELS"
+      ? "REGRA OBRIGATÓRIA DE ABERTURA: REELS NÃO PODE TER ABERTURA. O ROTEIRO.TXT DEVE CONTER EXATAMENTE ENTRADA: NAO."
+      : "REGRA OBRIGATÓRIA DE ABERTURA: VÍDEO COMPLETO DEVE TER ABERTURA. O ROTEIRO.TXT DEVE CONTER EXATAMENTE ENTRADA: SIM.",
+    "Essa regra de ENTRADA é estrutural e não é opcional; não a altere com base no tema ou conceito do vídeo.",
     "Valide respostas factuais e evite perguntas ambíguas.",
     "",
     `PROJETO: ${request.projetoId || "NÃO INFORMADO"}`,

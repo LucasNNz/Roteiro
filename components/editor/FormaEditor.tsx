@@ -116,6 +116,7 @@ type CorvoFormaBridge = {
   version: "corvo-forma/1.0";
   getStatus: () => { ready: boolean; busy: boolean; stage: string; message: string };
   runBatch: (input: CorvoFormaBatchInput) => Promise<CorvoFormaBatchResult>;
+  exportCurrent: (projectId?: string) => Promise<CorvoFormaBatchResult>;
 };
 
 declare global {
@@ -296,11 +297,13 @@ export function FormaEditor() {
   }>({ startDrag: () => {}, moveDrag: () => {}, endDrag: () => {}, resetPosition: () => {}, submitPrompt: () => {}, runWebScript: () => {}, execute: () => {} });
   const aiRuntimeRef = useRef<{ getState: () => AIState; getArtifact: () => AIArtifact | null; prepareExport: FormaAIBridge["prepareExport"]; downloadArtifact: () => Promise<void>; listProjects: FormaAIBridge["listProjects"]; execute: FormaAIBridge["execute"]; run: (input: string | AICommand | AICommand[], requestId?: string) => Promise<AIResponse>; open: () => void } | null>(null);
   const corvoFormaRunRef = useRef<(input: CorvoFormaBatchInput) => Promise<CorvoFormaBatchResult>>(async () => { throw new Error("Ponte automática do Forma ainda não está pronta."); });
+  const corvoFormaExportCurrentRef = useRef<(projectId?: string) => Promise<CorvoFormaBatchResult>>(async () => { throw new Error("Exportação da prévia do Forma ainda não está pronta."); });
   const corvoFormaPendingRef = useRef<{
     projectId?: string; questionCount: number; sceneCount: number;
     resolve: (value: CorvoFormaBatchResult) => void; reject: (reason?: unknown) => void;
   } | null>(null);
   const corvoFormaBusyRef = useRef(false);
+  const corvoFormaLoadedBatchRef = useRef<{ projectId?: string; questionCount: number; sceneCount: number } | null>(null);
   const corvoFormaStatusRef = useRef({ ready:false, busy:false, stage:"BOOT", message:"Inicializando Forma…" });
   const [shapes, setShapes] = useState<Shape[]>([]);
   const [background, setBackground] = useState("#F5F1E8");
@@ -3360,7 +3363,11 @@ export function FormaEditor() {
     corvoFormaBusyRef.current = true;
     corvoFormaStatusRef.current = { ready:true, busy:true, stage:"IMPORTANDO", message:"Validando ROTEIRO.TXT e imagens no módulo Lote…" };
     try {
+      const targetFormat = input.format ?? "portrait";
       let plan = parseBatchQuizText(scriptText);
+      // Regra obrigatória do Corvo Roteiro: Reels nunca recebe abertura; vídeo longo sempre recebe abertura.
+      // A ponte reforça a regra mesmo se um ROTEIRO.TXT legado ou editado manualmente vier divergente.
+      plan = { ...plan, includeIntro: targetFormat === "landscape" };
       plan = directImages.length ? attachBatchFiles(plan, directImages) : attachBatchZip(plan, zipBytes!);
       const errors = plan.issues.filter((issue) => issue.level === "error");
       if (errors.length) {
@@ -3368,10 +3375,10 @@ export function FormaEditor() {
         throw new Error(`FORMA_LOTE_INVALIDO: ${detail}`);
       }
 
-      const targetFormat = input.format ?? "portrait";
       corvoFormaStatusRef.current = { ready:true, busy:true, stage:"MONTANDO", message:`Montando ${plan.questions.length} pergunta(s) com os presets originais do Forma…` };
       await applyBatchImport(plan, targetFormat);
       const sceneCount = scenesRef.current.length;
+      corvoFormaLoadedBatchRef.current = { projectId:input.projectId, questionCount:plan.questions.length, sceneCount };
 
       if (input.autoExport === false) {
         corvoFormaBusyRef.current = false;
@@ -3392,8 +3399,34 @@ export function FormaEditor() {
     }
   }
 
+  async function exportCorvoFormaCurrent(projectId?: string): Promise<CorvoFormaBatchResult> {
+    if (corvoFormaBusyRef.current) throw new Error("FORMA_AUTOMATION_BUSY");
+    const loaded = corvoFormaLoadedBatchRef.current;
+    if (!loaded || !scenesRef.current.length) throw new Error("FORMA_PREVIEW_NOT_READY");
+    corvoFormaBusyRef.current = true;
+    corvoFormaStatusRef.current = { ready:true, busy:true, stage:"EXPORTANDO", message:"Exportando exatamente o projeto revisado no Forma…" };
+    try {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      const artifact = await exportProjectMp4(true);
+      const blob = artifactBlobRef.current;
+      if (!blob || !blob.size) throw new Error("FORMA_MP4_VAZIO");
+      corvoFormaBusyRef.current = false;
+      corvoFormaStatusRef.current = { ready:true, busy:false, stage:"CONCLUIDO", message:`MP4 pronto: ${artifact.name}` };
+      return {
+        ok:true, projectId:projectId || loaded.projectId, questionCount:loaded.questionCount, sceneCount:scenesRef.current.length,
+        artifactName:artifact.name, artifactSize:blob.size, duration:artifact.duration, blob,
+      };
+    } catch (error) {
+      corvoFormaBusyRef.current = false;
+      const message = error instanceof Error ? error.message : "Não foi possível exportar o projeto revisado.";
+      corvoFormaStatusRef.current = { ready:true, busy:false, stage:"ERRO", message };
+      throw error;
+    }
+  }
+
   useEffect(() => {
     corvoFormaRunRef.current = runCorvoFormaBatch;
+    corvoFormaExportCurrentRef.current = exportCorvoFormaCurrent;
   });
 
   useEffect(() => {
@@ -3443,6 +3476,7 @@ export function FormaEditor() {
       version:"corvo-forma/1.0",
       getStatus:() => ({ ...corvoFormaStatusRef.current }),
       runBatch:(input) => corvoFormaRunRef.current(input),
+      exportCurrent:(projectId) => corvoFormaExportCurrentRef.current(projectId),
     };
     window.CorvoForma = bridge;
     if (window.parent && window.parent !== window) window.parent.postMessage({ type:"corvo-forma:ready", version:bridge.version }, window.location.origin);

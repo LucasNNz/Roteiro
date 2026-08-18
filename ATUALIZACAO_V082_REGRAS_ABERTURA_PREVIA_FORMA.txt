@@ -1,0 +1,24 @@
+CORVO ROTEIRO V0.8.2 — REGRAS DE ABERTURA + PRÉVIA REAL DO FORMA
+
+1. REGRA OBRIGATÓRIA DE ABERTURA
+- REELS: ENTRADA: NAO. Abertura proibida.
+- VÍDEO COMPLETO: ENTRADA: SIM. Abertura obrigatória.
+- A regra é enviada ao GPT Roteiro.
+- O app normaliza o ROTEIRO.TXT recebido e também corrige projetos antigos ao carregá-los.
+- A ponte automática do Forma reforça a regra pelo formato do projeto, mesmo se o TXT tiver sido editado incorretamente.
+
+2. PRÉVIA REAL DO FORMA
+- O Forma embutido continua sendo a mesma instância usada pela esteira e pelo render.
+- Novo botão PRÉVIA / ABRIR FORMA monta ROTEIRO.TXT + imagens sem exportar.
+- O editor completo do Forma pode ser aberto antes do MP4 para trocar cenas, reproduzir e corrigir o projeto.
+- APROVAR E EXPORTAR MP4 exporta o estado atual revisado; o lote não é reimportado e as correções não são perdidas.
+
+3. AUTOMÁTICO SEM PERDER AUTOMAÇÃO
+- Por padrão o fluxo continua automático até o MP4.
+- Opção REVISAR FORMA ANTES DE EXPORTAR pausa somente no checkpoint Forma.
+- Ao ativar, o automático monta a prévia e fica AGUARDANDO REVISÃO.
+- Depois de APROVAR E EXPORTAR, o MP4 é baixado e a esteira retoma os ramos finais automaticamente.
+
+4. RECUPERAÇÃO
+- Se a página for recarregada durante a revisão, PRÉVIA / ABRIR FORMA remonta o lote em memória antes de permitir nova exportação.
+- ZIP manual/fallback continua preservado.

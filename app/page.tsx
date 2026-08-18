@@ -28,7 +28,7 @@ type ImagePhase = "connecting" | "searching" | "review" | "packaging" | "done" |
 type CorvoIdea = { tema:string; titulo:string };
 type WorkflowKind = "ROTEIRO" | "PROMPTS";
 type ProjectArtifact = "IDEIA" | "ROTEIRO" | "PROMPTS";
-type AutoRunStatus = "RUNNING" | "DONE" | "ERROR" | "CANCELLED";
+type AutoRunStatus = "RUNNING" | "PAUSED" | "DONE" | "ERROR" | "CANCELLED";
 type AutoRunStep = "VALIDANDO" | "IDEIA" | "ROTEIRO" | "PROMPTS" | "FLOW" | "COLLECTOR" | "ANALISTA" | "IMAGENS" | "FORMA" | "THUMB" | "METADADOS" | "CONSOLIDANDO" | "CONCLUIDO" | "ERRO";
 type ActivityFilter = AutoRunStep | "TODOS";
 type IdeaRequestOptions = { format:Format; quantity:Quantity; mode:Mode; topic?:string; revisionProjectId?:string };
@@ -48,7 +48,7 @@ type Project = {
   id:string; title:string; topic:string; format:Format; quantity:Quantity; mode:Mode;
   stage:number; createdAt:string; ideaText?:string; scriptText?:string; promptText?:string; packageCode?:string; imageCount?:number;
   flowBatchId?:string; flowStatus?:string; flowStartedAt?:string; flowCompletedAt?:string; flowTotal?:number; flowDone?:number; flowFailed?:number; flowManifest?:string;
-  formaStatus?:string; formaStartedAt?:string; formaCompletedAt?:string; formaSceneCount?:number; formaQuestionCount?:number; formaVideoName?:string; formaVideoSize?:number; formaVideoDuration?:number; formaError?:string;
+  formaStatus?:string; formaStartedAt?:string; formaCompletedAt?:string; formaSceneCount?:number; formaQuestionCount?:number; formaVideoName?:string; formaVideoSize?:number; formaVideoDuration?:number; formaError?:string; formaReviewBeforeExport?:boolean;
   thumbJobId?:string; thumbUploadToken?:string; thumbStatus?:string; thumbUrl?:string; thumbFileName?:string; thumbError?:string; thumbFormat?:Format; thumbAspectRatio?:"9:16"|"16:9";
   analysisJobId?:string; analysisStatus?:string; analysisZipUrl?:string; analysisZipName?:string; analysisManifest?:string; analysisExpectedIds?:string[];
   analysisPrompt?:string; analysisUploadToken?:string; analysisPreparedAt?:string; analysisLastDispatchAt?:string; analysisRetryAt?:string; analysisRetryCount?:number; analysisLastError?:string;
@@ -111,6 +111,18 @@ function thumbAspectRatioForFormat(format:Format):"9:16"|"16:9" {
 
 function thumbOrientationForFormat(format:Format) {
   return format === "REELS" ? "VERTICAL" : "HORIZONTAL";
+}
+
+function enforceOpeningRule(scriptText:string, format:Format) {
+  const source = String(scriptText || "").replace(/^\uFEFF/, "").trim();
+  if (!source) return source;
+  const entrada = format === "REELS" ? "NAO" : "SIM";
+  const requiredLine = `ENTRADA: ${entrada}`;
+  if (/^\s*ENTRADA\s*:/im.test(source)) return source.replace(/^\s*ENTRADA\s*:.*$/im, requiredLine);
+  const lines = source.split(/\r?\n/);
+  const projectIndex = lines.findIndex((line) => /^\s*PROJETO\s*:/i.test(line));
+  lines.splice(projectIndex >= 0 ? projectIndex + 1 : 0, 0, requiredLine);
+  return lines.join("\n").trim();
 }
 
 function thumbMatchesProjectFormat(project?:Project | null) {
@@ -652,9 +664,10 @@ function loadProjects() {
   return safeLoad<Project[]>(PROJECTS_STORAGE_KEY, initialProjects).map((rawProject) => {
     const project = migrateThumbnailCheckpoint(migrateLogicalGeneratorContractV5(migrateComparisonContractV4(migrateComparisonPipelineCheckpoint(migratePipelineCheckpoint(rawProject)))));
     const withIdea = project.ideaText ? project : { ...project, ideaText:`TÍTULO: ${project.title}\nTEMA: ${project.topic}` };
-    if (withIdea.stage >= 3 && !withIdea.scriptText) return { ...withIdea, stage:2 };
-    if (withIdea.stage >= 4 && !withIdea.promptText) return { ...withIdea, stage:3 };
-    return withIdea;
+    const withOpeningRule = withIdea.scriptText ? { ...withIdea, scriptText:enforceOpeningRule(withIdea.scriptText, withIdea.format) } : withIdea;
+    if (withOpeningRule.stage >= 3 && !withOpeningRule.scriptText) return { ...withOpeningRule, stage:2 };
+    if (withOpeningRule.stage >= 4 && !withOpeningRule.promptText) return { ...withOpeningRule, stage:3 };
+    return withOpeningRule;
   });
 }
 
@@ -703,6 +716,7 @@ export default function Home() {
   const [activityLoading, setActivityLoading] = useState(false);
   const [activityError, setActivityError] = useState("");
   const [activityUpdatedAt, setActivityUpdatedAt] = useState<number>(0);
+  const [formaPreviewOpen, setFormaPreviewOpen] = useState(false);
   const runToken = useRef(0);
   const ideaRunToken = useRef(0);
   const workflowRunToken = useRef(0);
@@ -1201,7 +1215,7 @@ export default function Home() {
           await completeCorvoBridgeJob(result.jobId).catch(() => {});
           const output = typeof status.resultado === "string" ? status.resultado.trim() : "";
           if (!output) throw new Error("O especialista concluiu sem devolver conteúdo.");
-          const normalizedOutput = kind === "ROTEIRO" ? upgradeLegacyComparisonScript(output).text : output;
+          const normalizedOutput = kind === "ROTEIRO" ? enforceOpeningRule(upgradeLegacyComparisonScript(output).text, workingProject.format) : output;
           setProjects((current) => current.map((item) => item.id === workingProject.id
             ? kind === "ROTEIRO"
               ? { ...item, stage:2, scriptText:normalizedOutput, promptText:undefined, ...EMPTY_IMAGE_PIPELINE, pipelineCheckpointVersion:4 }
@@ -1233,6 +1247,7 @@ export default function Home() {
       return;
     }
     if (active.stage === 4) { void startFlowImageProduction(active); return; }
+    if (active.formaStatus === "PREVIA_PRONTA") { void exportFormaPreparedProject(active); return; }
     void runFormaProduction(active, { force: active.formaStatus === "CONCLUÍDO" });
   }
 
@@ -1388,8 +1403,8 @@ export default function Home() {
         await completeCorvoBridgeJob(activeJobId).catch(() => {});
         const output = String(status.resultado || "").trim();
         if (!output) throw new Error(`${kind} concluiu sem devolver conteúdo.`);
-        const normalizedOutput = kind === "ROTEIRO" ? upgradeLegacyComparisonScript(output).text : output;
         const current = latestProject(project.id) || project;
+        const normalizedOutput = kind === "ROTEIRO" ? enforceOpeningRule(upgradeLegacyComparisonScript(output).text, current.format) : output;
         const clearWorkflow = { autoWorkflowJobId:undefined, autoWorkflowKind:undefined, autoWorkflowPrompt:undefined, autoWorkflowDispatchedAt:undefined, autoRunRetryAt:undefined, autoRunRetryCount:0 };
         const updated:Project = kind === "ROTEIRO"
           ? { ...current, stage:3, scriptText:normalizedOutput, promptText:undefined, ...EMPTY_IMAGE_PIPELINE, pipelineCheckpointVersion:4, ...clearWorkflow }
@@ -1457,6 +1472,7 @@ export default function Home() {
       const formaAlreadyReady = project.formaStatus === "CONCLUÍDO";
       updateAutoRun(projectId, "FORMA", formaAlreadyReady ? "Vídeo do Forma já concluído neste projeto." : `Imagens finais prontas. Enviando ${summary.items.length} asset(s) ao módulo Lote do Forma...`);
       const formaOk = formaAlreadyReady ? true : await runFormaProduction(project, { automaticRun:true });
+      if (formaOk === "REVIEW") throw new Error("FORMA_REVIEW_REQUIRED");
       if (!formaOk) throw new Error(latestProject(projectId)?.formaError || "O Forma não conseguiu concluir o vídeo final.");
 
       updateAutoRun(projectId, "THUMB", "Vídeo final entregue. Finalizando thumbnail e ramos paralelos sem novos downloads...");
@@ -1474,6 +1490,11 @@ export default function Home() {
       const message = friendlyError(error);
       if (rawMessage.includes("AUTOMATIC_CANCELLED")) {
         patchProject(projectId, { autoRunStatus:"CANCELLED", autoRunStep:"ERRO", autoRunMessage:"Automático interrompido.", autoRunError:undefined });
+      } else if (rawMessage.includes("FORMA_REVIEW_REQUIRED")) {
+        patchProject(projectId, { autoRunStatus:"PAUSED", autoRunStep:"FORMA", autoRunMessage:"Prévia do Forma pronta. Revise as cenas e clique APROVAR E EXPORTAR para a esteira continuar.", autoRunError:undefined, autoRunRetryAt:undefined });
+        setFormaPreviewOpen(true);
+        setNotice("FORMA PRONTO PARA REVISÃO · A EXPORTAÇÃO ESTÁ PAUSADA.");
+        setTimeout(() => setNotice(""), 5200);
       } else if (rawMessage.includes("ANALYST_RETRY_SCHEDULED")) {
         const waiting = latestProject(projectId);
         patchProject(projectId, {
@@ -1634,6 +1655,7 @@ export default function Home() {
     if (message.includes("FORMA_LOTE_INVALIDO")) return `O módulo Lote do Forma recusou o roteiro ou algum asset: ${message.replace("FORMA_LOTE_INVALIDO:", "").trim()}`;
     if (message.includes("FORMA_ASSETS_ACIMA_DE_120MB")) return "As imagens desta produção ultrapassaram 120 MB. Use o ZIP de fallback do Forma ou reduza o peso dos assets antes da exportação.";
     if (message.includes("FORMA_INPUT_INCOMPLETO")) return `O Forma ainda não recebeu todos os arquivos físicos exigidos pelo roteiro. ${message.includes(":") ? message.split(":").slice(1).join(":").trim() : ""}`.trim();
+    if (message.includes("FORMA_PREVIEW_NOT_READY") || message.includes("FORMA_PREVIEW_EXPORT_UNAVAILABLE")) return "A prévia do Forma não está carregada nesta sessão. Abra PRÉVIA / ABRIR FORMA para reconstruir o lote antes de exportar.";
     if (message.includes("FORMA_MP4")) return "O Forma montou o lote, mas a exportação do MP4 não retornou um vídeo válido. O lote permanece preservado para tentar novamente.";
     const r2Trail = message.includes("|") ? ` [${message.split("|").at(-1)?.trim() || ""}]` : "";
     if (message.includes("EXTENSION_CONTEXT_INVALIDATED") || message.toLowerCase().includes("extension context invalidated")) return "O Bridge foi atualizado enquanto esta página estava aberta. O app vai recarregar a página e retomar automaticamente do checkpoint.";
@@ -1940,10 +1962,11 @@ export default function Home() {
     for (let attempt = 0; attempt < 160; attempt += 1) {
       try {
         const bridge = (frame.contentWindow as any)?.CorvoForma;
-        if (bridge?.version === "corvo-forma/1.0" && typeof bridge.runBatch === "function") return bridge as {
+        if (bridge?.version === "corvo-forma/1.0" && typeof bridge.runBatch === "function" && typeof bridge.exportCurrent === "function") return bridge as {
           version:string;
           getStatus:() => { ready:boolean; busy:boolean; stage:string; message:string };
           runBatch:(input:{ projectId?:string; scriptText:string; images?:Array<{name:string;bytes:ArrayBuffer}>; zipBytes?:ArrayBuffer|Uint8Array; format:"portrait"|"landscape"|"square"; autoExport:boolean }) => Promise<{ ok:true; questionCount:number; sceneCount:number; artifactName?:string; artifactSize?:number; duration?:number; blob?:Blob }>;
+          exportCurrent:(projectId?:string) => Promise<{ ok:true; questionCount:number; sceneCount:number; artifactName?:string; artifactSize?:number; duration?:number; blob?:Blob }>;
         };
       } catch (_) {}
       await wait(250);
@@ -1997,20 +2020,101 @@ export default function Home() {
     window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
   }
 
-  async function runFormaProduction(projectArg?:Project, options:{ automaticRun?:boolean; force?:boolean } = {}) {
+  async function exportFormaPreparedProject(projectArg?:Project) {
     let project = projectArg || active;
     if (!project) return false;
     project = latestProject(project.id) || project;
-    if (!project.scriptText?.trim()) throw new Error("FORMA_ROTEIRO_AUSENTE");
-    if (project.formaStatus === "CONCLUÍDO" && options.automaticRun && !options.force) return true;
     if (formaRunLocks.current.has(project.id)) return false;
     formaRunLocks.current.add(project.id);
+    const resumeAutomatic = project.autoRunStatus === "PAUSED";
+    setFormaPreviewOpen(false);
+    let statusTimer:number | null = null;
+    try {
+      const bridge = await ensureEmbeddedFormaReady();
+      if (typeof bridge.exportCurrent !== "function") throw new Error("FORMA_PREVIEW_EXPORT_UNAVAILABLE");
+      patchProject(project.id, { formaStatus:"EXPORTANDO", formaError:undefined });
+      setImageOpen(true); setImagePhase("packaging"); setImageProgress(98);
+      setImageMessage("Exportando exatamente o projeto que está aberto e revisado no Forma…");
+      setImageStatusLine("FORMA · EXPORTANDO PROJETO REVISADO");
+      statusTimer = window.setInterval(() => {
+        try {
+          const status = bridge.getStatus();
+          if (!status) return;
+          patchProject(project!.id, { formaStatus:status.stage || "EXPORTANDO" });
+          setImageMessage(status.message || "Forma exportando o projeto revisado…");
+          setImageStatusLine(`FORMA · ${String(status.stage || "EXPORTANDO").replaceAll("_", " ")}`);
+        } catch (_) {}
+      }, 1000);
+      const result = await bridge.exportCurrent(project.id);
+      if (!result?.ok || !result.blob || typeof (result.blob as any).arrayBuffer !== "function" || !Number((result.blob as any).size)) throw new Error("FORMA_MP4_VAZIO");
+      const finalName = `${project.id}_VIDEO_FINAL.mp4`;
+      downloadFinalVideoBlob(result.blob, finalName);
+      patchProject(project.id, {
+        formaStatus:"CONCLUÍDO", formaCompletedAt:new Date().toISOString(), formaError:undefined,
+        formaSceneCount:Number(result.sceneCount || 0), formaQuestionCount:Number(result.questionCount || 0),
+        formaVideoName:finalName, formaVideoSize:Number((result.blob as any).size || 0), formaVideoDuration:Number(result.duration || 0), stage:5,
+      });
+      setFormaPreviewOpen(false);
+      setImageProgress(100); setImagePhase("done"); setImageMessage(`Vídeo final pronto. O download automático foi iniciado: ${finalName}`);
+      setImageStatusLine("FORMA CONCLUÍDO · MP4 FINAL ENTREGUE");
+      if (resumeAutomatic) {
+        patchProject(project.id, { autoRunStatus:"RUNNING", autoRunStep:"FORMA", autoRunMessage:"Revisão aprovada. MP4 exportado; retomando a esteira automática…", autoRunError:undefined });
+        window.setTimeout(() => void runAutomaticProduction(project!.id), 0);
+      }
+      return true;
+    } catch (error) {
+      const message = friendlyError(error);
+      patchProject(project.id, { formaStatus:"FALHOU", formaError:message });
+      setImagePhase("error"); setImageMessage(message); setImageStatusLine("FORMA · FALHA NA EXPORTAÇÃO REVISADA");
+      setNotice(`FORMA: ${message}`); setTimeout(() => setNotice(""), 6000);
+      return false;
+    } finally {
+      if (statusTimer !== null) window.clearInterval(statusTimer);
+      formaRunLocks.current.delete(project.id);
+    }
+  }
+
+  async function openFormaReview(projectArg?:Project) {
+    let project = projectArg || active;
+    if (!project) return;
+    project = latestProject(project.id) || project;
+    const summary = consolidationState(project);
+    if (!summary.ready) {
+      setNotice("A PRÉVIA DO FORMA SERÁ LIBERADA QUANDO TODAS AS IMAGENS FINAIS ESTIVEREM PRONTAS.");
+      setTimeout(() => setNotice(""), 4500);
+      return;
+    }
+    try {
+      const bridge = await ensureEmbeddedFormaReady();
+      const status = bridge.getStatus();
+      const loadedNow = project.formaStatus === "PREVIA_PRONTA" && ["LOTE_PRONTO","PRONTO_PARA_REVISAO"].includes(String(status?.stage || ""));
+      if (!loadedNow) {
+        const prepared = await runFormaProduction(project, { previewOnly:true });
+        if (prepared !== "REVIEW") return;
+      }
+      setFormaPreviewOpen(true);
+    } catch (error) {
+      setNotice(`FORMA: ${friendlyError(error)}`); setTimeout(() => setNotice(""), 6000);
+    }
+  }
+
+  async function runFormaProduction(projectArg?:Project, options:{ automaticRun?:boolean; force?:boolean; previewOnly?:boolean } = {}) {
+    let project = projectArg || active;
+    if (!project) return false as const;
+    project = latestProject(project.id) || project;
+    if (!project.scriptText?.trim()) throw new Error("FORMA_ROTEIRO_AUSENTE");
+    if (project.formaStatus === "CONCLUÍDO" && options.automaticRun && !options.force) return true as const;
+    if (formaRunLocks.current.has(project.id)) return false as const;
+    formaRunLocks.current.add(project.id);
     const startedAt = new Date().toISOString();
+    const normalizedScript = enforceOpeningRule(project.scriptText, project.format);
+    if (normalizedScript !== project.scriptText) patchProject(project.id, { scriptText:normalizedScript });
+    const reviewRequested = Boolean(options.previewOnly || (options.automaticRun && project.formaReviewBeforeExport));
     patchProject(project.id, { formaStatus:"PREPARANDO", formaStartedAt:startedAt, formaCompletedAt:undefined, formaError:undefined });
     setImageOpen(true); setImagePhase("packaging"); setImageProgress(92);
-    setImageMessage("Imagens prontas. Entregando o roteiro e os assets diretamente ao Forma…");
-    setImageStatusLine("FLOW → FORMA · PREPARANDO MÓDULO LOTE");
-    if (options.automaticRun) updateAutoRun(project.id, "FORMA", "Flow concluído. Enviando ROTEIRO.TXT + imagens diretamente ao módulo Lote do Forma…");
+    setImageMessage(reviewRequested ? "Imagens prontas. Montando o projeto no Forma para revisão antes da exportação…" : "Imagens prontas. Entregando o roteiro e os assets diretamente ao Forma…");
+    setImageStatusLine(reviewRequested ? "FLOW → FORMA · PREPARANDO PRÉVIA" : "FLOW → FORMA · PREPARANDO MÓDULO LOTE");
+    if (options.automaticRun) updateAutoRun(project.id, "FORMA", reviewRequested ? "Flow concluído. Montando o Forma e pausando antes do MP4 para sua revisão…" : "Flow concluído. Enviando ROTEIRO.TXT + imagens diretamente ao módulo Lote do Forma…");
 
     let statusTimer:number | null = null;
     try {
@@ -2026,15 +2130,15 @@ export default function Home() {
           patchProject(project!.id, { formaStatus:status.stage || "PROCESSANDO" });
           setImageMessage(status.message || "Forma processando o lote…");
           setImageStatusLine(`FORMA · ${String(status.stage || "PROCESSANDO").replaceAll("_", " ")}`);
-          if (options.automaticRun) updateAutoRun(project!.id, "FORMA", status.message || "Forma montando e exportando o vídeo…");
+          if (options.automaticRun) updateAutoRun(project!.id, "FORMA", status.message || (reviewRequested ? "Forma preparando a prévia…" : "Forma montando e exportando o vídeo…"));
         } catch (_) {}
       }, 1000);
 
       const formaInput = {
         projectId:project.id,
-        scriptText:project.scriptText,
+        scriptText:normalizedScript,
         format:(project.format === "REELS" ? "portrait" : "landscape") as "portrait" | "landscape",
-        autoExport:true,
+        autoExport:!reviewRequested,
       };
       let result: Awaited<ReturnType<typeof bridge.runBatch>>;
       try {
@@ -2049,6 +2153,21 @@ export default function Home() {
         const zipBytes = await buildFormaInMemoryZip(images);
         result = await bridge.runBatch({ ...formaInput, zipBytes });
       }
+
+      if (reviewRequested) {
+        if (!result?.ok) throw new Error("FORMA_PREVIEW_NOT_READY");
+        patchProject(project.id, {
+          formaStatus:"PREVIA_PRONTA", formaError:undefined,
+          formaSceneCount:Number(result.sceneCount || 0), formaQuestionCount:Number(result.questionCount || 0), stage:5,
+        });
+        setImageProgress(100); setImagePhase("done");
+        setImageMessage("Prévia pronta no Forma. Revise as cenas; nada foi exportado ainda.");
+        setImageStatusLine("FORMA · PRÉVIA PRONTA · AGUARDANDO APROVAÇÃO");
+        setImageOpen(false);
+        setFormaPreviewOpen(true);
+        return "REVIEW" as const;
+      }
+
       if (!result?.ok || !result.blob || typeof (result.blob as any).arrayBuffer !== "function" || !Number((result.blob as any).size)) throw new Error("FORMA_MP4_VAZIO");
       const finalName = `${project.id}_VIDEO_FINAL.mp4`;
       downloadFinalVideoBlob(result.blob, finalName);
@@ -2062,14 +2181,14 @@ export default function Home() {
       setImageMessage(`Vídeo final pronto. O download automático foi iniciado: ${finalName}`);
       setImageStatusLine("FORMA CONCLUÍDO · MP4 FINAL ENTREGUE");
       if (options.automaticRun) updateAutoRun(project.id, "FORMA", `Forma concluiu ${result.sceneCount || 0} cenas. MP4 final entregue automaticamente.`);
-      return true;
+      return true as const;
     } catch (error) {
       const message = friendlyError(error);
       patchProject(project.id, { formaStatus:"FALHOU", formaError:message });
       setImagePhase("error"); setImageMessage(message); setImageStatusLine("FORMA · FALHA PRESERVADA PARA RETOMADA");
       if (options.automaticRun) throw error;
       setNotice(`FORMA: ${message}`); setTimeout(() => setNotice(""), 6000);
-      return false;
+      return false as const;
     } finally {
       if (statusTimer !== null) window.clearInterval(statusTimer);
       formaRunLocks.current.delete(project.id);
@@ -3998,15 +4117,16 @@ export default function Home() {
       <div className="section-heading"><div><span className="section-number">01</span><h2>EM PRODUÇÃO</h2></div><button className="text-button" onClick={openNewProduction}>CRIAR OUTRA <span>↗</span></button></div>
       {active && <article className="production-card">
         <div className="card-main">
-          <div className="project-meta"><span className="format-tag">{active.format}</span><span>{active.quantity}</span><span>{active.createdAt}</span></div>
+          <div className="project-meta"><span className="format-tag">{active.format}</span><span>{active.format==="REELS"?"SEM ABERTURA":"ABERTURA OBRIGATÓRIA"}</span><span>{active.quantity}</span><span>{active.createdAt}</span></div>
           <h3>{active.title}</h3><p>{active.id}</p>
           <div className="stepper">{steps.map((step,index) => { const complete=index+1<active.stage; const current=index+1===active.stage; return <div className={`step ${complete?"complete":""} ${current?"current":""}`} key={step}><span>{complete?"✓":String(index+1).padStart(2,"0")}</span><small>{step}</small></div>; })}</div>
           <div className="card-actions">
-            {active.autoRunStatus==="ERROR"||active.autoRunStatus==="CANCELLED"?<button className="resume-auto-action" onClick={()=>void runAutomaticProduction(active.id)}><span>⚡</span><b>RETOMAR ESTA PRODUÇÃO</b><i>→</i></button>:null}
-            <button className="primary-action" onClick={continueProduction}>{active.stage<=2?(active.scriptText?"REVISAR ROTEIRO":"CRIAR ROTEIRO"):active.stage===3?(active.promptText?"REVISAR PROMPTS":"CRIAR PROMPTS"):active.stage===4?"BUSCAR IMAGENS":active.formaStatus==="CONCLUÍDO"?"GERAR VÍDEO NOVAMENTE":"GERAR VÍDEO NO FORMA"} <span>→</span></button>
+            {active.autoRunStatus==="PAUSED"?<button className="resume-auto-action" onClick={()=>void openFormaReview(active)}><span>◉</span><b>ABRIR REVISÃO DO FORMA</b><i>→</i></button>:active.autoRunStatus==="ERROR"||active.autoRunStatus==="CANCELLED"?<button className="resume-auto-action" onClick={()=>void runAutomaticProduction(active.id)}><span>⚡</span><b>RETOMAR ESTA PRODUÇÃO</b><i>→</i></button>:null}
+            <button className="primary-action" onClick={continueProduction}>{active.stage<=2?(active.scriptText?"REVISAR ROTEIRO":"CRIAR ROTEIRO"):active.stage===3?(active.promptText?"REVISAR PROMPTS":"CRIAR PROMPTS"):active.stage===4?"BUSCAR IMAGENS":active.formaStatus==="PREVIA_PRONTA"?"APROVAR E EXPORTAR":active.formaStatus==="CONCLUÍDO"?"GERAR VÍDEO NOVAMENTE":"GERAR VÍDEO NO FORMA"} <span>→</span></button>
+            <button className={`secondary-action forma-review-toggle ${active.formaReviewBeforeExport?"active":""}`} onClick={()=>patchProject(active.id,{formaReviewBeforeExport:!active.formaReviewBeforeExport})}>{active.formaReviewBeforeExport?"✓ PAUSAR NO FORMA PARA REVISÃO":"○ REVISAR FORMA ANTES DE EXPORTAR"}</button>
             <button className="secondary-action" onClick={() => downloadProject(active)}>↓ BAIXAR PROJETO</button>
           </div>
-          {active.autoRunStatus&&<div className={`auto-run-panel ${active.autoRunStatus.toLowerCase()}`}><div className="auto-run-head"><div><span>{active.format==="REELS"?"AUTOMÁTICO REELS":"AUTOMÁTICO VÍDEO COMPLETO"}</span><b>{active.autoRunMessage||"Acompanhando a produção automática."}</b>{active.autoRunError&&<small>{active.autoRunError}</small>}</div>{active.autoRunStatus==="RUNNING"?<div className="auto-run-actions"><button className="monitor" onClick={()=>openActivity(active.autoRunStep || "TODOS")}>ACOMPANHAR</button><button onClick={()=>void cancelAutomaticProduction(active.id)}>PARAR</button></div>:<em>{active.autoRunStatus==="DONE"?"CONCLUÍDO":active.autoRunStatus==="ERROR"?"PRECISA DE ATENÇÃO":"INTERROMPIDO"}</em>}</div><div className="auto-run-steps">{autoRunChecklist(active,settings.youtubeParallel).map((item)=><button type="button" className={item.done?"done":active.autoRunStep===item.key?"current":""} key={item.key} onClick={()=>openActivity(item.key)} title={`Acompanhar ${item.label}`}><i>{item.done?"✓":active.autoRunStep===item.key?"•":"○"}</i>{item.label}</button>)}</div></div>}
+          {active.autoRunStatus&&<div className={`auto-run-panel ${active.autoRunStatus.toLowerCase()}`}><div className="auto-run-head"><div><span>{active.format==="REELS"?"AUTOMÁTICO REELS":"AUTOMÁTICO VÍDEO COMPLETO"}</span><b>{active.autoRunMessage||"Acompanhando a produção automática."}</b>{active.autoRunError&&<small>{active.autoRunError}</small>}</div>{active.autoRunStatus==="RUNNING"?<div className="auto-run-actions"><button className="monitor" onClick={()=>openActivity(active.autoRunStep || "TODOS")}>ACOMPANHAR</button><button onClick={()=>void cancelAutomaticProduction(active.id)}>PARAR</button></div>:<em>{active.autoRunStatus==="DONE"?"CONCLUÍDO":active.autoRunStatus==="PAUSED"?"AGUARDANDO REVISÃO":active.autoRunStatus==="ERROR"?"PRECISA DE ATENÇÃO":"INTERROMPIDO"}</em>}</div><div className="auto-run-steps">{autoRunChecklist(active,settings.youtubeParallel).map((item)=><button type="button" className={item.done?"done":active.autoRunStep===item.key?"current":""} key={item.key} onClick={()=>openActivity(item.key)} title={`Acompanhar ${item.label}`}><i>{item.done?"✓":active.autoRunStep===item.key?"•":"○"}</i>{item.label}</button>)}</div></div>}
         </div>
         <aside className="card-side" id="arquivos">
           <div className="mini-title"><span>MEMÓRIA DA PRODUÇÃO</span><b>{[active.ideaText,active.scriptText,active.promptText].filter(Boolean).length}/3</b></div>
@@ -4015,7 +4135,8 @@ export default function Home() {
           <button className={`file-row action ${active.promptText?"done":"pending"}`} disabled={!active.promptText} onClick={()=>openArtifact("PROMPTS")}><span>✦</span><div><b>PROMPTS.TXT</b><small>{active.promptText?"ABRIR BUSCAS DE IMAGEM":"AGUARDANDO ROTEIRO"}</small></div><i>{active.promptText?"→":"○"}</i></button>
           <button className={`file-row action ${thumbMatchesProjectFormat(active)?"done":active.thumbStatus==="FALHOU"?"pending":""}`} disabled={!active.scriptText && !thumbMatchesProjectFormat(active)} onClick={()=>thumbMatchesProjectFormat(active)?window.open(active.thumbUrl,"_blank","noopener,noreferrer"):void startThumbBranch(active)}><span>▰</span><div><b>THUMBNAIL · {thumbAspectRatioForFormat(active.format)}</b><small>{thumbMatchesProjectFormat(active)?"ABRIR IMAGEM FINAL":active.thumbError||active.thumbStatus||`CLIQUE PARA GERAR · ${thumbOrientationForFormat(active.format)}`}</small></div><i>{thumbMatchesProjectFormat(active)?"→":"↻"}</i></button>
           <button className={`file-row action ${active.youtubeMetadata?"done":active.youtubeStatus==="FALHOU"?"pending":""}`} disabled={!active.youtubeMetadata} onClick={()=>{if(active.youtubeMetadata)downloadTextFile(`${active.id}_YOUTUBE.txt`,active.youtubeMetadata);}}><span>▶</span><div><b>YOUTUBE / METADADOS</b><small>{active.youtubeMetadata?"BAIXAR DADOS EDITORIAIS":active.youtubeError||active.youtubeStatus||(settings.youtubeParallel?"INICIA EM PARALELO":"DESATIVADO NAS CONFIGURAÇÕES")}</small></div><i>{active.youtubeMetadata?"↓":"○"}</i></button>
-          <button className={`file-row action ${active.formaStatus==="CONCLUÍDO"?"done":consolidationState(active).ready?"pending":""}`} disabled={!consolidationState(active).ready} onClick={()=>void runFormaProduction(active,{force:active.formaStatus==="CONCLUÍDO"})}><span>▶</span><div><b>FORMA / VÍDEO FINAL</b><small>{active.formaStatus==="CONCLUÍDO" ? `${active.formaSceneCount||0} CENAS · MP4 ENTREGUE` : active.formaError || active.formaStatus || (consolidationState(active).ready?"PRONTO PARA ENVIAR AO FORMA":"AGUARDANDO IMAGENS")}</small></div><i>{active.formaStatus==="CONCLUÍDO"?"↻":consolidationState(active).ready?"→":"○"}</i></button><button className={`file-row action ${consolidationState(active).ready?"done":active.pipelineItems?.length?"pending":""}`} disabled={!active.pipelineItems?.length} onClick={()=>{setConsolidationMessage("");setConsolidationOpen(true);}}><span>▦</span><div><b>ZIP DE BACKUP / FORMA MANUAL</b><small>{active.pipelineItems?.length ? `${consolidationState(active).completed}/${consolidationState(active).items.length} FINAIS · ${consolidationState(active).ready ? "PRONTO PARA GERAR" : active.pipelineStatus || "AGUARDANDO"}` : "AGUARDANDO O FLOW"}</small></div><i>{active.finalZipStatus==="CONCLUIDO"?"✓":consolidationState(active).ready?"→":"○"}</i></button>
+          <button className={`file-row action ${active.formaStatus==="PREVIA_PRONTA"?"done":consolidationState(active).ready?"pending":""}`} disabled={!consolidationState(active).ready} onClick={()=>void openFormaReview(active)}><span>◉</span><div><b>PRÉVIA / ABRIR FORMA</b><small>{active.formaStatus==="PREVIA_PRONTA"?`${active.formaSceneCount||0} CENAS · PRONTO PARA REVISAR`:consolidationState(active).ready?"MONTAR SEM EXPORTAR E ABRIR O EDITOR":"AGUARDANDO IMAGENS"}</small></div><i>{consolidationState(active).ready?"→":"○"}</i></button>
+          <button className={`file-row action ${active.formaStatus==="CONCLUÍDO"?"done":consolidationState(active).ready?"pending":""}`} disabled={!consolidationState(active).ready} onClick={()=>active.formaStatus==="PREVIA_PRONTA"?void exportFormaPreparedProject(active):void runFormaProduction(active,{force:active.formaStatus==="CONCLUÍDO"})}><span>▶</span><div><b>FORMA / VÍDEO FINAL</b><small>{active.formaStatus==="CONCLUÍDO" ? `${active.formaSceneCount||0} CENAS · MP4 ENTREGUE` : active.formaStatus==="PREVIA_PRONTA"?"REVISADO? CLIQUE PARA EXPORTAR O ESTADO ATUAL":active.formaError || active.formaStatus || (consolidationState(active).ready?"PRONTO PARA ENVIAR AO FORMA":"AGUARDANDO IMAGENS")}</small></div><i>{active.formaStatus==="CONCLUÍDO"?"↻":consolidationState(active).ready?"→":"○"}</i></button><button className={`file-row action ${consolidationState(active).ready?"done":active.pipelineItems?.length?"pending":""}`} disabled={!active.pipelineItems?.length} onClick={()=>{setConsolidationMessage("");setConsolidationOpen(true);}}><span>▦</span><div><b>ZIP DE BACKUP / FORMA MANUAL</b><small>{active.pipelineItems?.length ? `${consolidationState(active).completed}/${consolidationState(active).items.length} FINAIS · ${consolidationState(active).ready ? "PRONTO PARA GERAR" : active.pipelineStatus || "AGUARDANDO"}` : "AGUARDANDO O FLOW"}</small></div><i>{active.finalZipStatus==="CONCLUIDO"?"✓":consolidationState(active).ready?"→":"○"}</i></button>
           {active.packageCode ? <button className="package-ready" onClick={()=>active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?setImageOpen(true):void startFlowImageProduction(active)}><span>{active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?"✓":"⌁"}</span><div><b>{active.pipelineStatus==="IMAGENS FINAIS PRONTAS"?"IMAGENS DO FLOW PRONTAS":"FLOW EM PRODUÇÃO / RETOMADA"}</b><small>{active.flowStatus||active.pipelineStatus||`${active.imageCount||0} ASSET(S) RECEBIDO(S)`}</small></div></button> : <button className="collector-box" disabled={!active.promptText || active.stage<4} onClick={()=>void startFlowImageProduction(active)}><span>⌁</span><b>{active.flowStatus==="EM PRODUÇÃO"?"ACOMPANHAR FLOW":active.promptText&&active.stage>=4?"PRODUZIR NO FLOW":"AGUARDANDO PROMPTS"}</b><small>{active.flowStatus||(active.promptText&&active.stage>=4?"MOTOR FLOW AUTOMÁTICO · PERFIS · ENTREGA DIRETO AO APP":"A PRÓXIMA ETAPA SERÁ LIBERADA")}</small></button>}
         </aside>
       </article>}
@@ -4116,7 +4237,10 @@ export default function Home() {
       </> : <div className="workflow-wait"><p>Esta etapa ainda não foi iniciada.</p><button className="modal-submit" onClick={()=>runSpecialist(workflowKind)}>COMEÇAR AGORA <span>→</span></button></div>}
     </section></div>}
 
-    <iframe ref={formaFrameRef} src="/forma?embedded=1" title="Forma automation engine" className="forma-automation-frame" aria-hidden="true" tabIndex={-1} />
+    <div className={`forma-automation-shell ${formaPreviewOpen?"preview-open":""}`} aria-hidden={!formaPreviewOpen}>
+      {formaPreviewOpen&&<div className="forma-preview-toolbar"><div><span>FORMA · PRÉVIA REAL</span><b>{active?.title||"PROJETO"}</b><small>{active?.format==="REELS"?"REELS · ABERTURA BLOQUEADA":"VÍDEO COMPLETO · ABERTURA OBRIGATÓRIA"}</small></div><div className="forma-preview-actions"><button onClick={()=>setFormaPreviewOpen(false)}>FECHAR PRÉVIA</button><button className="export" disabled={!active||active.formaStatus!=="PREVIA_PRONTA"} onClick={()=>active&&void exportFormaPreparedProject(active)}>APROVAR E EXPORTAR MP4 →</button></div></div>}
+      <iframe ref={formaFrameRef} src="/forma?embedded=1" title="Forma automation engine" className="forma-automation-frame" aria-hidden={!formaPreviewOpen} tabIndex={formaPreviewOpen?0:-1} />
+    </div>
 
     {imageOpen && <div className="modal-backdrop image-backdrop"><section className={`image-modal phase-${imagePhase}`}>
       <button className="modal-close" onClick={()=>setImageOpen(false)} aria-label="Ocultar janela">×</button>
